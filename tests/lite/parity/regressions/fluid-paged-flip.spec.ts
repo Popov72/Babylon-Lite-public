@@ -114,6 +114,93 @@ main().catch(error => canvas.dataset.error = error?.message ?? String(error));
     expect(result.bytes).toBeLessThan(64 * 1024 * 1024);
 });
 
+test("paged FLIP keeps multigrid across an asynchronous scene-SDF replacement", async ({ page }) => {
+    test.setTimeout(120_000);
+    await page.goto("/");
+    await page.setContent(`
+<canvas id="renderCanvas" width="16" height="16"></canvas>
+<script type="module">
+import { createEngine } from "${LITE_ENTRY}";
+import { createFlipSim } from "${FLIP_ENTRY}";
+const canvas = document.getElementById("renderCanvas");
+window.addEventListener("error", event => canvas.dataset.error = event.message);
+window.addEventListener("unhandledrejection", event => canvas.dataset.error = event.reason?.message ?? String(event.reason));
+async function main() {
+    const engine = await createEngine(canvas);
+    const device = engine._device;
+    device.pushErrorScope("validation");
+    const count = 512;
+    const positions = new Float32Array(count * 3);
+    for (let i = 0; i < count; i++) {
+        positions[i * 3] = 1.5 + (i % 8) * 0.08;
+        positions[i * 3 + 1] = 2 + (Math.floor(i / 64) % 8) * 0.08;
+        positions[i * 3 + 2] = 1.5 + (Math.floor(i / 8) % 8) * 0.08;
+    }
+    const sim = createFlipSim(engine, {
+        count,
+        initialPositions: positions,
+        boundsMin: [0, 0, 0],
+        boundsMax: [4, 4, 4],
+        gridDim: [32, 32, 32],
+        dx: 0.125,
+        particleRadius: 0.04,
+        pagedGrid: true,
+        pagedGridMaxPages: 64,
+        pressureSolver: "multigrid",
+        multigridCycles: 2,
+        minSubsteps: 1,
+        maxSubsteps: 1,
+        maxSubDt: 1 / 120,
+    });
+    const first = device.createCommandEncoder();
+    sim.step(first, 1 / 120);
+    device.queue.submit([first.finish()]);
+
+    const sdfParams = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const sdfGrid = device.createBuffer({ size: 8 * 8 * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    device.queue.writeBuffer(sdfGrid, 0, new Float32Array(8 * 8).fill(0.25));
+    sim.setSceneSdf({
+        struct: "struct SceneSdfParams { p0: vec4<f32>, p1: vec4<f32>, p2: vec4<f32>, p3: vec4<f32>, };",
+        sdf: \`fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
+            let sample = sceneSdfGrid[clamp(i32(pt.x), 0, 7) + 8 * clamp(i32(pt.z), 0, 7)];
+            return pt.y - sample + sceneSdfParams.p0.x;
+        }\`,
+        buffer: sdfParams,
+        sdfGrid,
+        gridConfine: false,
+    });
+    for (let frame = 0; frame < 4; frame++) {
+        const encoder = device.createCommandEncoder();
+        sim.step(encoder, 1 / 120);
+        device.queue.submit([encoder.finish()]);
+    }
+    await device.queue.onSubmittedWorkDone();
+    const validationError = await device.popErrorScope();
+    if (validationError) throw validationError;
+    const readback = device.createBuffer({ size: 32 * 16, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const encoder = device.createCommandEncoder();
+    encoder.copyBufferToBuffer(sim.positionBuffer, 0, readback, 0, readback.size);
+    device.queue.submit([encoder.finish()]);
+    await readback.mapAsync(GPUMapMode.READ);
+    const values = Array.from(new Float32Array(readback.getMappedRange().slice(0)));
+    canvas.dataset.result = JSON.stringify({
+        finite: values.every(Number.isFinite),
+        moved: values.some((value, index) => index % 4 < 3 && value !== positions[Math.floor(index / 4) * 3 + index % 4]),
+    });
+    readback.unmap();
+    readback.destroy();
+    sim.dispose();
+    sdfParams.destroy();
+    sdfGrid.destroy();
+}
+main().catch(error => canvas.dataset.error = error?.message ?? String(error));
+</script>`);
+    const canvas = page.locator("#renderCanvas");
+    await expect.poll(async () => (await canvas.getAttribute("data-result")) ?? (await canvas.getAttribute("data-error")), { timeout: 90_000 }).toBeTruthy();
+    expect(await canvas.getAttribute("data-error")).toBeNull();
+    expect(JSON.parse((await canvas.getAttribute("data-result"))!)).toEqual({ finite: true, moved: true });
+});
+
 test("preserves live FLIP particles while switching to paged storage", async ({ page }) => {
     test.setTimeout(120_000);
     await page.goto("/");
@@ -198,6 +285,52 @@ main().catch(error => canvas.dataset.error = error?.message ?? String(error));
         activeCount: 32,
         renderCount: 32,
     });
+});
+
+test("enabling paging preserves the live multigrid pressure solver", async ({ page }) => {
+    test.setTimeout(120_000);
+    const preset = JSON.parse(readFileSync(resolve(__dirname, "../../../../lab/public/fluid-presets/waterfall.sph.low.json"), "utf8"));
+    preset.formatVersion = 13;
+    preset.meta.method = "FLIP";
+    preset.pagedGrid = false;
+    preset.pagedGridMaxPages = 64;
+    preset.gridPosition = [0, 2, 0];
+    preset.gridSize = [4, 4, 4];
+    preset.gridResolution = 32;
+    preset.markersPerCell = 8;
+    preset.particleCount = 8;
+    preset.physics.pressureSolver = 1;
+    await page.goto("/lite/demo-fluid.html");
+    const canvas = page.locator("canvas");
+    await expect(canvas).toHaveAttribute("data-ready", "true", { timeout: 60_000 });
+    await page.locator('select:has(option[value="FLIP"])').selectOption("FLIP");
+    await expect(canvas).toHaveAttribute("data-method", "FLIP", { timeout: 60_000 });
+    await page.keyboard.press("p");
+    await expect(canvas).toHaveAttribute("data-paused", "true");
+    await page.locator('input[type="file"][accept*=".json"]').setInputFiles({
+        name: "fluid-paged-multigrid-FLIP.json",
+        mimeType: "application/json",
+        buffer: Buffer.from(JSON.stringify(preset)),
+    });
+    await expect(canvas).toHaveAttribute("data-pressure-solver", "multigrid");
+    const capacityRow = page.locator('[data-fluid-paged-grid-capacity="true"]');
+    const capacitySlider = capacityRow.locator('input[type="range"]');
+    await expect(capacityRow).toHaveCSS("display", "block");
+    expect(
+        await capacityRow.evaluate((row) => {
+            const [, value, slider] = Array.from(row.children);
+            return value!.getBoundingClientRect().bottom <= slider!.getBoundingClientRect().top;
+        })
+    ).toBe(true);
+    await expect(capacitySlider).toHaveAttribute("max", "1");
+    await expect(capacityRow).toContainText("64 pages");
+    await capacitySlider.dispatchEvent("input");
+    await capacitySlider.dispatchEvent("change");
+    await expect(canvas).toHaveAttribute("data-paged-grid-max-pages", "64");
+    await page.locator('label:has-text("Paged grid") input[type="checkbox"]').check();
+    await expect(canvas).toHaveAttribute("data-paged-grid", "true", { timeout: 60_000 });
+    await expect(canvas).toHaveAttribute("data-pressure-solver", "multigrid");
+    await expect(canvas).toHaveAttribute("data-paged-grid-overflow", "false");
 });
 
 test("imports paging and an above-dense-limit FLIP grid atomically", async ({ page }) => {

@@ -40,6 +40,8 @@ import {
     createSceneContext,
     createStandardMaterial,
     createUtilityLayer,
+    fluidSimulationCellSize,
+    fluidSimulationParticleRadius,
     getEffectiveAspectRatio,
     getFrameGraph,
     getViewProjectionMatrix,
@@ -75,7 +77,9 @@ import {
     flipMacFaceBufferBytes,
     FLIP_DEFAULT_PAGE_CAPACITY,
     FLIP_PAGE_CELLS,
+    FLIP_PAGE_SIZE,
     pagedFlipStorageCounts,
+    resolveFlipDiscretization,
     transferFlipSimState,
 } from "babylon-lite/fluid/flip-sim.js";
 import type { FluidEmitter, FluidFlowConfig, FluidShape, FluidSink } from "babylon-lite";
@@ -113,10 +117,6 @@ import {
     cellSizeForPhysicsScale,
     FLIP_DEFAULT_MARKERS_PER_CELL,
     FLIP_HIGH_MARKERS_PER_CELL,
-    FLIP_MAX_SCALE,
-    FLIP_MIN_SCALE,
-    flipMarkersPerAuthoredCell,
-    flipParticleCountForVolume,
     GRID_RESOLUTION_MAX,
     GRID_RESOLUTION_MIN,
     gridBounds,
@@ -133,7 +133,6 @@ import {
     PBMPM_MIN_SCALE,
     PHYS_MAX_SCALE,
     PHYS_MIN_SCALE,
-    scaleForGridResolution,
     scaleLimitsForMethod,
 } from "./fluid/grid-settings.js";
 import { screenRay } from "./fluid/pick.js";
@@ -406,18 +405,33 @@ async function main(): Promise<void> {
                   " particles)."
             : undefined;
     };
-    const gridCellsForSettings = (grid: FluidGridSettings, method: string, physicsSize: number): [number, number, number] =>
-        gridCellsForSize(grid.size, cellSizeForPhysicsScale(method, physicsSize));
+    const flipDiscretizationForGrid = (grid: FluidGridSettings, resolution: number, markersPerCell = flipMarkersPerCell) => {
+        const bounds = gridBounds(grid.position, grid.size);
+        return resolveFlipDiscretization({
+            boundsMin: bounds.min,
+            boundsMax: bounds.max,
+            gridResolution: resolution,
+            markersPerCell,
+        });
+    };
+    const fluidDiscretization = (physicsParticleSize: number) => ({ physicsParticleSize, samplingType: "fluid" as const });
+    const gridCellsForSettings = (grid: FluidGridSettings, method: string, physicsSize: number, flipResolution = flipGridResolution): [number, number, number] =>
+        method === "FLIP"
+            ? flipDiscretizationForGrid(grid, flipResolution).gridDim
+            : gridCellsForSize(grid.size, fluidSimulationCellSize(method, fluidDiscretization(physicsSize)));
     const gridAllocationError = (
         grid: FluidGridSettings,
         method: string,
         physicsSize: number,
-        flipPaging: { enabled: boolean; maxPages: number } = { enabled: flipPagedGrid, maxPages: flipPagedGridMaxPages }
+        flipPaging: { enabled: boolean; maxPages: number } = { enabled: flipPagedGrid, maxPages: flipPagedGridMaxPages },
+        flipResolution = flipGridResolution
     ): string | undefined => {
-        const cells = gridCellsForSettings(grid, method, physicsSize);
+        const cells = gridCellsForSettings(grid, method, physicsSize, flipResolution);
         const oversizedAxis = cells.findIndex((value) => value > GRID_CELLS_MAX);
         if (oversizedAxis >= 0) {
-            return `Grid size requires ${cells[oversizedAxis]!.toLocaleString()} cells on ${"XYZ"[oversizedAxis]} at the current Physics particle size; maximum is ${GRID_CELLS_MAX.toLocaleString()}.`;
+            return `Grid size requires ${cells[oversizedAxis]!.toLocaleString()} cells on ${"XYZ"[oversizedAxis]} at the current ${
+                method === "FLIP" ? "Resolution divisions" : "Physics particle size"
+            }; maximum is ${GRID_CELLS_MAX.toLocaleString()}.`;
         }
         const totalCells = cells[0] * cells[1] * cells[2];
         if (method === "FLIP") {
@@ -455,6 +469,8 @@ async function main(): Promise<void> {
     let showGridBounds = false;
     let showGridBoundsSolid = false;
     let showGridGizmo = false;
+    let flipGridResolution = 160;
+    let builtFlipGridResolution = flipGridResolution;
     let flipMarkersPerCell = FLIP_DEFAULT_MARKERS_PER_CELL;
     let builtFlipMarkersPerCell = flipMarkersPerCell;
 
@@ -505,17 +521,18 @@ async function main(): Promise<void> {
         // Extreme scale values remain opt-in because timestep and density settings
         // may also need adjustment.
         const pbfScale = methodName === "PBF" ? clampScale(scale, PBF_MIN_SCALE, PBF_MAX_SCALE) : 1;
-        const flipScale = methodName === "FLIP" ? clampScale(scale, FLIP_MIN_SCALE, FLIP_MAX_SCALE) : 1;
+        const flipScale = 1;
         const mpmScale = methodName === "MLS-MPM" ? clampScale(scale, MPM_MIN_SCALE, MPM_MAX_SCALE) : 1;
         const pbmpmScale = methodName === "PB-MPM" ? clampScale(scale, PBMPM_MIN_SCALE, PBMPM_MAX_SCALE) : 1;
         const ds = domainScale;
         const scaleTriple = (t: [number, number, number]): [number, number, number] => [t[0] * ds, t[1] * ds, t[2] * ds];
         const explicitGrid = gridSettings !== undefined;
         const explicitBounds = gridSettings ? gridBounds(gridSettings.position, gridSettings.size) : undefined;
-        const cellSize = explicitGrid ? cellSizeForPhysicsScale(methodName, scale) : undefined;
+        const discretization = fluidDiscretization(scale);
+        const particleRadius = explicitGrid ? fluidSimulationParticleRadius(discretization) : undefined;
+        const cellSize = explicitGrid ? fluidSimulationCellSize(methodName, discretization) : undefined;
         const inactiveCellSize = gridSettings ? Math.max(...gridSettings.size) / INACTIVE_GRID_RESOLUTION : undefined;
         const pbfCellSize = methodName === "PBF" ? cellSize : inactiveCellSize;
-        const flipCellSize = methodName === "FLIP" ? cellSize : inactiveCellSize;
         const mpmCellSize = methodName === "MLS-MPM" ? cellSize : inactiveCellSize;
         const pbmpmCellSize = methodName === "PB-MPM" ? cellSize : inactiveCellSize;
         if (gridSettings) {
@@ -539,7 +556,7 @@ async function main(): Promise<void> {
         // Backend 1 — Position Based Fluids (the original solver).
         const pbf = createPbfSim(engine, {
             count: pbfCount,
-            particleRadius: 0.09 * pbfScale * (explicitGrid ? 1 : ds),
+            particleRadius: particleRadius ?? 0.09 * pbfScale * ds,
             smoothingRadius: pbfCellSize ?? 0.4 * pbfScale * (explicitGrid ? 1 : ds),
             spawnMin: explicitGrid ? pbfSpawn.min : scaleTriple(pbfSpawn.min),
             spawnMax: explicitGrid ? pbfSpawn.max : scaleTriple(pbfSpawn.max),
@@ -557,14 +574,13 @@ async function main(): Promise<void> {
         // Backend 2 — FLIP (marker particles + incompressible staggered MAC grid).
         const flip = createFlipSim(engine, {
             count: flipCount,
-            particleRadius: 0.09 * flipScale * (explicitGrid ? 1 : ds),
             markersPerCell: flipMarkersPerCell,
             spawnMin: explicitGrid ? flipSpawn.min : scaleTriple(flipSpawn.min),
             spawnMax: explicitGrid ? flipSpawn.max : scaleTriple(flipSpawn.max),
             groundY: pbfGroundY,
             boundsMin: pbfBoundsMin,
             boundsMax: pbfBoundsMax,
-            dx: flipCellSize ?? 0.25 * flipScale * (explicitGrid ? 1 : ds),
+            ...(methodName === "FLIP" ? { gridResolution: flipGridResolution } : {}),
             gravity: 9.8,
             flipRatio: 0.95,
             pressureIterations: 40,
@@ -595,7 +611,7 @@ async function main(): Promise<void> {
         // Backend 3 — MLS-MPM (grid-transfer; scales to far more particles).
         const mpm = createMlsMpmSim(engine, {
             count: mpmCount,
-            particleRadius: 0.09 * mpmScale * (explicitGrid ? 1 : ds),
+            particleRadius: particleRadius ?? 0.09 * mpmScale * ds,
             spawnMin: explicitGrid ? mpmSpawn.min : scaleTriple(mpmSpawn.min),
             spawnMax: explicitGrid ? mpmSpawn.max : scaleTriple(mpmSpawn.max),
             capsuleA: CAP_A,
@@ -636,7 +652,7 @@ async function main(): Promise<void> {
         // Backend 4 — Position-Based MPM.
         const pbmpm = createPbMpmSim(engine, {
             count: pbmpmCount,
-            particleRadius: 0.09 * pbmpmScale * (explicitGrid ? 1 : ds),
+            particleRadius: particleRadius ?? 0.09 * pbmpmScale * ds,
             spawnMin: explicitGrid ? pbmpmSpawn.min : scaleTriple(pbmpmSpawn.min),
             spawnMax: explicitGrid ? pbmpmSpawn.max : scaleTriple(pbmpmSpawn.max),
             groundY: mpmGroundY,
@@ -671,6 +687,11 @@ async function main(): Promise<void> {
         1,
         Math.floor((Math.min(engine._device.limits.maxStorageBufferBindingSize, engine._device.limits.maxBufferSize) / 8 - 1) / (FLIP_PAGE_CELLS * 3))
     );
+    const maxFlipPagedGridPagesFor = (grid: FluidGridSettings, resolution: number): number => {
+        const dim = flipDiscretizationForGrid(grid, resolution).gridDim;
+        const virtualPageCount = Math.ceil(dim[0] / FLIP_PAGE_SIZE) * Math.ceil(dim[1] / FLIP_PAGE_SIZE) * Math.ceil(dim[2] / FLIP_PAGE_SIZE);
+        return Math.min(maxFlipPagedGridPages, virtualPageCount);
+    };
     let flipPagedGridMaxPages = Math.min(maxFlipPagedGridPages, FLIP_DEFAULT_PAGE_CAPACITY);
     let mpmActiveBlocks = false;
     let mpmPagedGrid = false;
@@ -1383,7 +1404,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     const effectiveGridSettings = (method = methodName, scale = domainScale): FluidGridSettings => gridSettings ?? defaultGridSettings(method, scale);
     function writeWhiteboardMlsContainer(buffer: GPUBuffer, byteOffset: number): void {
         const grid = effectiveGridSettings();
-        const dx = cellSizeForPhysicsScale("MLS-MPM", physicsScale);
+        const dx = gridSettings ? fluidSimulationCellSize("MLS-MPM", fluidDiscretization(physicsScale)) : cellSizeForPhysicsScale("MLS-MPM", physicsScale);
         const dims = gridCellsForSize(grid.size, dx);
         const minimum = gridBounds(grid.position, grid.size).min;
         const lo: [number, number, number] = [minimum[0] + dx * 2.5, minimum[1] + dx * 2.5, minimum[2] + dx * 2.5];
@@ -1419,10 +1440,10 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     });
     const calculateFlipParticlePlan = (
         requested: number,
-        scale: number,
+        resolution: number,
         markersPerCell: number,
         flow: FluidFlowConfig,
-        cellSizeMultiplier: number
+        grid: FluidGridSettings
     ): { active: number; total: number; required: number } => {
         const requestedCapacity = Math.max(1, Math.min(Number.MAX_SAFE_INTEGER, Math.round(requested)));
         if (flow.initialEmittersFillCapacity) {
@@ -1433,21 +1454,16 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             return { active: requestedCapacity, total: requestedCapacity, required: requestedCapacity };
         }
         const authoredVolume = initial.reduce((sum, emitter) => sum + fluidShapeVolume(emitter.shape, emitter.transform), 0);
-        const cellSize = cellSizeForPhysicsScale("FLIP", scale) * cellSizeMultiplier;
-        const derived = Math.min(Number.MAX_SAFE_INTEGER, flipParticleCountForVolume(authoredVolume, cellSize, markersPerCell));
+        const markerVolume = flipDiscretizationForGrid(grid, resolution, markersPerCell).markerVolume;
+        const derived = Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.ceil(authoredVolume / markerVolume)));
         return { active: Math.min(requestedCapacity, derived), total: requestedCapacity, required: derived };
     };
-    const flipParticlePlan = (
-        requested: number,
-        scale: number,
-        flow = activeFlow,
-        explicitGrid = gridSettings !== undefined
-    ): { active: number; total: number; required: number } => {
+    const flipParticlePlan = (requested: number, flow = activeFlow, resolution = flipGridResolution): { active: number; total: number; required: number } => {
         if (methodName !== "FLIP") {
             const requestedCapacity = Math.max(1, Math.min(Number.MAX_SAFE_INTEGER, Math.round(requested)));
             return { active: requestedCapacity, total: requestedCapacity, required: requestedCapacity };
         }
-        return calculateFlipParticlePlan(requested, scale, flipMarkersPerCell, flow, explicitGrid ? 1 : domainScale);
+        return calculateFlipParticlePlan(requested, resolution, flipMarkersPerCell, flow, effectiveGridSettings("FLIP"));
     };
     function flipInitialEmitterParticleCounts(): Map<string, number> {
         const counts = new Map(activeFlow.emitters.map((emitter) => [emitter.id, 0]));
@@ -1459,7 +1475,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             initialFlowSignature(activeFlow) === builtInitialFlowSignature &&
             gridSettingsEqual(gridSettings, builtGridSettings) &&
             builtGridMethod === "FLIP" &&
-            builtPhysicsScale === physicsScale &&
+            builtFlipGridResolution === flipGridResolution &&
             builtDomainScale === domainScale &&
             builtFlipMarkersPerCell === flipMarkersPerCell &&
             activeSim.count === flipParticleCapacityRequest;
@@ -1475,7 +1491,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         if (!(totalVolume > 0)) {
             return counts;
         }
-        const activeCount = flipParticlePlan(flipParticleCapacityRequest, physicsScale).active;
+        const activeCount = flipParticlePlan(flipParticleCapacityRequest).active;
         const allocations = volumes.map((volume, index) => {
             const exact = (activeCount * volume) / totalVolume;
             return { index, count: Math.floor(exact), remainder: exact - Math.floor(exact) };
@@ -1501,14 +1517,13 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     function refreshInitialEmitterParticleCount(): void {
         flowEditor?.refreshComputedValues();
     }
-    const flipParticleCapacity = (requested: number, scale: number, flow = activeFlow, explicitGrid = gridSettings !== undefined): number => {
-        return flipParticlePlan(requested, scale, flow, explicitGrid).total;
+    const flipParticleCapacity = (requested: number, flow = activeFlow, resolution = flipGridResolution): number => {
+        return flipParticlePlan(requested, flow, resolution).total;
     };
     const requestedParticleCount = (): number => (methodName === "FLIP" ? flipParticleCapacityRequest : particleCount);
-    function fitFlipResolutionToDevice(): { requestedResolution: number; fittedResolution: number; scale: number } {
+    function fitFlipResolutionToDevice(): { requestedResolution: number; fittedResolution: number } {
         const grid = effectiveGridSettings("FLIP");
-        const longestSide = Math.max(...grid.size);
-        const requestedResolution = gridResolutionForScale("FLIP", physicsScale, longestSide);
+        const requestedResolution = flipGridResolution;
         const deviceParticleCapacity = deviceParticleCapacityForMethod("FLIP");
         if (flipParticleCapacityRequest > deviceParticleCapacity) {
             throw new RangeError(
@@ -1520,15 +1535,13 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             );
         }
         const fits = (resolution: number): boolean => {
-            const scale = scaleForGridResolution("FLIP", resolution, longestSide);
-            const plan = flipParticlePlan(flipParticleCapacityRequest, scale);
-            return plan.required <= plan.total && gridAllocationError(grid, "FLIP", scale) === undefined;
+            const plan = flipParticlePlan(flipParticleCapacityRequest, activeFlow, resolution);
+            return plan.required <= plan.total && gridAllocationError(grid, "FLIP", physicsScale, undefined, resolution) === undefined;
         };
         const fittedResolution = highestFittingGridResolution(requestedResolution, GRID_RESOLUTION_MIN, fits);
         if (fittedResolution === undefined) {
-            const minimumScale = scaleForGridResolution("FLIP", GRID_RESOLUTION_MIN, longestSide);
-            const minimumPlan = flipParticlePlan(flipParticleCapacityRequest, minimumScale);
-            const gridError = gridAllocationError(grid, "FLIP", minimumScale);
+            const minimumPlan = flipParticlePlan(flipParticleCapacityRequest, activeFlow, GRID_RESOLUTION_MIN);
+            const gridError = gridAllocationError(grid, "FLIP", physicsScale, undefined, GRID_RESOLUTION_MIN);
             throw new RangeError(
                 gridError ??
                     "The minimum Resolution divisions value still requires " +
@@ -1541,7 +1554,6 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         return {
             requestedResolution,
             fittedResolution,
-            scale: scaleForGridResolution("FLIP", fittedResolution, longestSide),
         };
     }
     function flipPendingCapacityStatus(): string {
@@ -1549,9 +1561,8 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             return "";
         }
         const grid = effectiveGridSettings("FLIP");
-        const longestSide = Math.max(...grid.size);
-        const requestedResolution = gridResolutionForScale("FLIP", physicsScale, longestSide);
-        const requestedPlan = flipParticlePlan(flipParticleCapacityRequest, physicsScale);
+        const requestedResolution = flipGridResolution;
+        const requestedPlan = flipParticlePlan(flipParticleCapacityRequest);
         const deviceParticleCapacity = deviceParticleCapacityForMethod("FLIP");
         if (requestedPlan.total <= deviceParticleCapacity && requestedPlan.required <= requestedPlan.total && gridAllocationError(grid, "FLIP", physicsScale) === undefined) {
             return "";
@@ -1637,28 +1648,22 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             delete canvas.dataset.restartSimulationGpuBytes;
             return;
         }
-        const plan = flipParticlePlan(flipParticleCapacityRequest, physicsScale);
+        const plan = flipParticlePlan(flipParticleCapacityRequest);
         const effectiveGrid = effectiveGridSettings();
-        const cellSize = cellSizeForPhysicsScale("FLIP", physicsScale) * (gridSettings ? 1 : domainScale);
-        const gridDim = gridCellsForSize(effectiveGrid.size, cellSize);
-        const restartGpuBytes = estimateFlipGpuBytes(
-            plan.total,
-            gridDim,
-            !flipPagedGrid && (controls.getPhysicsValues("FLIP").pressureSolver ?? 0) >= 0.5 ? "multigrid" : "jacobi",
-            {
-                pagedGrid: flipPagedGrid,
-                pagedGridMaxPages: flipPagedGridMaxPages,
-                pressureDiagnostics: (controls.getPhysicsValues("FLIP").pressureDiagnostics ?? 0) >= 0.5 || (controls.getPhysicsValues("FLIP").pressureTolerance ?? 0) > 0,
-                liquidSdf: (controls.getPhysicsValues("FLIP").liquidSdf ?? 0) >= 0.5,
-                fractionalSolids: (controls.getPhysicsValues("FLIP").fractionalSolids ?? 0) >= 0.5,
-                reseedParticles: (controls.getPhysicsValues("FLIP").reseedParticles ?? 0) >= 0.5,
-                particleSheeting: (controls.getPhysicsValues("FLIP").particleSheeting ?? 0) >= 0.5,
-                polygonSurface: (controls.getPhysicsValues("FLIP").polygonSurface ?? 0) >= 0.5,
-                polygonReconstructionMultiplier: controls.getPhysicsValues("FLIP").polygonReconstructionMultiplier ?? 1,
-            }
-        );
+        const gridDim = flipDiscretizationForGrid(effectiveGrid, flipGridResolution).gridDim;
+        const restartGpuBytes = estimateFlipGpuBytes(plan.total, gridDim, (controls.getPhysicsValues("FLIP").pressureSolver ?? 0) >= 0.5 ? "multigrid" : "jacobi", {
+            pagedGrid: flipPagedGrid,
+            pagedGridMaxPages: flipPagedGridMaxPages,
+            pressureDiagnostics: (controls.getPhysicsValues("FLIP").pressureDiagnostics ?? 0) >= 0.5 || (controls.getPhysicsValues("FLIP").pressureTolerance ?? 0) > 0,
+            liquidSdf: (controls.getPhysicsValues("FLIP").liquidSdf ?? 0) >= 0.5,
+            fractionalSolids: (controls.getPhysicsValues("FLIP").fractionalSolids ?? 0) >= 0.5,
+            reseedParticles: (controls.getPhysicsValues("FLIP").reseedParticles ?? 0) >= 0.5,
+            particleSheeting: (controls.getPhysicsValues("FLIP").particleSheeting ?? 0) >= 0.5,
+            polygonSurface: (controls.getPhysicsValues("FLIP").polygonSurface ?? 0) >= 0.5,
+            polygonReconstructionMultiplier: controls.getPhysicsValues("FLIP").polygonReconstructionMultiplier ?? 1,
+        });
         const gridRestartPending =
-            physicsScale !== builtPhysicsScale ||
+            flipGridResolution !== builtFlipGridResolution ||
             !gridSettingsEqual(gridSettings, builtGridSettings) ||
             builtGridMethod !== methodName ||
             flipMarkersPerCell !== builtFlipMarkersPerCell;
@@ -1686,7 +1691,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     }
     function applyFlow(): void {
         if (methodName === "FLIP") {
-            const capacity = flipParticleCapacity(flipParticleCapacityRequest, physicsScale);
+            const capacity = flipParticleCapacity(flipParticleCapacityRequest);
             if (capacity !== particleCount) {
                 rebuildSims(flipParticleCapacityRequest, physicsScale);
                 return;
@@ -1707,8 +1712,8 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             const authoredVolume = installedFlow.emitters
                 .filter((emitter) => emitter.enabled && emitter.behavior === "initial" && emitter.sampling === "volume")
                 .reduce((sum, emitter) => sum + fluidShapeVolume(emitter.shape, emitter.transform), 0);
-            const cellSize = cellSizeForPhysicsScale("FLIP", physicsScale) * (gridSettings ? 1 : domainScale);
-            const markersPerCell = flipMarkersPerAuthoredCell(activeCount, cellSize, authoredVolume);
+            const discretization = flipDiscretizationForGrid(effectiveGridSettings("FLIP"), flipGridResolution);
+            const markersPerCell = authoredVolume > 0 ? (activeCount * discretization.dx ** 3) / authoredVolume : 0;
             if (markersPerCell > FLIP_HIGH_MARKERS_PER_CELL) {
                 message =
                     "High FLIP marker density:\u00a0about\u00a0" +
@@ -1763,7 +1768,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         if (methodName === "FLIP") {
             const fit = fitFlipResolutionToDevice();
             if (fit.fittedResolution < fit.requestedResolution) {
-                physicsScale = fit.scale;
+                flipGridResolution = fit.fittedResolution;
                 controls.setGridResolution(fit.fittedResolution);
                 resolutionAdjustment =
                     "Resolution divisions adjusted:\u00a0" +
@@ -1777,7 +1782,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         }
         const pendingGridRebuild =
             methodName === "FLIP" &&
-            (physicsScale !== builtPhysicsScale ||
+            (flipGridResolution !== builtFlipGridResolution ||
                 !gridSettingsEqual(gridSettings, builtGridSettings) ||
                 builtGridMethod !== methodName ||
                 flipMarkersPerCell !== builtFlipMarkersPerCell);
@@ -2401,6 +2406,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     // panel controls.
     const demoParamsHost = document.createElement("div");
     const initialGridSettings = defaultGridSettings(methodName, domainScale);
+    const initialFlipDiscretization = flipDiscretizationForGrid(initialGridSettings, flipGridResolution);
 
     const controls = createFluidControlsPanel({
         schemas: DEFAULT_FLUID_SCHEMAS,
@@ -2418,12 +2424,13 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             physScale: physicsScale,
             gridPosition: [...initialGridSettings.position],
             gridSize: [...initialGridSettings.size],
-            cellSize: cellSizeForPhysicsScale(methodName, physicsScale) * domainScale,
-            gridResolution: gridResolutionForScale(methodName, physicsScale, Math.max(...initialGridSettings.size)),
+            cellSize: methodName === "FLIP" ? initialFlipDiscretization.dx : cellSizeForPhysicsScale(methodName, physicsScale) * domainScale,
+            gridResolution: methodName === "FLIP" ? flipGridResolution : gridResolutionForScale(methodName, physicsScale, Math.max(...initialGridSettings.size)),
             markersPerCell: flipMarkersPerCell,
             showGridBounds,
             showGridBoundsSolid,
             color: "#16a3c3", // matches the default FLUID_COLOR
+            independentRendering: false,
             absorption: 1,
             size: 1,
             refraction: 0.1,
@@ -2589,10 +2596,6 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                 if (methodName === "FLIP") {
                     if (enabled === flipPagedGrid) return;
                     flipPagedGrid = enabled;
-                    if (enabled) {
-                        const physics = controls.getPhysicsValues("FLIP");
-                        controls.setPhysics({ ...physics, pressureSolver: 0, polygonSurface: 0 });
-                    }
                     rebuildSims(requestedParticleCount(), physicsScale, true);
                     return;
                 }
@@ -2602,8 +2605,9 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             },
             onPagedGridMaxPages: (pages) => {
                 const flip = methodName === "FLIP";
-                const clampedPages = Math.min(pages, flip ? maxFlipPagedGridPages : maxPagedGridPages);
-                controls.setPagedGridMaxPages(clampedPages);
+                const pageCapacityLimit = flip ? maxFlipPagedGridPagesFor(effectiveGridSettings(), flipGridResolution) : maxPagedGridPages;
+                const clampedPages = Math.min(pages, pageCapacityLimit);
+                controls.setPagedGridMaxPages(clampedPages, pageCapacityLimit);
                 controls.setPagedGridStatus("");
                 canvas.dataset.pagedGridOverflow = "false";
                 if (flip) {
@@ -2900,17 +2904,14 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             initial.length === 0 ||
             initial.some((emitter) => emitter.sampling !== "volume") ||
             !partial.grid ||
-            partial.physScale === undefined ||
             partial.gridResolution === undefined ||
             partial.markersPerCell === undefined
         ) {
             json.particleCount = importedParticleCount(json.particleCount);
             return;
         }
-        const plan = calculateFlipParticlePlan(json.particleCount, partial.physScale, partial.markersPerCell, flow, 1);
-        const longestSide = Math.max(...partial.grid.size);
-        const cellSize = longestSide / partial.gridResolution;
-        const particleVolume = (cellSize * cellSize * cellSize) / partial.markersPerCell;
+        const plan = calculateFlipParticlePlan(json.particleCount, partial.gridResolution, partial.markersPerCell, flow, partial.grid);
+        const particleVolume = flipDiscretizationForGrid(partial.grid, partial.gridResolution, partial.markersPerCell).markerVolume;
         const worldFlow: FluidFlowConfig = {
             emitters: flow.emitters.map((emitter) => ({
                 ...emitter,
@@ -2935,8 +2936,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         const safeCount = 40_000;
         const acceptedVolume = required * particleVolume;
         const fittedResolution = highestFittingGridResolution(partial.gridResolution, GRID_RESOLUTION_MIN, (resolution) => {
-            const fittedCellSize = longestSide / resolution;
-            return flipParticleCountForVolume(acceptedVolume, fittedCellSize, partial.markersPerCell!) <= safeCount;
+            const markerVolume = flipDiscretizationForGrid(partial.grid!, resolution, partial.markersPerCell!).markerVolume;
+            return Math.ceil(acceptedVolume / markerVolume) <= safeCount;
         });
         const requested = required.toLocaleString("en-US");
         const safeAction =
@@ -3562,10 +3563,16 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         controls.setVisiblePhysicsParams(name === "PB-MPM" ? pbmpmParamKeysForMaterial(pbmpmMaterial) : null);
         controls.setMaterial(pbmpmMaterial);
         canvas.dataset.method = methodName;
+        const pageCapacityLimit = name === "FLIP" ? maxFlipPagedGridPagesFor(effectiveGridSettings(), flipGridResolution) : maxPagedGridPages;
+        if (name === "FLIP") {
+            flipPagedGridMaxPages = Math.min(flipPagedGridMaxPages, pageCapacityLimit);
+        } else {
+            mpmPagedGridMaxPages = Math.min(mpmPagedGridMaxPages, pageCapacityLimit);
+        }
         const currentPagedGrid = name === "FLIP" ? flipPagedGrid : mpmPagedGrid;
         const currentPageCapacity = name === "FLIP" ? flipPagedGridMaxPages : mpmPagedGridMaxPages;
         controls.setPagedGrid(currentPagedGrid);
-        controls.setPagedGridMaxPages(currentPageCapacity);
+        controls.setPagedGridMaxPages(currentPageCapacity, pageCapacityLimit);
         controls.setPagedGridStatus("");
         canvas.dataset.activeBlocks = mpmActiveBlocks ? "true" : "false";
         canvas.dataset.pagedGrid = currentPagedGrid ? "true" : "false";
@@ -3625,9 +3632,12 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
 
     function syncGridControls(): void {
         const effectiveGrid = gridSettings ?? defaultGridSettings(methodName, domainScale);
-        const cellSize = cellSizeForPhysicsScale(methodName, physicsScale) * (gridSettings ? 1 : domainScale);
-        const cells = gridCellsForSize(effectiveGrid.size, cellSize);
-        const gridResolution = gridResolutionForScale(methodName, physicsScale, Math.max(...effectiveGrid.size));
+        const flipDiscretization = methodName === "FLIP" ? flipDiscretizationForGrid(effectiveGrid, flipGridResolution) : undefined;
+        const cellSize =
+            flipDiscretization?.dx ??
+            (gridSettings ? fluidSimulationCellSize(methodName, fluidDiscretization(physicsScale)) : cellSizeForPhysicsScale(methodName, physicsScale) * domainScale);
+        const cells = flipDiscretization?.gridDim ?? gridCellsForSize(effectiveGrid.size, cellSize);
+        const gridResolution = flipDiscretization?.gridResolution ?? gridResolutionForScale(methodName, physicsScale, Math.max(...effectiveGrid.size));
         controls.setGridSettings([...effectiveGrid.position], [...effectiveGrid.size], cellSize);
         controls.setGridResolution(gridResolution);
         controls.setMarkersPerCell(flipMarkersPerCell);
@@ -3640,12 +3650,19 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         canvas.dataset.gridResolution = String(gridResolution);
         canvas.dataset.flipMarkersPerCell = String(flipMarkersPerCell);
         canvas.dataset.gridExplicit = String(gridSettings !== undefined);
-        canvas.dataset.physicsParticleSize = String(physicsScale);
+        if (methodName === "FLIP") {
+            delete canvas.dataset.physicsParticleSize;
+        } else {
+            canvas.dataset.physicsParticleSize = String(physicsScale);
+        }
         canvas.dataset.showGridBounds = String(showGridBounds);
         canvas.dataset.showGridBoundsSolid = String(showGridBoundsSolid);
     }
 
     function setPhysicsScale(s: number): void {
+        if (methodName === "FLIP") {
+            return;
+        }
         const [minScale, maxScale] = scaleLimitsForMethod(methodName);
         const nextScale = Math.min(maxScale, Math.max(minScale, Math.round(s * 100) / 100));
         if (nextScale === physicsScale) {
@@ -3663,9 +3680,11 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     }
 
     function setGridResolution(resolution: number): void {
-        const grid = effectiveGridSettings("FLIP");
-        const nextScale = scaleForGridResolution("FLIP", resolution, Math.max(...grid.size));
-        physicsScale = nextScale;
+        const nextResolution = Math.max(GRID_RESOLUTION_MIN, Math.min(GRID_RESOLUTION_MAX, Math.round(resolution)));
+        if (nextResolution === flipGridResolution) {
+            return;
+        }
+        flipGridResolution = nextResolution;
         syncGridControls();
         refreshParticleUsageStatus();
         controls.setGridStatus(flipPendingCapacityStatus());
@@ -3698,9 +3717,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         if (!validGridSettings(next)) {
             return "Grid position must be finite and Grid size must contain positive finite world-space dimensions.";
         }
-        const nextScale = methodName === "FLIP" ? scaleForGridResolution("FLIP", controls.getValues().gridResolution, Math.max(...next.size)) : physicsScale;
         if (methodName !== "FLIP") {
-            const allocationError = gridAllocationError(next, methodName, nextScale);
+            const allocationError = gridAllocationError(next, methodName, physicsScale);
             if (allocationError) {
                 return allocationError;
             }
@@ -3711,10 +3729,9 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         }
         gridSettings = cloneGridSettings(next);
         if (methodName !== "FLIP") {
-            rebuildSims(particleCount, nextScale);
+            rebuildSims(particleCount, physicsScale);
             return;
         }
-        physicsScale = nextScale;
         syncGridControls();
         syncGridBoundsWireframe();
         syncGridGizmo();
@@ -3727,7 +3744,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         if (methodName === "FLIP") {
             flipParticleCapacityRequest = Math.max(1, Math.round(count));
         }
-        particleCount = flipParticleCapacity(count, scale);
+        particleCount = flipParticleCapacity(count);
         physicsScale = scale;
         const previous = { pbf: pbfSim, flip: flipSim, mpm: mpmSim, pbmpm: pbmpmSim };
         if (!preserveFlipState) {
@@ -3740,6 +3757,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         builtGridSettings = gridSettings ? cloneGridSettings(gridSettings) : undefined;
         builtGridMethod = methodName;
         builtPhysicsScale = scale;
+        builtFlipGridResolution = flipGridResolution;
         builtFlipMarkersPerCell = flipMarkersPerCell;
         builtWithGridFloor = importedCollisionActive || activeDemo?.useGridFloor === true;
         builtDomainScale = domainScale; // sims are now built at the current domain scale
@@ -3793,6 +3811,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     const initialValues = controls.getValues();
     const RENDER_DEFAULTS = {
         color: initialValues.color,
+        independentRendering: initialValues.independentRendering,
         half: initialValues.half,
         thicknessDownscale: initialValues.thicknessDownscale,
         absorption: initialValues.absorption,
@@ -3844,6 +3863,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             sinks: flow.sinks,
             initialEmittersFillCapacity: flow.initialEmittersFillCapacity,
             color: sand ? "#c2b280" : RENDER_DEFAULTS.color,
+            independentRendering: RENDER_DEFAULTS.independentRendering,
             half: RENDER_DEFAULTS.half,
             thicknessDownscale: RENDER_DEFAULTS.thicknessDownscale,
             absorption: RENDER_DEFAULTS.absorption,
@@ -3968,12 +3988,13 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             sinks: structuredClone(activeFlow.sinks),
             initialEmittersFillCapacity: activeFlow.initialEmittersFillCapacity,
             color: v.color,
+            independentRendering: v.independentRendering,
             half: v.half,
             thicknessDownscale: v.thicknessDownscale,
             absorption: v.absorption,
             size: v.size,
-            physScale: physicsScale,
-            gridResolution: method === "FLIP" ? controls.getValues().gridResolution : undefined,
+            physScale: method === "FLIP" ? 1 : physicsScale,
+            gridResolution: method === "FLIP" ? flipGridResolution : undefined,
             markersPerCell: method === "FLIP" ? flipMarkersPerCell : undefined,
             grid: gridSettings ? cloneGridSettings(gridSettings) : undefined,
             showGridBounds,
@@ -4019,24 +4040,17 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             throw new Error("Invalid fluid grid: position must be finite and size must be positive.");
         }
         const [minScale, maxScale] = scaleLimitsForMethod(methodName);
-        const resolutionGrid = nextGridSettings ?? defaultGridSettings(methodName, domainScale);
         const nextGridResolution =
             methodName === "FLIP"
-                ? Math.max(
-                      GRID_RESOLUTION_MIN,
-                      Math.min(GRID_RESOLUTION_MAX, Math.round(st.gridResolution ?? gridResolutionForScale("FLIP", st.physScale, Math.max(...resolutionGrid.size))))
-                  )
-                : gridResolutionForScale(methodName, st.physScale, Math.max(...resolutionGrid.size));
-        const nextPhysicsScale =
-            methodName === "FLIP"
-                ? scaleForGridResolution("FLIP", nextGridResolution, Math.max(...resolutionGrid.size))
-                : Math.min(maxScale, Math.max(minScale, Math.round(st.physScale * 100) / 100));
+                ? Math.max(GRID_RESOLUTION_MIN, Math.min(GRID_RESOLUTION_MAX, Math.round(st.gridResolution ?? 160)))
+                : gridResolutionForScale(methodName, st.physScale, Math.max(...(nextGridSettings ?? defaultGridSettings(methodName, domainScale)).size));
+        const nextPhysicsScale = methodName === "FLIP" ? 1 : Math.min(maxScale, Math.max(minScale, Math.round(st.physScale * 100) / 100));
         const nextMarkersPerCell = methodName === "FLIP" ? Math.max(1, Math.min(64, Math.round(st.markersPerCell ?? FLIP_DEFAULT_MARKERS_PER_CELL))) : flipMarkersPerCell;
         const markersPerCellChanged = methodName === "FLIP" && nextMarkersPerCell !== flipMarkersPerCell;
         const pagedMethod = methodName === "MLS-MPM" || methodName === "FLIP";
         const nextPagedGrid = pagedMethod ? (st.pagedGrid ?? false) : methodName === "FLIP" ? flipPagedGrid : mpmPagedGrid;
         const nextActiveBlocks = methodName === "MLS-MPM" ? nextPagedGrid || (st.activeBlocks ?? false) : mpmActiveBlocks;
-        const pageCapacityLimit = methodName === "FLIP" ? maxFlipPagedGridPages : maxPagedGridPages;
+        const pageCapacityLimit = methodName === "FLIP" ? maxFlipPagedGridPagesFor(nextGridSettings ?? effectiveGridSettings(), nextGridResolution) : maxPagedGridPages;
         const defaultPageCapacity = methodName === "FLIP" ? FLIP_DEFAULT_PAGE_CAPACITY : Math.max(1000, Math.round((st.count * 27 * 1.5) / 64000) * 1000);
         const nextPagedGridMaxPages = Math.min(
             pageCapacityLimit,
@@ -4044,10 +4058,16 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         );
         const nextFusedBlockDiscovery = methodName === "MLS-MPM" ? (st.fusedBlockDiscovery ?? false) : mpmFusedBlockDiscovery;
         if (nextGridSettings) {
-            const allocationError = gridAllocationError(nextGridSettings, methodName, nextPhysicsScale, {
-                enabled: methodName === "FLIP" ? nextPagedGrid : flipPagedGrid,
-                maxPages: methodName === "FLIP" ? nextPagedGridMaxPages : flipPagedGridMaxPages,
-            });
+            const allocationError = gridAllocationError(
+                nextGridSettings,
+                methodName,
+                nextPhysicsScale,
+                {
+                    enabled: methodName === "FLIP" ? nextPagedGrid : flipPagedGrid,
+                    maxPages: methodName === "FLIP" ? nextPagedGridMaxPages : flipPagedGridMaxPages,
+                },
+                nextGridResolution
+            );
             if (allocationError) {
                 throw new Error(allocationError);
             }
@@ -4087,6 +4107,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                   ...(st.initialEmittersFillCapacity !== undefined ? { initialEmittersFillCapacity: st.initialEmittersFillCapacity } : {}),
               };
         controls.setColor(st.color);
+        controls.setIndependentRendering(st.independentRendering ?? false);
         controls.setHalf(st.half);
         controls.setThicknessDownscale(st.thicknessDownscale);
         controls.setParticleSize(st.size);
@@ -4136,13 +4157,9 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         if (st.anisoSurfScale !== undefined) {
             controls.setAnisotropySurfScale(st.anisoSurfScale);
         }
-        if (methodName === "FLIP" && nextPagedGrid) {
-            const physics = controls.getPhysicsValues("FLIP");
-            controls.setPhysics({ ...physics, pressureSolver: 0, polygonSurface: 0 });
-        }
         controls.setActiveBlocks(nextActiveBlocks);
         controls.setPagedGrid(nextPagedGrid);
-        controls.setPagedGridMaxPages(nextPagedGridMaxPages);
+        controls.setPagedGridMaxPages(nextPagedGridMaxPages, pageCapacityLimit);
         controls.setPagedGridStatus("");
         canvas.dataset.pagedGridOverflow = "false";
         controls.setFusedBlockDiscovery(nextFusedBlockDiscovery);
@@ -4224,10 +4241,12 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             mpmPagedGridMaxPages = nextPagedGridMaxPages;
         }
         mpmFusedBlockDiscovery = nextFusedBlockDiscovery;
+        const gridResolutionChanged = methodName === "FLIP" && nextGridResolution !== flipGridResolution;
+        flipGridResolution = nextGridResolution;
         flipMarkersPerCell = nextMarkersPerCell;
         const gridChanged = !gridSettingsEqual(nextGridSettings, gridSettings) || !gridSettingsEqual(nextGridSettings, builtGridSettings);
         gridSettings = nextGridSettings;
-        const allocationChanged = methodName === "FLIP" && flipParticleCapacity(st.count, nextPhysicsScale) !== particleCount;
+        const allocationChanged = methodName === "FLIP" && flipParticleCapacity(st.count, activeFlow, nextGridResolution) !== particleCount;
         if (
             st.count !== requestedParticleCount() ||
             allocationChanged ||
@@ -4238,6 +4257,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             builtGridMethod !== methodName ||
             builtWithGridFloor !== (importedCollisionActive || demo.useGridFloor === true) ||
             activeBlocksChanged ||
+            gridResolutionChanged ||
+            (methodName === "FLIP" && nextGridResolution !== builtFlipGridResolution) ||
             markersPerCellChanged ||
             nextMarkersPerCell !== builtFlipMarkersPerCell
         ) {

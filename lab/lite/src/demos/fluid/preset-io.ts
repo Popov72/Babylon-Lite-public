@@ -10,15 +10,7 @@
 
 import type { FluidEmitter, FluidSink } from "babylon-lite";
 import type { DemoStateValue, FluidDomainBounds, PairState } from "./demo.js";
-import {
-    FLIP_DEFAULT_MARKERS_PER_CELL,
-    cellSizeForPhysicsScale,
-    gridPositionForBounds,
-    gridResolutionForScale,
-    gridSizeForBounds,
-    gridWorldSize,
-    scaleForGridResolution,
-} from "./grid-settings.js";
+import { FLIP_DEFAULT_MARKERS_PER_CELL, cellSizeForPhysicsScale, gridPositionForBounds, gridResolutionForScale, gridSizeForBounds, gridWorldSize } from "./grid-settings.js";
 
 function truncateToThreeDecimals(value: number): number {
     return Math.trunc(value * 1000) / 1000;
@@ -62,7 +54,8 @@ export interface FluidExportJson {
     pagedGridMaxPages?: number;
     /** MLS-MPM histogram-integrated active-block discovery. Optional; defaults off. */
     fusedBlockDiscovery?: boolean;
-    physicsParticleSize: number;
+    /** Legacy/non-FLIP particle-size scale. FLIP derives discretization from gridResolution. */
+    physicsParticleSize?: number;
     /** World-space center and exact world-space dimensions of the simulation grid. */
     gridPosition?: [number, number, number];
     gridSize?: [number, number, number];
@@ -203,11 +196,11 @@ export function exportJsonFromPairState(demo: string, method: string, ps: PairSt
         ...(ps.pagedGrid !== undefined ? { pagedGrid: ps.pagedGrid } : {}),
         ...(ps.pagedGridMaxPages !== undefined ? { pagedGridMaxPages: ps.pagedGridMaxPages } : {}),
         ...(ps.fusedBlockDiscovery !== undefined ? { fusedBlockDiscovery: ps.fusedBlockDiscovery } : {}),
-        physicsParticleSize: ps.physScale,
+        ...(method !== "FLIP" ? { physicsParticleSize: ps.physScale } : {}),
         ...(ps.grid ? { gridPosition: [...ps.grid.position], gridSize: [...ps.grid.size] } : {}),
         ...(method === "FLIP"
             ? {
-                  gridResolution: ps.gridResolution ?? gridResolutionForScale("FLIP", ps.physScale, ps.grid ? Math.max(...ps.grid.size) : undefined),
+                  gridResolution: ps.gridResolution ?? 160,
                   markersPerCell: ps.markersPerCell ?? FLIP_DEFAULT_MARKERS_PER_CELL,
               }
             : {}),
@@ -286,7 +279,7 @@ export function presetFromExportJson(j: FluidExportJson): Partial<PairState> {
     const hasGridDefinition = j.gridPosition !== undefined || j.gridSize !== undefined || j.gridCells !== undefined || j.domain !== undefined || j.gridResolution !== undefined;
     const meshScale = j.demoParams.meshScale ?? 1;
     const legacyParticleScale = hasGridDefinition && (j.formatVersion ?? 0) < 3 && j.meta.demo === "marbleTower" ? meshScale : 1;
-    const legacyPhysScale = j.physicsParticleSize * legacyParticleScale;
+    const legacyPhysScale = (j.physicsParticleSize ?? 1) * legacyParticleScale;
     const legacyBounds: FluidDomainBounds =
         j.domain ??
         (j.meta.method === "PBF" || j.meta.method === "FLIP"
@@ -296,7 +289,7 @@ export function presetFromExportJson(j: FluidExportJson): Partial<PairState> {
     const legacyCellSize = cellSizeForPhysicsScale(j.meta.method, legacyPhysScale);
     const gridSize: [number, number, number] = j.gridSize ? [...j.gridSize] : j.gridCells ? gridWorldSize(j.gridCells, legacyCellSize) : gridSizeForBounds(legacyBounds);
     const currentFlipResolution = j.meta.method === "FLIP" && (j.formatVersion ?? 0) >= 10 && j.gridResolution !== undefined;
-    const physScale = currentFlipResolution ? scaleForGridResolution("FLIP", j.gridResolution!, Math.max(...gridSize)) : legacyPhysScale;
+    const physScale = currentFlipResolution ? 1 : legacyPhysScale;
     const localizeFlow = <T extends FluidEmitter | FluidSink>(objects: T[] | undefined): T[] | undefined => {
         if (!objects) {
             return undefined;

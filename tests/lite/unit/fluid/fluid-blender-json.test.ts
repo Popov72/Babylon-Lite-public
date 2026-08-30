@@ -258,6 +258,7 @@ describe("Blender fluid JSON", () => {
         preset.meta.method = "FLIP";
         preset.gridResolution = 160;
         preset.markersPerCell = 8;
+        delete preset.physicsParticleSize;
         preset.physics = {
             gravity: 9.8,
             flipRatio: 0.95,
@@ -297,6 +298,7 @@ describe("Blender fluid JSON", () => {
         expect(parsed.physics).toEqual(preset.physics);
         expect(parsed.gridResolution).toBe(160);
         expect(parsed.markersPerCell).toBe(8);
+        expect(parsed.physicsParticleSize).toBeUndefined();
     });
 
     it("parses advanced FLIP whitewater controls", () => {

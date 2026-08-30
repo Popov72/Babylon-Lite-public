@@ -702,7 +702,7 @@ def default_preset(scene, grid_position, grid_size, emitters, sinks):
         "activeBlocks": False,
         "pagedGrid": False,
         "fusedBlockDiscovery": False,
-        "physicsParticleSize": derived["particle_size"],
+        **({"physicsParticleSize": derived["particle_size"]} if derived["method"] != "FLIP" else {}),
         "gridPosition": grid_position,
         "gridSize": grid_size,
         **(

@@ -377,15 +377,31 @@ async function main() {
 
     const coarsePolygonSim = createFlipSim(engine, invariantOptions);
     const finePolygonSim = createFlipSim(engine, invariantOptions);
+    const pagedPolygonSim = createFlipSim(engine, {
+        ...invariantOptions,
+        boundsMax: [12, 8, 8],
+        gridDim: [12, 8, 8],
+        pagedGrid: true,
+        pagedGridMaxPages: 8,
+    });
     coarsePolygonSim.setParam("polygonSurface", 1);
     finePolygonSim.setParam("polygonSurface", 1);
+    pagedPolygonSim.setParam("polygonSurface", 1);
     finePolygonSim.setParam("polygonReconstructionMultiplier", 2);
     await step(engine, coarsePolygonSim);
     await step(engine, finePolygonSim);
+    await step(engine, pagedPolygonSim);
+    await step(engine, pagedPolygonSim);
     const coarseSdf = await readBufferFloats(engine._device, coarsePolygonSim.polygonSurface.liquidSdfBuffer);
     const fineSdf = await readBufferFloats(engine._device, finePolygonSim.polygonSurface.liquidSdfBuffer);
     const coarseDim = coarsePolygonSim.polygonSurface.gridDimensions;
     const fineDim = finePolygonSim.polygonSurface.gridDimensions;
+    const pagedPolygonSdf = await readBufferFloats(engine._device, pagedPolygonSim.polygonSurface.liquidSdfBuffer);
+    for (let attempt = 0; attempt < 100 && pagedPolygonSim.polygonSurface?.triangleCount === undefined; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    const pagedPolygonIndexCount = (pagedPolygonSim.polygonSurface?.triangleCount ?? 0) * 3;
+    const pagedPolygonSdfFinite = pagedPolygonSdf.every(Number.isFinite);
     const coarseAt = (x, y, z) => {
         const qx = Math.min(coarseDim[0] - 1, Math.max(0, x));
         const qy = Math.min(coarseDim[1] - 1, Math.max(0, y));
@@ -466,6 +482,7 @@ async function main() {
     invariantPolygonSim.dispose();
     coarsePolygonSim.dispose();
     finePolygonSim.dispose();
+    pagedPolygonSim.dispose();
     denseCountTracker.dispose();
     activeCountTracker.dispose();
     countDiffuse.destroy();
@@ -499,6 +516,8 @@ async function main() {
         polygonReconstructionMultiplier,
         polygonIndexCount,
         polygonSdfUpsampleMaxError,
+        pagedPolygonIndexCount,
+        pagedPolygonSdfFinite,
         denseCounts,
         activeCounts,
     });
@@ -539,6 +558,8 @@ main().catch((error) => { canvas.dataset.error = error?.message ?? String(error)
         polygonReconstructionMultiplier: number;
         polygonIndexCount: number;
         polygonSdfUpsampleMaxError: number;
+        pagedPolygonIndexCount: number;
+        pagedPolygonSdfFinite: boolean;
         denseCounts: { total: number; spray: number; foam: number; bubble: number; capacity: number };
         activeCounts: { total: number; spray: number; foam: number; bubble: number; capacity: number };
     };
@@ -583,6 +604,9 @@ main().catch((error) => { canvas.dataset.error = error?.message ?? String(error)
     expect(result.polygonIndexCount).toBeGreaterThan(0);
     expect(result.polygonIndexCount % 3).toBe(0);
     expect(result.polygonSdfUpsampleMaxError).toBeLessThan(1e-5);
+    expect(result.pagedPolygonIndexCount).toBeGreaterThan(0);
+    expect(result.pagedPolygonIndexCount % 3).toBe(0);
+    expect(result.pagedPolygonSdfFinite).toBe(true);
     expect(result.denseCounts).toEqual({ total: 4, spray: 1, foam: 2, bubble: 1, capacity: 8 });
     expect(result.activeCounts).toEqual(result.denseCounts);
 });

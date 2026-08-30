@@ -176,9 +176,9 @@ function multigridDimensions(gridDim: readonly [number, number, number]): Array<
     return dimensions;
 }
 
-function estimateMultigridGpuBytes(gridDim: readonly [number, number, number]): number {
+function estimateMultigridGpuBytes(gridDim: readonly [number, number, number], fineStorageCells?: number): number {
     return multigridDimensions(gridDim).reduce((bytes, dim, index) => {
-        const count = dim[0] * dim[1] * dim[2];
+        const count = index === 0 && fineStorageCells !== undefined ? fineStorageCells : dim[0] * dim[1] * dim[2];
         return bytes + count * (index === 0 ? 12 : 24) + MULTIGRID_PARAMS_BYTES;
     }, 0);
 }
@@ -217,7 +217,7 @@ export function estimateFlipGpuBytes(
     const cellBytes = storedCells * (4 + 4 + 4 + 4 + 4 + 16 + 4);
     const fixedBytes = PARAMS_BYTES + 32 + 4 + 2 * 4;
     const pressureDiagnosticBytes = quality.pressureDiagnostics ? storedCells * 4 + PRESSURE_DIAGNOSTIC_BYTES * 3 : 0;
-    const multigridBytes = pressureSolver === "multigrid" && !paged ? estimateMultigridGpuBytes(dim) : 0;
+    const multigridBytes = pressureSolver === "multigrid" ? estimateMultigridGpuBytes(dim, paged ? storedCells : undefined) : 0;
     const polygonMultiplier = Math.round(Math.min(2, Math.max(1, quality.polygonReconstructionMultiplier ?? 1)) * 4) / 4;
     const liquidSdfBytes = quality.liquidSdf || quality.particleSheeting || quality.polygonSurface ? storedCells * 8 : 0;
     const solidFaceBytes = quality.fractionalSolids ? storedFaces * 8 : 0;
@@ -233,7 +233,7 @@ export function estimateFlipGpuBytes(
           SURFACE_INDIRECT_BYTES * 2 +
           SURFACE_COUNT_READBACK_BYTES +
           PARAMS_BYTES +
-          polygonCellCount * (polygonMultiplier > 1 ? 8 : 4)
+          polygonCellCount * (polygonMultiplier > 1 || paged ? 8 : 4)
         : 0;
     const pageBlockCount = Math.ceil(dim[0] / FLIP_PAGE_SIZE) * Math.ceil(dim[1] / FLIP_PAGE_SIZE) * Math.ceil(dim[2] / FLIP_PAGE_SIZE);
     const pageLookupWords = 2 + pageBlockCount + pageCapacity;
@@ -598,6 +598,10 @@ fn inCellGrid(c: vec3<i32>, p: Params) -> bool {
     return all(c >= vec3<i32>(0)) && all(c < gridDim(p));
 }
 
+fn storageCellExists(c: vec3<i32>, p: Params) -> bool {
+    return inCellGrid(c, p);
+}
+
 fn uDim(p: Params) -> vec3<i32> {
     let d = gridDim(p);
     return vec3<i32>(d.x + 1, d.y, d.z);
@@ -846,7 +850,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
         for (var y = -1; y <= 1; y = y + 1) {
             for (var x = -1; x <= 1; x = x + 1) {
                 let c = particleCell + vec3<i32>(x, y, z);
-                if (!inCellGrid(c, p)) {
+                if (!storageCellExists(c, p)) {
                     continue;
                 }
                 let center = p.originDx.xyz + (vec3<f32>(c) + 0.5) * p.originDx.w;
@@ -930,7 +934,41 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
     sdfOut[i] = select(distance, -distance, kind == CELL_FLUID);
 }`;
 
-const POLYGON_SDF_UPSAMPLE_WGSL = /* wgsl */ `
+function buildPolygonSdfUpsampleWgsl(layout: FlipPageLayout | null): string {
+    const pagedAddressing = layout
+        ? /* wgsl */ `
+@group(1) @binding(0) var polygonPageLookup: texture_2d<u32>;
+const POLYGON_PAGE_SIZE: u32 = ${FLIP_PAGE_SIZE}u;
+const POLYGON_PAGE_CELLS: u32 = ${FLIP_PAGE_CELLS}u;
+const POLYGON_PAGE_BLOCK_DIM: vec3<u32> = vec3<u32>(${layout.blockDim[0]}u, ${layout.blockDim[1]}u, ${layout.blockDim[2]}u);
+const POLYGON_PAGE_MAP_OFFSET: u32 = 2u;
+const POLYGON_PAGE_LOOKUP_WIDTH: u32 = ${layout.lookupWidth}u;
+
+fn polygonPageWord(index: u32) -> u32 {
+    return textureLoad(polygonPageLookup, vec2<i32>(i32(index % POLYGON_PAGE_LOOKUP_WIDTH), i32(index / POLYGON_PAGE_LOOKUP_WIDTH)), 0).x;
+}
+
+fn coarseAt(c: vec3<i32>) -> f32 {
+    let d = coarseDim();
+    let q = clamp(c, vec3<i32>(0), d - vec3<i32>(1));
+    let cell = vec3<u32>(q);
+    let block = cell / vec3<u32>(POLYGON_PAGE_SIZE);
+    let blockIndex = block.x + POLYGON_PAGE_BLOCK_DIM.x * (block.y + POLYGON_PAGE_BLOCK_DIM.y * block.z);
+    let page = polygonPageWord(POLYGON_PAGE_MAP_OFFSET + blockIndex);
+    if (page == 0u) {
+        return f32(${LIQUID_SDF_LAYERS}) * p.originDx.w * p.solve.w;
+    }
+    let local = cell % vec3<u32>(POLYGON_PAGE_SIZE);
+    let localIndex = local.x + POLYGON_PAGE_SIZE * (local.y + POLYGON_PAGE_SIZE * local.z);
+    return coarseSdf[(page - 1u) * POLYGON_PAGE_CELLS + localIndex];
+}`
+        : /* wgsl */ `
+fn coarseAt(c: vec3<i32>) -> f32 {
+    let d = coarseDim();
+    let q = clamp(c, vec3<i32>(0), d - vec3<i32>(1));
+    return coarseSdf[u32(q.x + d.x * (q.y + d.y * q.z))];
+}`;
+    return /* wgsl */ `
 ${COMMON_WGSL}
 @group(0) @binding(0) var<storage, read> coarseSdf: array<f32>;
 @group(0) @binding(1) var<storage, read_write> fineSdf: array<f32>;
@@ -940,11 +978,7 @@ fn coarseDim() -> vec3<i32> {
     return vec3<i32>(p.solve.xyz);
 }
 
-fn coarseAt(c: vec3<i32>) -> f32 {
-    let d = coarseDim();
-    let q = clamp(c, vec3<i32>(0), d - vec3<i32>(1));
-    return coarseSdf[u32(q.x + d.x * (q.y + d.y * q.z))];
-}
+${pagedAddressing}
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) groups: vec3<u32>) {
@@ -969,6 +1003,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
     fineSdf[i] = mix(z0, z1, weight.z);
 }
 `;
+}
 
 function buildSolidFaceGeometryWgsl(scene: SceneSdfSpec | null): string {
     const sceneDecl = scene
@@ -1870,6 +1905,165 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
     }
     finePressure[i] += correction * ${MULTIGRID_CORRECTION_DAMPING};
 }`;
+
+function buildPagedMultigridAddressingWgsl(layout: FlipPageLayout): string {
+    const mapOffset = 2;
+    const coordOffset = mapOffset + layout.numBlocks;
+    return /* wgsl */ `
+@group(1) @binding(0) var pageLookup: texture_2d<u32>;
+const PAGE_SIZE: u32 = ${FLIP_PAGE_SIZE}u;
+const PAGE_CELLS: u32 = ${FLIP_PAGE_CELLS}u;
+const PAGE_BLOCK_DIM: vec3<u32> = vec3<u32>(${layout.blockDim[0]}u, ${layout.blockDim[1]}u, ${layout.blockDim[2]}u);
+const PAGE_MAP_OFFSET: u32 = ${mapOffset}u;
+const PAGE_COORD_OFFSET: u32 = ${coordOffset}u;
+const PAGE_STORAGE_CELLS: u32 = ${layout.storageCells}u;
+const PAGE_LOOKUP_WIDTH: u32 = ${layout.lookupWidth}u;
+
+fn pageWord(index: u32) -> u32 {
+    return textureLoad(pageLookup, vec2<i32>(i32(index % PAGE_LOOKUP_WIDTH), i32(index / PAGE_LOOKUP_WIDTH)), 0).x;
+}
+
+fn pagedFineIndex(c: vec3<i32>, d: vec3<i32>) -> u32 {
+    if (!inGrid(c, d)) {
+        return PAGE_STORAGE_CELLS;
+    }
+    let cell = vec3<u32>(c);
+    let block = cell / vec3<u32>(PAGE_SIZE);
+    let blockIndex = block.x + PAGE_BLOCK_DIM.x * (block.y + PAGE_BLOCK_DIM.y * block.z);
+    let page = pageWord(PAGE_MAP_OFFSET + blockIndex);
+    if (page == 0u) {
+        return PAGE_STORAGE_CELLS;
+    }
+    let local = cell % vec3<u32>(PAGE_SIZE);
+    let localIndex = local.x + PAGE_SIZE * (local.y + PAGE_SIZE * local.z);
+    return (page - 1u) * PAGE_CELLS + localIndex;
+}
+
+fn pagedFineCoord(index: u32) -> vec3<i32> {
+    let page = index / PAGE_CELLS;
+    let localIndex = index % PAGE_CELLS;
+    let blockIndex = pageWord(PAGE_COORD_OFFSET + page);
+    let block = vec3<u32>(
+        blockIndex % PAGE_BLOCK_DIM.x,
+        (blockIndex / PAGE_BLOCK_DIM.x) % PAGE_BLOCK_DIM.y,
+        blockIndex / (PAGE_BLOCK_DIM.x * PAGE_BLOCK_DIM.y)
+    );
+    let local = vec3<u32>(
+        localIndex % PAGE_SIZE,
+        (localIndex / PAGE_SIZE) % PAGE_SIZE,
+        localIndex / (PAGE_SIZE * PAGE_SIZE)
+    );
+    return vec3<i32>(block * PAGE_SIZE + local);
+}
+`;
+}
+
+function buildPagedMultigridRestrictWgsl(layout: FlipPageLayout): string {
+    return /* wgsl */ `
+${MULTIGRID_COMMON_WGSL}
+${buildPagedMultigridAddressingWgsl(layout)}
+@group(0) @binding(0) var<storage, read> fineResidual: array<f32>;
+@group(0) @binding(1) var<storage, read> fineTypes: array<u32>;
+@group(0) @binding(2) var<storage, read_write> coarseRhs: array<f32>;
+@group(0) @binding(3) var<storage, read_write> coarseTypes: array<u32>;
+@group(0) @binding(4) var<storage, read_write> coarsePressureA: array<f32>;
+@group(0) @binding(5) var<storage, read_write> coarsePressureB: array<f32>;
+@group(0) @binding(6) var<storage, read> fineFraction: array<f32>;
+@group(0) @binding(7) var<storage, read_write> coarseFraction: array<f32>;
+@group(0) @binding(8) var<uniform> p: MultigridParams;
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) groups: vec3<u32>) {
+    let i = gid.x + gid.y * groups.x * ${WORKGROUP_SIZE}u;
+    if (i >= arrayLength(&coarseRhs)) {
+        return;
+    }
+    coarsePressureA[i] = 0.0;
+    coarsePressureB[i] = 0.0;
+    let coarseCoord = gridCoord(i, gridDim(p));
+    let fineBase = coarseCoord * 2;
+    let fineDim = fineGridDim(p);
+    var residualSum = 0.0;
+    var fractionSum = 0.0;
+    var childCount = 0u;
+    var solidCount = 0u;
+    for (var z = 0; z < 2; z = z + 1) {
+        for (var y = 0; y < 2; y = y + 1) {
+            for (var x = 0; x < 2; x = x + 1) {
+                let c = fineBase + vec3<i32>(x, y, z);
+                if (!inGrid(c, fineDim)) {
+                    continue;
+                }
+                let fineIndex = pagedFineIndex(c, fineDim);
+                let cellKind = fineTypes[fineIndex];
+                if (cellKind == CELL_FLUID) {
+                    let fraction = fineFraction[fineIndex];
+                    fractionSum += fraction;
+                    residualSum += fraction * fineResidual[fineIndex];
+                } else if (cellKind == CELL_SOLID) {
+                    solidCount += 1u;
+                }
+                childCount += 1u;
+            }
+        }
+    }
+    coarseFraction[i] = fractionSum / max(1.0, f32(childCount));
+    if (fractionSum > 1.0e-4) {
+        coarseTypes[i] = CELL_FLUID;
+        coarseRhs[i] = 4.0 * residualSum / max(1.0, f32(childCount));
+    } else {
+        coarseTypes[i] = select(CELL_AIR, CELL_SOLID, solidCount > 0u);
+        coarseRhs[i] = 0.0;
+    }
+}`;
+}
+
+function buildPagedMultigridProlongateWgsl(layout: FlipPageLayout): string {
+    return /* wgsl */ `
+${MULTIGRID_COMMON_WGSL}
+${buildPagedMultigridAddressingWgsl(layout)}
+@group(0) @binding(0) var<storage, read> coarsePressure: array<f32>;
+@group(0) @binding(1) var<storage, read> coarseTypes: array<u32>;
+@group(0) @binding(2) var<storage, read_write> finePressure: array<f32>;
+@group(0) @binding(3) var<storage, read> fineTypes: array<u32>;
+@group(0) @binding(4) var<uniform> p: MultigridParams;
+
+fn coarsePressureAt(c: vec3<i32>) -> f32 {
+    let d = gridDim(p);
+    if (!inGrid(c, d)) {
+        return 0.0;
+    }
+    let i = gridIndex(c, d);
+    return select(0.0, coarsePressure[i], coarseTypes[i] == CELL_FLUID);
+}
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) groups: vec3<u32>) {
+    let i = gid.x + gid.y * groups.x * ${WORKGROUP_SIZE}u;
+    if (i >= arrayLength(&finePressure) || fineTypes[i] != CELL_FLUID) {
+        return;
+    }
+    let fineCoord = pagedFineCoord(i);
+    if (!inGrid(fineCoord, fineGridDim(p))) {
+        finePressure[i] = 0.0;
+        return;
+    }
+    let coarsePosition = (vec3<f32>(fineCoord) + 0.5) * 0.5 - 0.5;
+    let base = vec3<i32>(floor(coarsePosition));
+    let fraction = coarsePosition - floor(coarsePosition);
+    var correction = 0.0;
+    for (var z = 0; z < 2; z = z + 1) {
+        for (var y = 0; y < 2; y = y + 1) {
+            for (var x = 0; x < 2; x = x + 1) {
+                let offset = vec3<i32>(x, y, z);
+                let weightAxis = select(vec3<f32>(1.0) - fraction, fraction, offset == vec3<i32>(1));
+                correction += coarsePressureAt(base + offset) * weightAxis.x * weightAxis.y * weightAxis.z;
+            }
+        }
+    }
+    finePressure[i] += correction * ${MULTIGRID_CORRECTION_DAMPING};
+}`;
+}
 
 function buildProjectWgsl(ghostFluid = false, fractionalSolids = false): string {
     return /* wgsl */ `
@@ -3093,7 +3287,7 @@ fn sampleSurface(world: vec3<f32>) -> vec4<f32> {
         for (var y = 0; y < 2; y = y + 1) {
             for (var x = 0; x < 2; x = x + 1) {
                 let c = base + vec3<i32>(x, y, z);
-                if (!inCellGrid(c, p)) {
+                if (!storageCellExists(c, p)) {
                     continue;
                 }
                 let q = vec3<f32>(f32(x), f32(y), f32(z));
@@ -3114,7 +3308,7 @@ fn sampleCurvature(world: vec3<f32>) -> f32 {
         for (var y = 0; y < 2; y = y + 1) {
             for (var x = 0; x < 2; x = x + 1) {
                 let c = base + vec3<i32>(x, y, z);
-                if (!inCellGrid(c, p)) {
+                if (!storageCellExists(c, p)) {
                     continue;
                 }
                 let q = vec3<f32>(f32(x), f32(y), f32(z));
@@ -3128,7 +3322,7 @@ fn sampleCurvature(world: vec3<f32>) -> f32 {
 
 fn faceValue(kind: u32, c: vec3<i32>) -> f32 {
     let d = faceGridDim(kind, p);
-    if (any(c < vec3<i32>(0)) || any(c >= d)) {
+    if (any(c < vec3<i32>(0)) || any(c >= d) || !storageCellExists(c, p)) {
         return 0.0;
     }
     let sample = faceVelocity[globalFaceIndex(kind, c, p)];
@@ -3136,7 +3330,7 @@ fn faceValue(kind: u32, c: vec3<i32>) -> f32 {
 }
 
 fn cellVelocity(c: vec3<i32>) -> vec3<f32> {
-    if (!inCellGrid(c, p)) {
+    if (!storageCellExists(c, p)) {
         return vec3<f32>(0.0);
     }
     return 0.5 * vec3<f32>(
@@ -3271,7 +3465,7 @@ fn sampleComponent(world: vec3<f32>, kind: u32) -> f32 {
         for (var y = 0; y < 2; y = y + 1) {
             for (var x = 0; x < 2; x = x + 1) {
                 let c = base + vec3<i32>(x, y, z);
-                if (any(c < vec3<i32>(0)) || any(c >= d)) {
+                if (any(c < vec3<i32>(0)) || any(c >= d) || !storageCellExists(c, p)) {
                     continue;
                 }
                 let q = vec3<f32>(f32(x), f32(y), f32(z));
@@ -3301,7 +3495,7 @@ fn sampleSurface(world: vec3<f32>) -> vec4<f32> {
         for (var y = 0; y < 2; y = y + 1) {
             for (var x = 0; x < 2; x = x + 1) {
                 let c = base + vec3<i32>(x, y, z);
-                if (!inCellGrid(c, p)) {
+                if (!storageCellExists(c, p)) {
                     continue;
                 }
                 let q = vec3<f32>(f32(x), f32(y), f32(z));
@@ -3328,7 +3522,7 @@ fn sampleFoamLayer(world: vec3<f32>) -> vec4<f32> {
             continue;
         }
         let candidateCell = cell + vec3<i32>(0, layer, 0);
-        if (!inCellGrid(candidateCell, p)) {
+        if (!storageCellExists(candidateCell, p)) {
             continue;
         }
         var candidate = normals[cellIndex(candidateCell, p)];
@@ -3359,8 +3553,10 @@ ${slotLookup}
         return;
     }
     let cell = clamp(vec3<i32>(floor((position - p.originDx.xyz) / p.originDx.w)), vec3<i32>(0), gridDim(p) - vec3<i32>(1));
-    let cellId = cellIndex(cell, p);
-    let occupancy = min(f32(atomicLoad(&cellMarks[cellId])) / max(1.0, f32(p.counts.y)), 1.0);
+    var occupancy = 0.0;
+    if (storageCellExists(cell, p)) {
+        occupancy = min(f32(atomicLoad(&cellMarks[cellIndex(cell, p)])) / max(1.0, f32(p.counts.y)), 1.0);
+    }
     let surface = sampleFoamLayer(position);
     let surfaceStrength = surface.w * p.originDx.w;
     let outward = -safeNormal(surface.xyz, vec3<f32>(0.0, 1.0, 0.0));
@@ -3528,8 +3724,9 @@ const PAGE_CAPACITY: u32 = ${layout.maxPages}u;
 
 fn writeDispatch(offset: u32, itemCount: u32) {
     let groups = (itemCount + ${WORKGROUP_SIZE - 1}u) / ${WORKGROUP_SIZE}u;
-    dispatchArgs[offset] = min(groups, ${MAX_WORKGROUPS}u);
-    dispatchArgs[offset + 1u] = (groups + ${MAX_WORKGROUPS - 1}u) / ${MAX_WORKGROUPS}u;
+    let rows = max(1u, (groups + ${MAX_WORKGROUPS - 1}u) / ${MAX_WORKGROUPS}u);
+    dispatchArgs[offset] = (groups + rows - 1u) / rows;
+    dispatchArgs[offset + 1u] = rows;
     dispatchArgs[offset + 2u] = 1u;
 }
 
@@ -3575,8 +3772,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
 }`;
 }
 
-function pagedFlipWgsl(code: string, layout: FlipPageLayout): string {
-    if (!code.includes("struct Params {")) {
+function replaceWgslFunction(source: string, name: string, nextName: string, replacement: string): string {
+    const start = source.indexOf(`fn ${name}`);
+    const end = source.indexOf(`fn ${nextName}`, start);
+    if (start === -1 || end === -1) {
+        throw new Error(`[FLIP] Could not rewrite WGSL function ${name} for paged storage.`);
+    }
+    return `${source.slice(0, start)}${replacement}\n\n${source.slice(end)}`;
+}
+
+export function rewriteFlipWgslForPagedStorage(code: string, layout: FlipPageLayout): string {
+    if (!/\bstruct\s+Params\s*\{/.test(code)) {
         return code;
     }
     const mapOffset = 2;
@@ -3626,11 +3832,10 @@ fn flipPageCellCoord(index: u32) -> vec3<i32> {
 
 const FIXED_POINT:`
     );
-    source = source.replace(
-        `fn cellIndex(c: vec3<i32>, p: Params) -> u32 {
-    let d = gridDim(p);
-    return u32(c.x + d.x * (c.y + d.y * c.z));
-}`,
+    source = replaceWgslFunction(
+        source,
+        "cellIndex",
+        "inCellGrid",
         `fn cellIndex(c: vec3<i32>, p: Params) -> u32 {
     if (!inCellGrid(c, p)) {
         return FLIP_PAGE_STORAGE_CELLS;
@@ -3642,24 +3847,29 @@ const FIXED_POINT:`
     return (page - 1u) * FLIP_PAGE_CELLS_U + flipPageLocalIndex(c);
 }`
     );
-    source = source.replace(
-        `fn totalFaceCount(p: Params) -> u32 {
-    return uCount(p) + vCount(p) + faceCount(wDim(p));
-}`,
+    source = replaceWgslFunction(
+        source,
+        "storageCellExists",
+        "uDim",
+        `fn storageCellExists(c: vec3<i32>, p: Params) -> bool {
+    if (!inCellGrid(c, p)) {
+        return false;
+    }
+    return flipPageWord(FLIP_PAGE_MAP_OFFSET + flipPageBlockIndex(c)) != 0u;
+}`
+    );
+    source = replaceWgslFunction(
+        source,
+        "totalFaceCount",
+        "localFaceIndex",
         `fn totalFaceCount(p: Params) -> u32 {
     return FLIP_PAGE_STORAGE_FACES;
 }`
     );
-    source = source.replace(
-        `fn globalFaceIndex(kind: u32, c: vec3<i32>, p: Params) -> u32 {
-    if (kind == FACE_U) {
-        return localFaceIndex(c, uDim(p));
-    }
-    if (kind == FACE_V) {
-        return uCount(p) + localFaceIndex(c, vDim(p));
-    }
-    return uCount(p) + vCount(p) + localFaceIndex(c, wDim(p));
-}`,
+    source = replaceWgslFunction(
+        source,
+        "globalFaceIndex",
+        "faceCoord",
         `fn globalFaceIndex(kind: u32, c: vec3<i32>, p: Params) -> u32 {
     if (!inCellGrid(c, p)) {
         return FLIP_PAGE_STORAGE_FACES;
@@ -3672,50 +3882,33 @@ const FIXED_POINT:`
     return cell * 3u + kind;
 }`
     );
-    source = source.replace(
-        `fn faceCoord(localIndex: u32, d: vec3<i32>) -> vec3<i32> {
-    let x = i32(localIndex % u32(d.x));
-    let yz = i32(localIndex / u32(d.x));
-    let y = yz % d.y;
-    return vec3<i32>(x, y, yz / d.y);
-}`,
+    source = replaceWgslFunction(
+        source,
+        "faceCoord",
+        "faceKind",
         `fn faceCoord(localIndex: u32, d: vec3<i32>) -> vec3<i32> {
     return flipPageCellCoord(localIndex);
 }`
     );
-    source = source.replace(
-        `fn faceKind(globalIndex: u32, p: Params) -> u32 {
-    if (globalIndex < uCount(p)) {
-        return FACE_U;
-    }
-    if (globalIndex < uCount(p) + vCount(p)) {
-        return FACE_V;
-    }
-    return FACE_W;
-}`,
+    source = replaceWgslFunction(
+        source,
+        "faceKind",
+        "faceLocalIndex",
         `fn faceKind(globalIndex: u32, p: Params) -> u32 {
     return globalIndex % 3u;
 }`
     );
-    source = source.replace(
-        `fn faceLocalIndex(globalIndex: u32, kind: u32, p: Params) -> u32 {
-    if (kind == FACE_U) {
-        return globalIndex;
-    }
-    if (kind == FACE_V) {
-        return globalIndex - uCount(p);
-    }
-    return globalIndex - uCount(p) - vCount(p);
-}`,
+    source = replaceWgslFunction(
+        source,
+        "faceLocalIndex",
+        "faceGridDim",
         `fn faceLocalIndex(globalIndex: u32, kind: u32, p: Params) -> u32 {
     return globalIndex / 3u;
 }`
     );
     if (source.includes("fn scatterFace(")) {
         source = source.replace(
-            `if (any(c < vec3<i32>(0)) || any(c >= d)) {
-                    continue;
-                }`,
+            /if\s*\(\s*any\s*\(\s*c\s*<\s*vec3<i32>\s*\(\s*0\s*\)\s*\)\s*\|\|\s*any\s*\(\s*c\s*>=\s*d\s*\)\s*\)\s*\{\s*continue\s*;\s*\}/,
             `if (any(c < vec3<i32>(0)) || any(c >= d)
                     || (kind == FACE_U && c.x == d.x - 1)
                     || (kind == FACE_V && c.y == d.y - 1)
@@ -3846,13 +4039,6 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
     let simProfiler: FluidProfiler | null = null;
     let pressureCurrentIsA = true;
     let latestPressureDiagnostics: FluidPressureDiagnostics | undefined;
-
-    if (pagedGrid && pressureSolver === "multigrid") {
-        throw new RangeError("[FLIP] Paged grid currently supports the Weighted Jacobi pressure solver only.");
-    }
-    if (pagedGrid && polygonSurfaceEnabled) {
-        throw new RangeError("[FLIP] Paged grid does not yet support polygon-surface reconstruction; use screen-space rendering.");
-    }
 
     function usesLiquidSdf(): boolean {
         return liquidSdfEnabled || particleSheetingEnabled;
@@ -4288,10 +4474,15 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
         });
     }
     function pipeline(label: string, code: string): GPUComputePipeline {
-        const pipe = rawPipeline(label, pageLayout ? pagedFlipWgsl(code, pageLayout) : code);
-        if (pageLayout && code.includes("struct Params {")) {
+        const pipe = rawPipeline(label, pageLayout ? rewriteFlipWgslForPagedStorage(code, pageLayout) : code);
+        if (pageLayout && /\bstruct\s+Params\s*\{/.test(code)) {
             pagedPipelines.add(pipe);
         }
+        return pipe;
+    }
+    function pagedRawPipeline(label: string, code: string): GPUComputePipeline {
+        const pipe = rawPipeline(label, code);
+        pagedPipelines.add(pipe);
         return pipe;
     }
     function pageLookupBindGroup(pipe: GPUComputePipeline): GPUBindGroup | null {
@@ -4371,6 +4562,8 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
     let multigridFineResidualPipeline: GPUComputePipeline | null = null;
     const multigridRestrictPipeline = pipeline("flip-multigrid-restrict", MULTIGRID_RESTRICT_WGSL);
     const multigridProlongatePipeline = pipeline("flip-multigrid-prolongate", MULTIGRID_PROLONGATE_WGSL);
+    const multigridPagedRestrictPipeline = pageLayout ? pagedRawPipeline("flip-multigrid-paged-restrict", buildPagedMultigridRestrictWgsl(pageLayout)) : null;
+    const multigridPagedProlongatePipeline = pageLayout ? pagedRawPipeline("flip-multigrid-paged-prolongate", buildPagedMultigridProlongateWgsl(pageLayout)) : null;
     let projectPipeline = pipeline("flip-project", buildProjectWgsl(usesLiquidSdf() && ghostFluidEnabled, fractionalSolidsEnabled));
     const extrapolatePipeline = pipeline("flip-extrapolate", EXTRAPOLATE_WGSL);
     const flowDeletePipeline = pipeline("flip-flow-delete", FLOW_DELETE_WGSL);
@@ -4665,7 +4858,7 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
         const dimensions = gridDim.map((value) => Math.max(4, Math.ceil(value * multiplier))) as [number, number, number];
         const spacing = dx / multiplier;
         const cellCount = dimensions[0] * dimensions[1] * dimensions[2];
-        const usesSolverSdf = multiplier <= 1;
+        const usesSolverSdf = multiplier <= 1 && !pageLayout;
         ensureLiquidSdf();
         const cubeCount = Math.max(1, (dimensions[0] - 1) * (dimensions[1] - 1) * (dimensions[2] - 1));
         const vertexBytes = cubeCount * SURFACE_VERTEX_STRIDE;
@@ -4752,7 +4945,11 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
             latest: undefined,
             error: null,
         };
-        const sdfUpsamplePipeline = usesSolverSdf ? null : pipeline("flip-polygon-sdf-upsample", POLYGON_SDF_UPSAMPLE_WGSL);
+        const sdfUpsamplePipeline = usesSolverSdf
+            ? null
+            : pageLayout
+              ? pagedRawPipeline("flip-polygon-sdf-upsample", buildPolygonSdfUpsampleWgsl(pageLayout))
+              : rawPipeline("flip-polygon-sdf-upsample", buildPolygonSdfUpsampleWgsl(null));
         const sdfUpsampleBindGroup =
             sdfUpsamplePipeline && reconstructedSdf
                 ? device.createBindGroup({
@@ -4764,10 +4961,13 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
                       ],
                   })
                 : null;
-        const stabilizePipeline = pipeline("flip-polygon-surface-stabilize", SURFACE_NET_STABILIZE_WGSL);
-        const vertexPipeline = pipeline("flip-polygon-surface-vertices", SURFACE_NET_VERTEX_WGSL);
-        const indexPipeline = pipeline("flip-polygon-surface-indices", SURFACE_NET_INDEX_WGSL);
-        const finalizePipeline = pipeline("flip-polygon-surface-finalize", SURFACE_NET_FINALIZE_WGSL);
+        // Polygon extraction always operates on the dense reconstruction grid.
+        // Rewriting these pipelines for paged storage would reinterpret dense
+        // coordinates as physical page offsets.
+        const stabilizePipeline = rawPipeline("flip-polygon-surface-stabilize", SURFACE_NET_STABILIZE_WGSL);
+        const vertexPipeline = rawPipeline("flip-polygon-surface-vertices", SURFACE_NET_VERTEX_WGSL);
+        const indexPipeline = rawPipeline("flip-polygon-surface-indices", SURFACE_NET_INDEX_WGSL);
+        const finalizePipeline = rawPipeline("flip-polygon-surface-finalize", SURFACE_NET_FINALIZE_WGSL);
         const surface: FluidPolygonSurface = {
             vertexBuffer,
             indexBuffer,
@@ -4908,7 +5108,7 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
         multigridFineResidualPipeline = pipeline("flip-multigrid-fine-residual", buildPressureResidualWgsl(usesLiquidSdf() && ghostFluidEnabled, fractionalSolidsEnabled));
         const dimensions = multigridDimensions(gridDim);
         const rawLevels = dimensions.map((dim, index) => {
-            const levelCount = dim[0] * dim[1] * dim[2];
+            const levelCount = index === 0 && pageLayout ? allocatedCellCount : dim[0] * dim[1] * dim[2];
             const bytes = levelCount * 4;
             const cellTypes = index === 0 ? cellTypeBuffer : device.createBuffer({ label: `flip-multigrid-types-${index}`, size: bytes, usage: GPUBufferUsage.STORAGE });
             const levelPressureA =
@@ -5007,8 +5207,9 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
         for (let index = 0; index < levels.length - 1; index++) {
             const fine = levels[index]!;
             const coarse = levels[index + 1]!;
+            const restrictPipeline = index === 0 && pageLayout ? multigridPagedRestrictPipeline! : multigridRestrictPipeline;
             fine.restrict = device.createBindGroup({
-                layout: multigridRestrictPipeline.getBindGroupLayout(0),
+                layout: restrictPipeline.getBindGroupLayout(0),
                 entries: [
                     { binding: 0, resource: { buffer: fine.residual } },
                     { binding: 1, resource: { buffer: fine.cellTypes } },
@@ -5023,7 +5224,7 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
             });
             const prolongEntries = (coarsePressure: GPUBuffer, finePressure: GPUBuffer): GPUBindGroup =>
                 device.createBindGroup({
-                    layout: multigridProlongatePipeline.getBindGroupLayout(0),
+                    layout: (index === 0 && pageLayout ? multigridPagedProlongatePipeline! : multigridProlongatePipeline).getBindGroupLayout(0),
                     entries: [
                         { binding: 0, resource: { buffer: coarsePressure } },
                         { binding: 1, resource: { buffer: coarse.cellTypes } },
@@ -5066,10 +5267,18 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
             label: "flip-multigrid",
             timestampWrites: activeProfileSpans.has("Simulation") ? undefined : simProfiler?.pass("Simulation"),
         });
-        const run = (pipeline: GPUComputePipeline, bindGroup: GPUBindGroup, groups: number): void => {
+        const run = (pipeline: GPUComputePipeline, bindGroup: GPUBindGroup, groups: number, indirect = false): void => {
             pass.setPipeline(pipeline);
             pass.setBindGroup(0, bindGroup);
-            pass.dispatchWorkgroups(Math.min(groups, MAX_WORKGROUPS), Math.ceil(groups / MAX_WORKGROUPS));
+            const lookupBindGroup = pageLookupBindGroup(pipeline);
+            if (lookupBindGroup) {
+                pass.setBindGroup(1, lookupBindGroup);
+            }
+            if (indirect) {
+                pass.dispatchWorkgroupsIndirect(pageDispatchBuffer!, 0);
+            } else {
+                pass.dispatchWorkgroups(Math.min(groups, MAX_WORKGROUPS), Math.ceil(groups / MAX_WORKGROUPS));
+            }
         };
         const smooth = (levelIndex: number, iterations: number, currentIsA: boolean): boolean => {
             const level = resources.levels[levelIndex]!;
@@ -5077,7 +5286,8 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
                 run(
                     levelIndex === 0 ? pressurePipeline : multigridSmoothPipeline,
                     levelIndex === 0 ? (currentIsA ? pressureABindGroup : pressureBBindGroup) : currentIsA ? level.smoothAB : level.smoothBA,
-                    level.groups
+                    level.groups,
+                    levelIndex === 0 && pageLayout !== null
                 );
                 currentIsA = !currentIsA;
             }
@@ -5092,18 +5302,19 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
             run(
                 levelIndex === 0 ? multigridFineResidualPipeline! : multigridResidualPipeline,
                 levelIndex === 0 ? (currentIsA ? resources.fineResidualA! : resources.fineResidualB!) : currentIsA ? level.residualA : level.residualB,
-                level.groups
+                level.groups,
+                levelIndex === 0 && pageLayout !== null
             );
             const coarse = resources.levels[levelIndex + 1]!;
-            run(multigridRestrictPipeline, level.restrict!, coarse.groups);
+            run(levelIndex === 0 && pageLayout ? multigridPagedRestrictPipeline! : multigridRestrictPipeline, level.restrict!, coarse.groups);
             const coarseCurrentIsA = solveLevel(levelIndex + 1, true);
             const prolong = coarseCurrentIsA && currentIsA ? level.prolongAA! : coarseCurrentIsA ? level.prolongAB! : currentIsA ? level.prolongBA! : level.prolongBB!;
-            run(multigridProlongatePipeline, prolong, level.groups);
+            run(levelIndex === 0 && pageLayout ? multigridPagedProlongatePipeline! : multigridProlongatePipeline, prolong, level.groups, levelIndex === 0 && pageLayout !== null);
             return smooth(levelIndex, MULTIGRID_POST_SMOOTH, currentIsA);
         };
 
         const fine = resources.levels[0]!;
-        run(multigridBuildRhsPipeline, resources.buildRhs, fine.groups);
+        run(multigridBuildRhsPipeline, resources.buildRhs, fine.groups, pageLayout !== null);
         let currentIsA = pressureCurrentIsA;
         const cycleBudget = pressureTolerance > 0 ? adaptiveMultigridCycles : multigridCycles;
         for (let cycle = 0; cycle < cycleBudget; cycle++) {
@@ -6186,7 +6397,7 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
                     pressureRelaxation = Math.min(1, Math.max(0.01, value));
                     break;
                 case "pressureSolver":
-                    pressureSolver = !pagedGrid && value >= 0.5 ? "multigrid" : "jacobi";
+                    pressureSolver = value >= 0.5 ? "multigrid" : "jacobi";
                     if (pressureSolver === "multigrid") {
                         ensureMultigrid();
                     }
@@ -6315,7 +6526,7 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
                     break;
                 case "polygonSurface": {
                     const wasNeeded = needsLiquidSdfResources();
-                    polygonSurfaceEnabled = !pagedGrid && value >= 0.5;
+                    polygonSurfaceEnabled = value >= 0.5;
                     if (polygonSurfaceEnabled) {
                         ensurePolygonSurfaceResources();
                         polygonSurfaceRefreshPending = true;

@@ -315,7 +315,9 @@ test("Whiteboard preserves authored state across fluid methods", async ({ page }
     await expect(canvas).toHaveAttribute("data-sink-count", "1");
     await expect(canvas).toHaveAttribute("data-grid-position", "2,4,-3");
     await expect(canvas).toHaveAttribute("data-grid-size", "10,8,12");
-    await expect(canvas).toHaveAttribute("data-physics-particle-size", "0.48");
+    await expect(canvas).not.toHaveAttribute("data-physics-particle-size");
+    await expect(canvas).toHaveAttribute("data-grid-resolution", "100");
+    await expect(canvas).toHaveAttribute("data-grid-cell-size", "0.12");
     await expect(canvas).toHaveAttribute("data-gravity", "3.2");
     await expect(canvas).toHaveAttribute("data-show-grid-bounds", "true");
     await expect(canvas).toHaveAttribute("data-show-grid-bounds-solid", "true");

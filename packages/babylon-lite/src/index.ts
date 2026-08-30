@@ -910,6 +910,8 @@ export { applyFluidRenderProfile, fluidRenderHexColor, fluidRenderProfileKey } f
 export type { FluidRenderProfileSettings } from "./fluid/fluid-render-profile.js";
 export { createFluidRenderCompositor } from "./fluid/fluid-render-compositor.js";
 export type { FluidRenderCompositor, FluidRenderLayer } from "./fluid/fluid-render-compositor.js";
+export { createFlipSim, resolveFlipDiscretization } from "./fluid/flip-sim.js";
+export type { FlipDiscretization, FlipDiscretizationOptions, FlipOptions } from "./fluid/flip-sim.js";
 
 // ─── Physics ─────────────────────────────────────────────────────────
 export {

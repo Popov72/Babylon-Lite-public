@@ -98,11 +98,12 @@ describe("fluid preset grid migration", () => {
         const exported = exportJsonFromPairState("box", "FLIP", state);
         const imported = presetFromExportJson(exported);
 
+        expect(exported.physicsParticleSize).toBeUndefined();
         expect(exported.gridResolution).toBe(80);
         expect(exported.markersPerCell).toBe(8);
         expect(imported.gridResolution).toBe(80);
         expect(imported.markersPerCell).toBe(8);
-        expect(imported.physScale).toBeCloseTo(0.66);
+        expect(imported.physScale).toBe(1);
     });
 
     it("round-trips current FLIP timestep and material controls", () => {

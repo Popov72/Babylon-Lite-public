@@ -10,6 +10,7 @@ import {
     FLIP_PAGE_SIZE,
     flipMacFaceBufferBytes,
     pagedFlipStorageCounts,
+    rewriteFlipWgslForPagedStorage,
 } from "../../../../packages/babylon-lite/src/fluid/flip-sim";
 
 describe("FLIP GPU memory estimate", () => {
@@ -53,6 +54,8 @@ describe("FLIP GPU memory estimate", () => {
     it("includes the selected multigrid hierarchy", () => {
         expect(estimateFlipGpuBytes(100, [4, 5, 6], "multigrid")).toBe(43_860);
         expect(estimateFlipGpuBytes(100, [16, 16, 16], "multigrid")).toBeGreaterThan(estimateFlipGpuBytes(100, [16, 16, 16]));
+        const pagedQuality = { pagedGrid: true, pagedGridMaxPages: 64 };
+        expect(estimateFlipGpuBytes(100, [32, 32, 32], "multigrid", pagedQuality)).toBeGreaterThan(estimateFlipGpuBytes(100, [32, 32, 32], "jacobi", pagedQuality));
     });
 
     it("adds optional subcell buffers only when selected", () => {
@@ -65,6 +68,10 @@ describe("FLIP GPU memory estimate", () => {
         expect(estimateFlipGpuBytes(100, [4, 5, 6], "jacobi", { particleSheeting: true }) - base).toBe(1_376);
         expect(estimateFlipGpuBytes(100, [4, 5, 6], "jacobi", { polygonSurface: true }) - base).toBe(13_648);
         expect(estimateFlipGpuBytes(100, [4, 5, 6], "jacobi", { polygonSurface: true, polygonReconstructionMultiplier: 2 }) - base).toBe(147_448);
+        expect(
+            estimateFlipGpuBytes(100, [4, 5, 6], "jacobi", { pagedGrid: true, pagedGridMaxPages: 1, polygonSurface: true }) -
+                estimateFlipGpuBytes(100, [4, 5, 6], "jacobi", { pagedGrid: true, pagedGridMaxPages: 1 })
+        ).toBe(17_272);
     });
 });
 
@@ -80,7 +87,29 @@ describe("FLIP particle dispatch", () => {
         expect(source).toContain("dispatchWorkgroupsIndirect(args, offset)");
         expect(source).toContain("writeDispatch(0u, pages * ${FLIP_PAGE_CELLS}u)");
         expect(source).toContain("writeDispatch(3u, pages * ${FLIP_PAGE_CELLS * 3}u)");
+        expect(source).toContain("let rows = max(1u, (groups + ${MAX_WORKGROUPS - 1}u) / ${MAX_WORKGROUPS}u)");
+        expect(source).toContain("dispatchArgs[offset] = (groups + rows - 1u) / rows");
         expect(source).toContain("clearPagedGrid(encoder)");
+    });
+
+    it("rewrites minified WGSL for paged cell and face addressing", () => {
+        const compactWgsl =
+            "const FIXED_POINT:f32=1.0;struct Params{x:u32,};fn gridDim(p:Params)->vec3<i32>{return vec3<i32>(1);}fn cellIndex(c:vec3<i32>,p:Params)->u32{let d=gridDim(p);return u32(c.x+d.x*(c.y+d.y*c.z));}fn inCellGrid(c:vec3<i32>,p:Params)->bool{return true;}fn storageCellExists(c:vec3<i32>,p:Params)->bool{return inCellGrid(c,p);}fn uDim(p:Params)->vec3<i32>{return gridDim(p);}fn vDim(p:Params)->vec3<i32>{return gridDim(p);}fn wDim(p:Params)->vec3<i32>{return gridDim(p);}fn faceCount(d:vec3<i32>)->u32{return 1u;}fn uCount(p:Params)->u32{return 1u;}fn vCount(p:Params)->u32{return 1u;}fn totalFaceCount(p:Params)->u32{return uCount(p)+vCount(p)+faceCount(wDim(p));}fn localFaceIndex(c:vec3<i32>,d:vec3<i32>)->u32{return 0u;}fn globalFaceIndex(kind:u32,c:vec3<i32>,p:Params)->u32{if(kind==0u){return 0u;}if(kind==1u){return 1u;}return 2u;}fn faceCoord(localIndex:u32,d:vec3<i32>)->vec3<i32>{let x=i32(localIndex%u32(d.x));let yz=i32(localIndex/u32(d.x));let y=yz%d.y;return vec3<i32>(x,y,yz/d.y);}fn faceKind(globalIndex:u32,p:Params)->u32{if(globalIndex<uCount(p)){return 0u;}if(globalIndex<uCount(p)+vCount(p)){return 1u;}return 2u;}fn faceLocalIndex(globalIndex:u32,kind:u32,p:Params)->u32{if(kind==0u){return globalIndex;}if(kind==1u){return globalIndex-uCount(p);}return globalIndex-uCount(p)-vCount(p);}fn faceGridDim(kind:u32,p:Params)->vec3<i32>{return gridDim(p);}@compute @workgroup_size(64)fn main(){}";
+        const rewritten = rewriteFlipWgslForPagedStorage(compactWgsl, {
+            blockDim: [2, 2, 2],
+            numBlocks: 8,
+            maxPages: 8,
+            storageCells: 4096,
+            storageFaces: 12288,
+            lookupWidth: 64,
+            lookupWords: 18,
+        });
+        expect(rewritten).toContain("return FLIP_PAGE_STORAGE_CELLS");
+        expect(rewritten).toContain("return FLIP_PAGE_STORAGE_FACES");
+        expect(rewritten).toContain("return globalIndex % 3u");
+        expect(rewritten).toContain("return globalIndex / 3u");
+        expect(rewritten).toContain("flipPageWord(FLIP_PAGE_MAP_OFFSET + flipPageBlockIndex(c)) != 0u");
+        expect(rewritten).not.toContain("return u32(c.x+d.x*(c.y+d.y*c.z))");
     });
 
     it("reuses the force bind group while only uniform contents change", () => {
@@ -146,6 +175,8 @@ describe("FLIP particle dispatch", () => {
         expect(source).toContain('export type FlipPressureSolver = "jacobi" | "multigrid"');
         expect(source).toContain("const MULTIGRID_RESTRICT_WGSL");
         expect(source).toContain("const MULTIGRID_PROLONGATE_WGSL");
+        expect(source).toContain("function buildPagedMultigridRestrictWgsl");
+        expect(source).toContain("function buildPagedMultigridProlongateWgsl");
         expect(source).toContain("function ensureMultigrid()");
         expect(source).toContain('if (pressureSolver === "multigrid")');
         expect(source).toContain("encodeMultigridPressure(encoder)");
@@ -273,7 +304,13 @@ describe("FLIP particle dispatch", () => {
         expect(source).toContain("copyBufferToBuffer(resources.surface.drawIndirect, 0");
         expect(source).toContain("gridOrigin: boundsMin");
         expect(source).toContain("gridDimensions: dimensions");
-        expect(source).toContain("const POLYGON_SDF_UPSAMPLE_WGSL");
+        expect(source).toContain("function buildPolygonSdfUpsampleWgsl");
+        expect(source).toContain('pagedRawPipeline("flip-polygon-sdf-upsample"');
+        expect(source).toContain('rawPipeline("flip-polygon-surface-stabilize"');
+        expect(source).toContain('rawPipeline("flip-polygon-surface-vertices"');
+        expect(source).toContain('rawPipeline("flip-polygon-surface-indices"');
+        expect(source).toContain("return f32(${LIQUID_SDF_LAYERS}) * p.originDx.w * p.solve.w;");
+        expect(source).not.toContain("Paged grid does not yet support polygon-surface reconstruction");
         expect(source).toContain("polygonReconstructionMultiplier");
         expect(source).toContain("refreshPolygonSurface(encoder: GPUCommandEncoder)");
         expect(source).toContain("polygonSurfaceRefreshPending = true;");
