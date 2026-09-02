@@ -79,6 +79,7 @@ export { createDepthPyramid, createDepthPyramidTask } from "./frame-graph/depth-
 export { createImageProcessingTask } from "./frame-graph/image-processing-task.js";
 export type { ImageProcessingSource, ImageProcessingTaskConfig } from "./frame-graph/image-processing-task.js";
 export type { PostProcessTask, PostProcessTaskSettings, PostProcessAlphaMode, PostProcessSamplingMode } from "./frame-graph/post-process-task.js";
+export { createPostProcessTask } from "./frame-graph/post-process-task.js";
 export { createCopyToTextureTask } from "./frame-graph/copy-to-texture-task.js";
 export type { CopyToTextureTask, CopyToTextureTaskConfig } from "./frame-graph/copy-to-texture-task.js";
 export { createDepthResolveTask } from "./frame-graph/depth-resolve-task.js";
@@ -420,6 +421,7 @@ export type { SceneNode } from "./scene/scene-node.js";
 export { loadBabylon } from "./loader-babylon/load-babylon.js";
 export { loadEnvironment } from "./loader-env/load-env.js";
 export { loadDdsEnvironment } from "./loader-env/load-dds-env.js";
+export { buildHdrSkyboxRenderable } from "./material/pbr/background-hdr-skybox.js";
 export { buildDdsSkyboxRenderable } from "./material/pbr/background-dds-skybox.js";
 export { loadHdrEnvironment } from "./loader-hdr/load-hdr.js";
 export { loadTexture2D, cloneTexture2D } from "./texture/texture-2d.js";
@@ -606,6 +608,9 @@ export type { PixelViewport } from "./camera/viewport.js";
 export type { FreeCamera } from "./camera/free-camera.js";
 export type { Mesh, MeshGPU } from "./mesh/mesh.js";
 export { disposeMeshGpu } from "./mesh/mesh-dispose.js";
+export { buildRenderTarget, disposeRenderTarget } from "./engine/render-target.js";
+// Internal frame-retirement integration used by the lab's low-level fluid host.
+export { retireGpuResources } from "./engine/gpu-resource-retirement.js";
 export { computeMaxExtents } from "./mesh/compute-max-extents.js";
 export type { MeshExtent } from "./mesh/compute-max-extents.js";
 export { ObservableVec3 } from "./math/observable-vec3.js";

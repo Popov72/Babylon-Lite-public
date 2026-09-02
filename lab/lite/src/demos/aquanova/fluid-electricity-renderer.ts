@@ -1,6 +1,6 @@
 import { createBloomPostProcessTask, createRenderTarget, fluidParticleStreamForSceneIntegration, getProjectionMatrix, getViewMatrix, getViewProjectionMatrix } from "babylon-lite";
 import type { BloomPostProcessTask, Camera, EngineContext, FluidParticleStream, RenderTarget, SceneContext, Task } from "babylon-lite";
-import { buildRenderTarget, disposeRenderTarget } from "babylon-lite/engine/render-target.js";
+import { buildRenderTarget, disposeRenderTarget } from "babylon-lite";
 import { ELECTRICITY_PARTICLE_MASK_RADIUS_SCALE, electricityPropagationRadius, type FluidElectricityFrameDomain } from "./fluid-runtime.js";
 
 const MAX_ELECTRIFIED_DOMAINS = 256;

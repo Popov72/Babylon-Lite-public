@@ -35,6 +35,7 @@ import {
     measurePage,
     LITE_BUNDLE_TARGET,
     NAME_POLYFILL,
+    atomicWriteJson,
 } from "./bundle-scenes-core";
 import { wgslMinifyPlugin } from "./wgsl-minify-plugin";
 import { fetchDemoAssets } from "./demo-fetchers";
@@ -121,6 +122,36 @@ function escapeHtml(value: string): string {
 
 function rewriteDemoHtmlForBundle(html: string): string {
     return html.replace(/(["'])\/(?:lite\/)?bundle\/demos\//g, "$1./");
+}
+
+function readDemoManifest(): Record<string, DemoManifestEntry> {
+    return existsSync(DEMOS_MANIFEST_FILE) ? (JSON.parse(readFileSync(DEMOS_MANIFEST_FILE, "utf-8")) as Record<string, DemoManifestEntry>) : {};
+}
+
+function writeDemoManifest(manifest: Record<string, DemoManifestEntry>): void {
+    atomicWriteJson(DEMOS_MANIFEST_FILE, `${JSON.stringify(manifest, null, 2)}\n`);
+}
+
+export async function measureAndPersistDemoManifestEntry(
+    manifest: Record<string, DemoManifestEntry>,
+    slug: string,
+    measure: () => Promise<DemoManifestEntry>,
+    persist: (manifest: Record<string, DemoManifestEntry>) => void = writeDemoManifest
+): Promise<DemoManifestEntry> {
+    const previous = manifest[slug];
+    try {
+        const next = await measure();
+        manifest[slug] = next;
+        persist(manifest);
+        return next;
+    } catch (error) {
+        if (previous === undefined) {
+            delete manifest[slug];
+        } else {
+            manifest[slug] = previous;
+        }
+        throw error;
+    }
 }
 
 /**
@@ -324,8 +355,28 @@ function writeDemoHtml(demos: DemoConfigEntry[], manifest: Record<string, DemoMa
     writeFileSync(resolve(demosDir, "index.html"), renderDemoIndex(demos, manifest));
 }
 
-function demoRequiresReady(slug: string): boolean {
-    return slug === "racer";
+/**
+ * Lite demo bundle sizes are only valid once the demo reports ready. A failed
+ * boot can otherwise look like a tiny/0 KB "success" because the lazy runtime
+ * chunks never load.
+ */
+export function demoRequiresReady(_slug: string): boolean {
+    return true;
+}
+
+type MeasureDemoPage = (
+    browser: any,
+    port: number,
+    scene: string,
+    htmlFile: string,
+    bundlePath: string,
+    requireReady?: boolean,
+    readyTimeoutMs?: number
+) => Promise<{ rawKB: number; gzipKB: number }>;
+
+export async function measureDemoManifestEntry(browser: any, port: number, slug: string, measure: MeasureDemoPage = measurePage): Promise<DemoManifestEntry> {
+    const { rawKB, gzipKB } = await measure(browser, port, `demo-${slug}`, `lite/demo-${slug}.html`, "/bundle/demos/", demoRequiresReady(slug));
+    return { rawKB, gzipKB };
 }
 
 /**
@@ -453,11 +504,11 @@ export async function buildSingleDemo(slug: string, options: { measure?: boolean
     // Ensure this demo's runtime assets are present (idempotent; a no-op for
     // demos like the platformer that ship a committed asset subset).
     await fetchDemoAssets([demo]);
-
     mkdirSync(demosDir, { recursive: true });
     console.log(`Building demo ${slug}...`);
     await buildDemo(slug);
     copyDemoRuntimeAssets([demo]);
+    const manifest = readDemoManifest();
 
     if (options.measure) {
         const { chromium } = await import("@playwright/test");
@@ -465,12 +516,7 @@ export async function buildSingleDemo(slug: string, options: { measure?: boolean
         try {
             const browser = await chromium.launch({ channel: "chrome", headless: true, args: measurementBrowserArgs() });
             try {
-                const { rawKB, gzipKB } = await measurePage(browser, port, `demo-${slug}`, `lite/demo-${slug}.html`, "/bundle/demos/", demoRequiresReady(slug));
-                const manifest: Record<string, DemoManifestEntry> = existsSync(DEMOS_MANIFEST_FILE)
-                    ? (JSON.parse(readFileSync(DEMOS_MANIFEST_FILE, "utf-8")) as Record<string, DemoManifestEntry>)
-                    : {};
-                manifest[slug] = { rawKB, gzipKB };
-                writeFileSync(DEMOS_MANIFEST_FILE, JSON.stringify(manifest, null, 2));
+                const { rawKB, gzipKB } = await measureAndPersistDemoManifestEntry(manifest, slug, () => measureDemoManifestEntry(browser, port, slug));
                 console.log(`  measured ${slug}: ${rawKB} KB raw, ${gzipKB} KB gzip`);
             } finally {
                 await browser.close();
@@ -483,9 +529,6 @@ export async function buildSingleDemo(slug: string, options: { measure?: boolean
     const source = resolve(labDir, "lite", `demo-${slug}.html`);
     if (existsSync(source)) {
         const html = rewriteDemoHtmlForBundle(readFileSync(source, "utf-8"));
-        const manifest: Record<string, DemoManifestEntry> = existsSync(DEMOS_MANIFEST_FILE)
-            ? (JSON.parse(readFileSync(DEMOS_MANIFEST_FILE, "utf-8")) as Record<string, DemoManifestEntry>)
-            : {};
         const rawKB = manifest[slug]?.rawKB;
         writeFileSync(resolve(demosDir, `demo-${slug}.html`), rawKB != null ? injectDemoEngineSize(html, rawKB) : html);
     }
@@ -513,23 +556,20 @@ export async function buildDemoBundles(): Promise<void> {
 
     await buildDemoSupportBundles();
     // Measurement loads demos through their source HTML, so runtime assets must
-    // already exist in the bundled output. Racer's readiness requirement below
-    // turns a missing WASM/model into a loud build failure.
+    // already exist in the bundled output. The ready-signal requirement below
+    // turns a missing asset/WASM/model into a loud build failure instead of a
+    // bogus tiny bundle measurement.
     copyDemoRuntimeAssets(demos);
 
     // Measure runtime-fetched JS size for each demo.
     const { chromium } = await import("@playwright/test");
     const { server, port } = await startStaticServer(labDir);
-    const manifest: Record<string, DemoManifestEntry> = existsSync(DEMOS_MANIFEST_FILE)
-        ? (JSON.parse(readFileSync(DEMOS_MANIFEST_FILE, "utf-8")) as Record<string, DemoManifestEntry>)
-        : {};
+    const manifest = readDemoManifest();
     try {
         const browser = await chromium.launch({ channel: "chrome", headless: true, args: measurementBrowserArgs() });
         try {
             for (const demo of demos) {
-                const { rawKB, gzipKB } = await measurePage(browser, port, `demo-${demo.slug}`, `lite/demo-${demo.slug}.html`, "/bundle/demos/", demoRequiresReady(demo.slug));
-                manifest[demo.slug] = { rawKB, gzipKB };
-                writeFileSync(DEMOS_MANIFEST_FILE, JSON.stringify(manifest, null, 2));
+                const { rawKB, gzipKB } = await measureAndPersistDemoManifestEntry(manifest, demo.slug, () => measureDemoManifestEntry(browser, port, demo.slug));
                 console.log(`  measured ${demo.slug}: ${rawKB} KB raw, ${gzipKB} KB gzip`);
             }
         } finally {
@@ -549,7 +589,7 @@ export async function buildDemoBundles(): Promise<void> {
         }
     }
     if (changed) {
-        writeFileSync(DEMOS_MANIFEST_FILE, JSON.stringify(manifest, null, 2));
+        writeDemoManifest(manifest);
     }
 
     writeDemoHtml(demos, manifest);
@@ -585,9 +625,7 @@ export async function buildFlatDemoSite(): Promise<string> {
     await buildDemoSupportBundles();
     copyDemoRuntimeAssets(demos);
 
-    const manifest: Record<string, DemoManifestEntry> = existsSync(DEMOS_MANIFEST_FILE)
-        ? (JSON.parse(readFileSync(DEMOS_MANIFEST_FILE, "utf-8")) as Record<string, DemoManifestEntry>)
-        : {};
+    const manifest = readDemoManifest();
     writeDemoHtml(demos, manifest);
 
     console.log(`✓ Flat demo site built to ${demosDir}`);

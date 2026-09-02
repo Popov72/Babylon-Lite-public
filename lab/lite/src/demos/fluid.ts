@@ -163,12 +163,11 @@ import type {
     SceneSdfSpec,
 } from "babylon-lite";
 import type { AssetContainer, Mesh, Task, EnvironmentTextures, Renderable, Material, PbrMaterialProps, SceneNode, Vec3 } from "babylon-lite";
-import { buildHdrSkyboxRenderable } from "babylon-lite/material/pbr/background-hdr-skybox.js";
-import { retireGpuResources } from "babylon-lite/engine/gpu-resource-retirement.js";
+import { buildHdrSkyboxRenderable, retireGpuResources } from "babylon-lite";
 // Plain source→target blit used as the no-bloom presentation pass. Only the TYPE is
 // re-exported from the package root, so the factory comes from its own module (the same
 // deep-import convention the fluid sim + HDR skybox already use here).
-import { createPostProcessTask } from "babylon-lite/frame-graph/post-process-task.js";
+import { createPostProcessTask } from "babylon-lite";
 import { demoAssetUrl } from "./demo-asset-url.js";
 import type { DemoParam, FluidCtx, FluidDemo, FluidDomainBounds, FluidGridSettings, PairState, PendingForce } from "./fluid/demo.js";
 import { getQualityPreset, QUALITIES, DEFAULT_QUALITY, loadQualityPresets, type Quality } from "./fluid/quality-presets.js";

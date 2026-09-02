@@ -98,7 +98,6 @@ import {
     updateLineSystem,
     updateAnimationManager,
 } from "babylon-lite";
-import { retireGpuResources } from "babylon-lite/engine/gpu-resource-retirement.js";
 import type {
     AnimationGroup,
     EnvironmentTextures,
@@ -166,6 +165,7 @@ import {
     commitFluidCollectionReconfiguration,
     cancelFluidCollectionReconfiguration,
     cancelFluidReconfiguration,
+    retireGpuResources,
     setFluidSimulationCollectionFoam,
     setFluidSimulationCollectionSources,
     setFluidSimulationFlow,

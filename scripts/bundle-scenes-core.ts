@@ -328,7 +328,7 @@ export function readCurrentBundleManifest(): BundleManifest {
  * concurrent readers may hold the destination open; rename never truncates it
  * and survives transient Windows file locks (errno -4094 / EBUSY).
  */
-function atomicWriteJson(path: string, json: string): void {
+export function atomicWriteJson(path: string, json: string): void {
     mkdirSync(dirname(path), { recursive: true });
     const tmpPath = `${path}.tmp`;
     for (let attempt = 0; ; attempt++) {

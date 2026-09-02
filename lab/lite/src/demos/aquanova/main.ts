@@ -172,7 +172,7 @@ import type {
 } from "babylon-lite";
 import type { ParticleFillWorkerResponse } from "../particle-fill-worker.js";
 import { productionFluidCapabilityRejection } from "./fluid-capabilities.js";
-import { disposeRenderTarget } from "babylon-lite/engine/render-target.js";
+import { disposeRenderTarget } from "babylon-lite";
 import { createLiquefyPlugin, liquefyFrontDistance } from "../liquefy-plugin.js";
 import { buildLitParticleColors } from "../particle-lit-colors.js";
 import type { LitColorScene } from "../particle-lit-colors.js";
