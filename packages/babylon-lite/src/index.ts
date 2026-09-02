@@ -377,6 +377,7 @@ export type { LineMaterial, LineMaterialOptions } from "./material/line/line-mat
 export { createPbrNoColorMaterialView } from "./material/pbr/no-color-view.js";
 export { parseNodeMaterialFromSnippet } from "./material/node/node-material.js";
 export { loadNodeBlockEmitterWithGeometry } from "./material/node/node-geometry-block-loader.js";
+export { loadBlockEmitter } from "./material/node/node-registry.js";
 export { createNodeNoColorMaterialView } from "./material/node/no-color-view.js";
 export type { NodeMaterial, NodeInputHandle, ParseNodeMaterialOptions } from "./material/node/node-material.js";
 export { createMaterialView } from "./material/material-view.js";
@@ -421,6 +422,7 @@ export type { SceneNode } from "./scene/scene-node.js";
 export { loadBabylon } from "./loader-babylon/load-babylon.js";
 export { loadEnvironment } from "./loader-env/load-env.js";
 export { loadDdsEnvironment } from "./loader-env/load-dds-env.js";
+export { addDdsEnvironmentBackground } from "./material/pbr/background-dds-environment.js";
 export { buildHdrSkyboxRenderable } from "./material/pbr/background-hdr-skybox.js";
 export { buildDdsSkyboxRenderable } from "./material/pbr/background-dds-skybox.js";
 export { loadHdrEnvironment } from "./loader-hdr/load-hdr.js";
@@ -608,6 +610,9 @@ export type { PixelViewport } from "./camera/viewport.js";
 export type { FreeCamera } from "./camera/free-camera.js";
 export type { Mesh, MeshGPU } from "./mesh/mesh.js";
 export { disposeMeshGpu } from "./mesh/mesh-dispose.js";
+export { createSkeleton } from "./skeleton/create-skeleton.js";
+export { updateSkeletonBoneMatrices } from "./skeleton/update-skeleton-bone-matrices.js";
+export { installPbrTracking } from "./material/tracking/pbr-tracking.js";
 export { buildRenderTarget, disposeRenderTarget } from "./engine/render-target.js";
 // Internal frame-retirement integration used by the lab's low-level fluid host.
 export { retireGpuResources } from "./engine/gpu-resource-retirement.js";
