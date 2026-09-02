@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { resolveFlipDiscretization } from "../../../../packages/babylon-lite/src/fluid/flip-sim.js";
+import { resolveFlipDiscretization } from "../../../../packages/babylon-lite/src/fluid/solvers/flip-sim.js";
 
 describe("FLIP discretization", () => {
     it("derives the cell width, dimensions, marker volume, and marker radius from one resolution", () => {

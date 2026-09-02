@@ -877,41 +877,386 @@ export {
 } from "./text/text-renderer.js";
 
 // ─── Fluid authoring ─────────────────────────────────────────────────
-export { fluidPerParticleRecycleProbability, MAX_FLUID_EMITTERS, MAX_FLUID_POLYGON_POINTS, MAX_FLUID_POLYGON_TRIANGLES, MAX_FLUID_SINKS } from "./fluid/sim-common.js";
+export { fluidPerParticleRecycleProbability, MAX_FLUID_EMITTERS, MAX_FLUID_POLYGON_POINTS, MAX_FLUID_POLYGON_TRIANGLES, MAX_FLUID_SINKS } from "./fluid/core/sim-common.js";
+export { countFluidInitialParticles, fluidShapeVolume } from "./fluid/core/sim-common.js";
 export type {
     FluidEmitter,
     FluidFlowConfig,
     FluidPolygonSurface,
-    FluidProfiler,
     FluidShape,
-    FluidSim,
     FluidSink,
     FluidTransform,
     FluidVec3,
     FoamConfig,
     ForceFieldSpec,
     SceneSdfSpec,
-} from "./fluid/sim-common.js";
+} from "./fluid/core/sim-common.js";
 export {
     fluidCellSizeForParticleRadius,
     fluidParticleRadiusForPhysicsScale,
     fluidSimulationCellSize,
     fluidSimulationParticleCapacity,
     fluidSimulationParticleRadius,
-} from "./fluid/simulation-config.js";
-export type { FluidSimulationDiscretization, FluidSimulationSamplingType } from "./fluid/simulation-config.js";
-export { createParticleRenderTask } from "./fluid/particle-render.js";
-export type { ParticleRenderOptions, ParticleRenderShaderOptions, ParticleRenderTask } from "./fluid/particle-render.js";
-export { createFluidPolygonSurfaceTask } from "./fluid/polygon-surface-render.js";
-export type { FluidPolygonSurfaceOptions, FluidPolygonSurfaceTask } from "./fluid/polygon-surface-render.js";
-export { createFluidSurfaceTask } from "./fluid/fluid-surface-render.js";
-export type { FluidDebug, FluidParticleColorMode, FluidSurfaceOptions, FluidSurfaceShading, FluidSurfaceTask } from "./fluid/fluid-surface-render.js";
-export { applyFluidRenderProfile, fluidRenderHexColor, fluidRenderProfileKey } from "./fluid/fluid-render-profile.js";
-export type { FluidRenderProfileSettings } from "./fluid/fluid-render-profile.js";
-export { createFluidRenderCompositor } from "./fluid/fluid-render-compositor.js";
-export type { FluidRenderCompositor, FluidRenderLayer } from "./fluid/fluid-render-compositor.js";
-export { createFlipSim, resolveFlipDiscretization } from "./fluid/flip-sim.js";
-export type { FlipDiscretization, FlipDiscretizationOptions, FlipOptions } from "./fluid/flip-sim.js";
+} from "./fluid/core/simulation-config.js";
+export type { FluidSimulationDiscretization, FluidSimulationSamplingType } from "./fluid/core/simulation-config.js";
+export { applyFluidRenderProfile, fluidRenderHexColor, fluidRenderProfileKey } from "./fluid/rendering/fluid-render-profile.js";
+export type { FluidRenderProfileSettings } from "./fluid/rendering/fluid-render-profile.js";
+export type { FluidDebug } from "./fluid/rendering/fluid-surface-render.js";
+export { resolveFlipDiscretization } from "./fluid/solvers/flip-sim.js";
+export type { FlipDiscretization, FlipDiscretizationOptions } from "./fluid/solvers/flip-sim.js";
+// FLIP static allocation + quality surface (device-free planning helpers).
+export { estimateFlipGpuBytes, resolveFlipPageLayout } from "./fluid/solvers/flip-sim.js";
+export type { FlipPageLayout, FlipPressureSolver, FlipQualityFeatures } from "./fluid/solvers/flip-sim.js";
+export { pbmpmParamKeysForMaterial } from "./fluid/solvers/pbmpm-sim.js";
+export type { DiffuseParticleCounts, EmitterConfig, FluidPressureDiagnostics } from "./fluid/core/sim-common.js";
+export type { FoamDebugTexture } from "./fluid/rendering/foam-render.js";
+export { createRayForce } from "./fluid/core/ray-force.js";
+export { createReferenceCountedPool } from "./fluid/rendering/render-group-pool.js";
+export type { ReferenceCountedPool } from "./fluid/rendering/render-group-pool.js";
+export { FLIP_DEFAULT_PAGE_CAPACITY, FLIP_PAGE_CELLS, FLIP_PAGE_SIZE } from "./fluid/solvers/flip-sim.js";
+export { generateMeshSdf, sampleMeshVolume } from "./fluid/sampling/volume/index.js";
+export type { MeshSdfGrid, MeshSdfOptions, VolumeSamplingMode, VolumeSamplingOptions, VolumeSamplingResult } from "./fluid/sampling/volume/index.js";
+export {
+    FLUID_MESH_MAX_OPENNESS,
+    FLUID_MESH_MIN_FILL_THICKNESS,
+    FLUID_MESH_SURFACE_MAX_POINTS,
+    FluidMeshSamplingError,
+    fluidMeshSamplingErrorInfo,
+    sampleFluidMeshParticles,
+    sampleFluidMeshSurface,
+} from "./fluid/sampling/mesh-particle-sampling.js";
+export type {
+    FluidMeshParticleSamplingOptions,
+    FluidMeshParticleSamplingResult,
+    FluidMeshSamplingErrorCode,
+    FluidMeshSamplingErrorInfo,
+    FluidMeshSamplingMetrics,
+    FluidMeshSamplingSelectionReason,
+    FluidMeshSamplingStrategy,
+    FluidMeshSamplingWarning,
+    FluidMeshSamplingWarningCode,
+} from "./fluid/sampling/mesh-particle-sampling.js";
+export { transferFluidMeshParticleUvs } from "./fluid/sampling/particle-uv-transfer.js";
+export type { FluidParticleUvTransferOptions, FluidParticleUvTransferResult } from "./fluid/sampling/particle-uv-transfer.js";
+// Internal lab integration. API Extractor removes the GPU-bearing function from the
+// published root declarations; applications should use the opaque fluid runtime facade.
+export { createFloatingBodySystem } from "./fluid/core/floating-body.js";
+// Compatibility-profile discretization policy: reproduce the fluid demo and Aquanova hosts
+// as explicit named profiles instead of silently canonicalizing their divergent presets.
+export { CURRENT_FLUID_SIMULATION_SEMANTICS, fluidCompatibilityProfile, resolveFluidSimulationConfig, resolveFluidSimulationSemantics } from "./fluid/core/simulation-config.js";
+export type {
+    FluidCompatibilityProfile,
+    FluidCompatibilityProfileSpec,
+    FluidGridBounds,
+    FluidPbfPhysicsSemantics,
+    FluidSimulationConfigInput,
+    FluidSimulationSemantics,
+    FluidSimulationSemanticsProfile,
+    ResolvedFluidSimulationConfig,
+} from "./fluid/core/simulation-config.js";
+export { pbfScaleAdjustedParam } from "./fluid/core/simulation-config.js";
+// Device-handle-free GPU allocation planning + capability snapshot.
+export { fluidAllocationCapabilities, resolveFluidAllocationPlan } from "./fluid/core/allocation-plan.js";
+export type {
+    FluidAllocationCapabilities,
+    FluidAllocationFlipWarmup,
+    FluidAllocationFlipWarmupPlan,
+    FluidAllocationMethod,
+    FluidAllocationPages,
+    FluidAllocationPlan,
+    FluidAllocationPlanInput,
+    FluidAllocationResource,
+    FluidDeviceLimitsSnapshot,
+    FluidGridCompatibility,
+} from "./fluid/core/allocation-plan.js";
+// Particle-buffer / device-limit sizing policy (plain-number limits; no GPUDevice).
+export {
+    AQUANOVA_COMBINED_PARTICLE_CAPACITY,
+    aquanovaCombinedParticleCapacity,
+    DEFAULT_PARTICLE_BYTES_PER_SLOT,
+    FLIP_PARTICLE_BYTES_PER_SLOT,
+    FLUID_GRID_MAX_AXIS_CELLS,
+    fluidDeviceParticleCapacity,
+    fluidFlipMacBufferBytes,
+    fluidGridCellCountLimit,
+    fluidMaximumPageCapacity,
+    fluidParticleBufferLimitBytes,
+    fluidParticleBytesPerSlot,
+    mlsMpmDefaultPageCapacity,
+    resolveFluidGridCompatibility,
+} from "./fluid/core/allocation-plan.js";
+export type { FluidBufferLimits, FluidFlipPaging } from "./fluid/core/allocation-plan.js";
+// Opaque, GPU-free control facade over a fluid backend (the raw FluidSim leaks WebGPU handles).
+export {
+    adoptFluidForceField,
+    adoptFluidParticleChannel,
+    adoptFluidSceneSdf,
+    attachFluidSimulationCollectionRenderLayer,
+    attachFluidSimulationRenderLayer,
+    beginFluidSimulationProfilerFrame,
+    cancelFluidCollectionReconfiguration,
+    cancelFluidReconfiguration,
+    commitFluidCollectionReconfiguration,
+    commitFluidReconfiguration,
+    configureFluidSimulationRenderLayer,
+    configureFluidSimulationRenderCompositor,
+    createFluidParticleChannel,
+    createFluidParticleSpatialQuery,
+    createFluidRenderEnvironment,
+    createFluidForceField,
+    createFluidImpulseForce,
+    createFluidSceneSdf,
+    createFluidSimulation,
+    createFluidSimulationCollection,
+    createFluidSimulationCollectionParticleStream,
+    refreshFluidSimulationCollectionParticleStream,
+    createFluidSimulationParticleStream,
+    createFluidSimulationProfiler,
+    createFluidSimulationRenderCompositor,
+    createFluidWheelTorqueQuery,
+    detachFluidSimulationRenderLayer,
+    detachFluidSimulationCollectionRenderLayer,
+    disposeFluidParticleChannel,
+    disposeFluidParticleSpatialQuery,
+    disposeFluidForceField,
+    disposeFluidSceneSdf,
+    disposeFluidSimulation,
+    disposeFluidSimulationCollection,
+    disposeFluidSimulationCollectionParticleStream,
+    disposeFluidSimulationProfiler,
+    disposeFluidSimulationRenderCompositor,
+    disposeFluidWheelTorqueQuery,
+    disposePreparedFluidReconfiguration,
+    endFluidSimulationProfilerFrame,
+    fillFluidParticleChannel,
+    FLUID_SPATIAL_QUERY_SAMPLE_INTERVAL_FRAMES,
+    fluidSimulationProfilerForSceneIntegration,
+    fluidParticleStreamForSceneIntegration,
+    fluidSimulationRenderLayerDepthForSceneIntegration,
+    getFluidSimulationCollectionDiagnostics,
+    getFluidSimulationDiagnostics,
+    prepareFluidReconfiguration,
+    prepareFluidReconfigurationUpdate,
+    prepareFluidCollectionReconfiguration,
+    readFluidSimulationPressureDiagnostics,
+    readFluidSimulationProfiler,
+    readFluidWheelTorqueQuery,
+    readFluidParticleSpatialQuery,
+    readFluidParticleChannel,
+    readFluidSimulationPositions,
+    resolveFluidImpulseForce,
+    reconfigureFluidSimulation,
+    refreshFluidSimulationCollectionPolygonSurfaces,
+    refreshFluidSimulationPolygonSurface,
+    resetFluidSimulation,
+    resetFluidSimulationCollection,
+    sampleFluidParticleSpatialQuery,
+    sampleFluidWheelTorqueQuery,
+    setFluidSimulationCollectionFlow,
+    setFluidSimulationCollectionFoam,
+    setFluidSimulationCollectionForceField,
+    setFluidSimulationCollectionMaterial,
+    setFluidSimulationCollectionParameter,
+    setFluidSimulationCollectionProfiler,
+    setFluidSimulationCollectionSceneSdf,
+    setFluidSimulationCollectionSimulations,
+    setFluidSimulationCollectionSources,
+    setFluidSimulationForceField,
+    setFluidSimulationFlow,
+    setFluidSimulationFoam,
+    setFluidSimulationMaterial,
+    setFluidSimulationParameter,
+    setFluidSimulationProfiler,
+    setFluidSimulationSceneSdf,
+    stepFluidSimulationCollection,
+    stepFluidSimulation,
+    stepFluidSimulationForSceneIntegration,
+    updateFluidSimulationEmitter,
+    writeFluidParticleChannel,
+    writeFluidSimulationPositions,
+    updateFluidForceField,
+    updateFluidImpulseForce,
+    updateFluidFloatingBodySystem,
+    updateFluidSceneSdf,
+} from "./fluid/core/fluid-facade.js";
+export type {
+    FluidFoamRenderSettings,
+    FluidForceField,
+    FluidForceFieldOptions,
+    FluidImpulseForceOptions,
+    FluidImpulseForceResolution,
+    FluidSceneSdf,
+    FluidSceneSdfOptions,
+    FluidParticleChannel,
+    FluidParticleChannelOptions,
+    FluidParticleSpatialQuery,
+    FluidParticleSpatialQueryOptions,
+    FluidParticleSpatialQueryRequest,
+    FluidParticleSpatialQueryResult,
+    FluidParticleStream,
+    FluidRenderEnvironment,
+    FluidRenderEnvironmentSource,
+    FluidSimulation,
+    FluidSimulationCollection,
+    FluidSimulationCollectionParticleStream,
+    FluidSimulationCollectionDiagnostics,
+    FluidSimulationCollectionRenderLayerOptions,
+    FluidSimulationCollectionRenderMode,
+    FluidSimulationDiagnostics,
+    FluidSimulationDiffuseDiagnostics,
+    FluidSimulationOptions,
+    FluidSimulationPolygonDiagnostics,
+    FluidSimulationProfiler,
+    FluidSimulationProfilerResults,
+    FluidSimulationReconfigurationRequest,
+    FluidSimulationRenderCompositor,
+    FluidSimulationRenderCompositorOptions,
+    FluidSimulationRenderLayer,
+    FluidSimulationRenderLayerOptions,
+    FluidSimulationRenderLayerState,
+    FluidSimulationRenderMode,
+    FluidSimulationRenderSource,
+    FluidWheelTorqueQuery,
+    FluidWheelTorqueQueryOptions,
+    PreparedFluidCollectionReconfiguration,
+    PreparedFluidReconfiguration,
+} from "./fluid/core/fluid-facade.js";
+export { createFluidInitialStatePlanCache, fluidInitialEmitterVolume, planFluidInitialState, resolveFluidReconfigurationPlan } from "./fluid/core/initial-state-plan.js";
+export type {
+    FluidInitialEmitterPlan,
+    FluidInitialStateDiagnostics,
+    FluidInitialStatePlan,
+    FluidInitialStatePlanCache,
+    FluidInitialStatePlanInput,
+    FluidReconfigurationPlan,
+    FluidReconfigurationPlanInput,
+    FluidResolutionFittingInputs,
+} from "./fluid/core/initial-state-plan.js";
+export { fitFluidGridResolution, formatFluidPageDiagnostics, normalizeFluidFlipDiscretization, resolveFluidRenderMode, transformFluidFlow } from "./fluid/core/fluid-policy.js";
+export type {
+    FluidFlipDiscretization,
+    FluidFlipDiscretizationLimits,
+    FluidFlowTransform,
+    FluidGridResolutionFit,
+    FluidRenderMode,
+    FluidRenderModeInput,
+} from "./fluid/core/fluid-policy.js";
+export { createFluidTimestepScheduler, deferFluidTimestep, getFluidTimestepDiagnostics, resetFluidTimestepScheduler, scheduleFluidTimestep } from "./fluid/core/timestep-scheduler.js";
+export type { FluidTimestepDiagnostics, FluidTimestepSchedule, FluidTimestepScheduler, FluidTimestepSchedulerOptions } from "./fluid/core/timestep-scheduler.js";
+export { editFluidPresetSession, exportFluidPresetSession, importFluidPresetSession } from "./fluid/authoring/preset-session.js";
+export type { FluidPresetApplicationSections, FluidPresetSession, FluidPresetSessionEdit, FluidPresetSessionExport } from "./fluid/authoring/preset-session.js";
+// Reusable fluid authoring state, grid policy, presets, migrations and host-facing helpers.
+export type { DemoParam, DemoStateValue, FluidDomainBounds, FluidGridSettings, PairState } from "./fluid/authoring/authoring-state.js";
+export {
+    cellSizeForGridResolution,
+    cellSizeForPhysicsScale,
+    clampGridResolution,
+    FLIP_DEFAULT_MARKERS_PER_CELL,
+    FLIP_HIGH_MARKERS_PER_CELL,
+    FLIP_MAX_SCALE,
+    FLIP_MIN_SCALE,
+    flipMarkersPerAuthoredCell,
+    flipParticleCountForVolume,
+    GRID_DOMAIN_LONGEST,
+    GRID_RESOLUTION_MAX,
+    GRID_RESOLUTION_MIN,
+    gridBounds,
+    gridCellsForBounds,
+    gridCellsForSize,
+    gridPositionForBounds,
+    gridResolutionForScale,
+    gridResolutionLimitsForMethod,
+    gridSizeForBounds,
+    gridWorldSize,
+    highestFittingGridResolution,
+    MPM_MAX_SCALE,
+    MPM_MIN_SCALE,
+    PBF_MAX_SCALE,
+    PBF_MIN_SCALE,
+    PBMPM_MAX_SCALE,
+    PBMPM_MIN_SCALE,
+    PHYS_MAX_SCALE,
+    PHYS_MIN_SCALE,
+    physicsScaleForCellSize,
+    rawScaleForGridResolution,
+    scaleForGridResolution,
+    scaleLimitsForMethod,
+} from "./fluid/authoring/grid-settings.js";
+export { gridFloorY, gridTopY } from "./fluid/authoring/grid-bounds.js";
+export { fluidCaptureCompletionTime, fluidSimulationLifecycle, fluidSimulationStepDelta } from "./fluid/core/simulation-lifecycle.js";
+export type { FluidSimulationLifecycle } from "./fluid/core/simulation-lifecycle.js";
+export { carryMethodIndependentState } from "./fluid/authoring/method-independent-state.js";
+export type { CarryMethodIndependentStateOptions } from "./fluid/authoring/method-independent-state.js";
+export { exportJsonFromPairState, presetFromExportJson } from "./fluid/authoring/preset-io.js";
+export type { FluidExportJson } from "./fluid/authoring/preset-io.js";
+export { parseBlenderFluidCollision, parseBlenderFluidJson, scenePayloadFromBlenderFluidJson } from "./fluid/authoring/blender-fluid-json.js";
+export type { BlenderFluidCollision, BlenderFluidScene } from "./fluid/authoring/blender-fluid-json.js";
+export { createSolidGridBounds } from "./fluid/controls/grid-bounds-visual.js";
+export {
+    clearFluidFlowEditorSelection,
+    createFluidFlowEditor,
+    getFluidFlowEditorSelection,
+    refreshFluidFlowEditor,
+    refreshFluidFlowEditorComputedValues,
+    setFluidFlowEditorFlow,
+} from "./fluid/controls/flow-editor.js";
+export type { FluidFlowEditor, FluidFlowEditorChange, FluidFlowEditorOptions, FluidFlowEditorVisuals, FluidFlowObjectKind } from "./fluid/controls/flow-editor.js";
+export {
+    createFluidControlsPanel,
+    DEFAULT_FLUID_SCHEMAS,
+    getFluidControlPhysicsValues,
+    getFluidControlValues,
+    refreshFluidGpuMemory,
+    refreshFluidGpuTiming,
+    runFluidControlsHandleTransaction,
+} from "./fluid/controls/controls-panel.js";
+export {
+    applyFluidControls,
+    applyFluidGridSettings,
+    bindFluidControls,
+    deriveFluidControlsApplicationPlan,
+    disposeFluidControlsBinding,
+    fluidFoamConfigFromControls,
+    normalizeFluidControls,
+    projectFluidControlsMemory,
+    syncFluidControls,
+} from "./fluid/controls/fluid-controls-binding.js";
+export type {
+    BindFluidControlsOptions,
+    FluidControlsApplicationPlan,
+    FluidControlsBinding,
+    FluidControlsBindingTarget,
+    FluidControlsMemoryProjection,
+    FluidControlsMemoryTarget,
+    FluidControlsNormalizationOptions,
+    FluidControlsPageDiagnostics,
+    FluidControlsRenderLayers,
+    FluidControlsSceneTargetOptions,
+    SyncFluidControlsInput,
+} from "./fluid/controls/fluid-controls-binding.js";
+// Shared control-capability contract: which control groups a backend/device supports.
+export { fluidRuntimeCapabilityRejection, resolveFluidControlsCapabilities } from "./fluid/controls/controls-capabilities.js";
+export type { FluidCapabilityRequest, FluidControlsCapabilities, FluidControlsCapabilitiesInput, FluidRuntimeCapabilities } from "./fluid/controls/controls-capabilities.js";
+// Shared transaction primitive for atomic programmatic controls/preset application.
+export {
+    createFluidControlsTransaction,
+    initializeFluidControlsTransaction,
+    markFluidControlsChanged,
+    runFluidControlsTransaction,
+    wrapFluidControlsCallbacks,
+} from "./fluid/controls/controls-transaction.js";
+export type { FluidControlsTransaction, WrapFluidControlsCallbacksOptions } from "./fluid/controls/controls-transaction.js";
+export type {
+    FluidControlsCallbacks,
+    FluidControlsHandle,
+    FluidControlsInitial,
+    FluidControlsOptions,
+    FluidControlValues,
+    FluidFoamValues,
+    FluidGpuHandle,
+    FluidGpuOptions,
+    PhysSchemaEntry,
+} from "./fluid/controls/controls-panel.js";
 
 // ─── Physics ─────────────────────────────────────────────────────────
 export {

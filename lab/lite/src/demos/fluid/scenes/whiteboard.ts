@@ -1,5 +1,5 @@
 import { setMeshVisible } from "babylon-lite";
-import type { SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
+import type { SceneSdfSpec } from "babylon-lite";
 import type { FluidCtx, FluidDemo } from "../demo.js";
 import { ENV_STUDIO_URL } from "../demo.js";
 

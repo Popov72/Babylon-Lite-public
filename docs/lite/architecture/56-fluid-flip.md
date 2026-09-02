@@ -1,6 +1,6 @@
 # Module: FLIP Fluid Simulation
 
-> Package paths: `packages/babylon-lite/src/fluid/flip-sim.ts`, `lab/lite/src/demos/fluid.ts`
+> Package paths: `packages/babylon-lite/src/fluid/solvers/flip-sim.ts`, `lab/lite/src/demos/fluid.ts`
 
 ## Purpose
 
@@ -19,45 +19,41 @@ Primary references:
 ## Public API Surface
 
 ```ts
-export interface FlipOptions extends FluidSimBaseOptions {
-    boundsMin?: [number, number, number];
-    boundsMax?: [number, number, number];
-    gridDim?: [number, number, number];
-    groundY?: number;
-    dx?: number;
+export interface FluidSimulationOptions {
+    method: "PBF" | "FLIP" | "MLS-MPM" | "PB-MPM";
+    particleCount: number;
+    bounds: FluidGridBounds;
+    physicsScale: number;
+    semantics?: FluidSimulationSemantics;
+    physics?: Readonly<Record<string, number>>;
+    gridResolution?: number;
     markersPerCell?: number;
-    minSubsteps?: number;
-    maxSubsteps?: number;
-    cflNumber?: number;
-    maxSubDt?: number;
-    pressureSolver?: "jacobi" | "multigrid";
-    pressureIterations?: number;
-    pressureRelaxation?: number;
-    multigridCycles?: number;
-    pressureTolerance?: number;
-    pressureDiagnostics?: boolean;
-    flipRatio?: number;
-    velocityDamping?: number;
-    kinematicViscosity?: number;
-    viscosityIterations?: number;
-    surfaceTension?: number;
-    liquidSdf?: boolean;
-    ghostFluid?: boolean;
-    fractionalSolids?: boolean;
-    movingSolidBoundaries?: boolean;
-    reseedParticles?: boolean;
-    reseedMinParticles?: number;
-    reseedTargetParticles?: number;
-    reseedMaxParticles?: number;
-    reseedInterval?: number;
-    restitution?: number;
-    initialPositions?: Float32Array;
+    pagedGrid?: boolean;
+    pagedGridMaxPages?: number;
 }
 
-export function createFlipSim(engine: EngineContext, options?: FlipOptions): FluidSim;
+export function createFluidSimulation(engine: EngineContext, options: FluidSimulationOptions): FluidSimulation;
+export function reconfigureFluidSimulation(simulation: FluidSimulation, options: FluidSimulationOptions, preserveState?: boolean): void;
+export function stepFluidSimulation(simulation: FluidSimulation, deltaSeconds: number): void;
+export function attachFluidSimulationRenderLayer(simulation: FluidSimulation, options: FluidSimulationRenderLayerOptions): FluidSimulationRenderLayer;
+export function disposeFluidSimulation(simulation: FluidSimulation): void;
 ```
 
-The returned object implements the existing `FluidSim` interface. FLIP adds no raw GPU handle to the public package API. The solver module remains a tree-shakable opt-in deep import, consistent with the existing fluid backends.
+The root package exposes a pure-state, GPU-safe runtime for every solver. Public fluid declarations
+do not expose `GPUBuffer`, `GPUDevice`, `GPUCommandEncoder`, or `GPUQuerySet`. Raw solver factories,
+`FluidSim`, and low-level render tasks are repository-internal implementation contracts.
+
+`resolveFluidSimulationConfig` is the single interpretation point for serialized physics. Format-14
+presets write an explicit `normalized-v1` semantics record; older Fluid presets infer scale-adjusted
+PBF density/relaxation, while older Aquanova presets retain their literal values.
+
+`resolveFluidAllocationPlan` enumerates the actual buffers for all four solvers. It validates each
+buffer against `maxBufferSize` and each storage binding against
+`maxStorageBufferBindingSize`; aggregate `steadyBytes` is informational and is never compared with a
+per-buffer limit. FLIP plans include padded lookup-texture rows and bounded page-dispatch resources,
+and both FLIP and MLS-MPM expose one authoritative `maximumPageCapacity`. FLIP warm-up seed buffers
+are included only when the explicit initial live count is below the initial target count, matching
+the solver's lazy allocation and live `gpuBytes`.
 
 Physics controls:
 
@@ -115,11 +111,15 @@ Particle capacity is bounded by the active WebGPU device's `maxStorageBufferBind
 
 FLIP can instead store its MAC grid in a bounded pool of 8 x 8 x 8-cell pages. Dense storage remains the default fast path and uses its original shaders and packed buffers without paging branches. In paged mode, active particles discover their containing page plus a one-page halo, a virtual-block lookup texture maps grid coordinates to physical pages, and cell/face passes use indirect dispatch sized from the discovered live-page count. Missing virtual cells and faces resolve to dedicated sentinel slots.
 
-Page capacity controls the maximum physical pool allocation, not the amount of work dispatched each frame. The default capacity is 8,000 pages. If discovery requires more pages, the overflow flag is surfaced in the controls and the simulation skips integration against the incomplete grid until capacity is increased. The UI reports live pages versus capacity and includes the bounded page pool in its GPU-memory estimate. Presets validate an incoming paged grid against the incoming page capacity, allowing paging and an otherwise oversized resolution to be enabled atomically.
+Page capacity controls the maximum physical pool allocation, not the amount of work dispatched each frame. The default capacity is 8,000 pages. Before any persistent mutation, one whole-frame preflight allocates the conservative swept region reachable by active/warmup markers and inflows across every planned CFL-limited substep, including redistribution, bounded scene-collision correction, and the grid-stencil halo. No later substep allocates pages. Discovery writes indirect dispatch triples for cells, faces, active/all particles, singleton maintenance, and dense foam; every triple is zeroed when either the current preflight or the GPU-sticky aggregate status has overflowed. Dynamic active-foam dispatch arguments are also cleared from those GPU overflow records before update, while shader guards cover reconstruction work that cannot share the fixed dimensions. Warmup copies and lifecycle activation are GPU-dispatched rather than written directly by the CPU.
+
+The aggregate status buffer retains the latest completed frame, maximum required page count, and first overflowing frame while both readback slots are busy. Status mapping therefore never blocks a following simulation submission or discards its frame time. CPU metadata snapshots are keyed by GPU frame ID; observing a delayed overflow restores the exact pre-frame live-count, flow-budget, reseeding, sheeting, pressure-side, polygon-history, foam-seed, and active-list state, and retires all later speculative metadata. Each readback slot records its generation when its copy is encoded; reset retires copied metadata, and stale fulfillment or rejection cannot affect the new generation. The overflowing frame and every subsequently queued frame are GPU-gated, so persistent simulation state remains unchanged even before CPU observation. The overflow flag is surfaced in the controls on the next available status sample and integration remains paused until capacity is increased. Mapping failures are thrown by the next step instead of being treated as a successful status sample.
+
+Inflow discovery uses the same analytical shape semantics as sampling and containment. Candidate pages are first bounded by the transformed shape and then conservatively intersected in shape-local space. This retains the full spherical extent of squat capsules and avoids allocating the mostly empty world-axis-aligned bounds of rotated thin cylinders, annuli, capsules, and concave polygon prisms. The UI reports live pages versus capacity and includes the bounded page pool in its GPU-memory estimate. Presets validate an incoming paged grid against the incoming page capacity, allowing paging and an otherwise oversized resolution to be enabled atomically.
 
 Paged FLIP supports Weighted Jacobi and multigrid pressure projection, P2G/G2P transfer, classification and scene collision, extrapolation, surface tension fields, screen-space and polygon-surface rendering, and foam. Multigrid keeps the finest level in the page pool and uses dense coarse levels, preserving long-range pressure convergence without allocating the dense MAC grid. Polygon mode expands the paged narrow-band liquid SDF into its dense render-only reconstruction grid, so its surface memory still scales with the complete domain. Diffuse particles outside the resident fluid-page halo use zero grid velocity and occupancy instead of reading the shared missing-page sentinel. Dense and paged simulation pipelines are compiled separately so opting out retains the original dense execution path.
 
-Switching between dense and paged FLIP at runtime copies marker positions, velocities, lifecycle slots, active-prefix bookkeeping, and flow timing/budgets GPU-to-GPU before the old backend is retired. Derived MAC-grid fields are intentionally rebuilt from the transferred markers on the next step. The diffuse foam pool is recreated and repopulates after the switch.
+Switching between dense and paged FLIP at runtime copies marker positions, velocities, lifecycle slots, active-prefix bookkeeping, flow timing/budgets, compatible diffuse slots and active lists, foam heads/counts/draw state, and compatible polygon-stabilization history GPU-to-GPU before the old backend is retired. Capacity growth remaps the two persistent diffuse-list offsets to the destination stride. Derived MAC-grid fields are intentionally rebuilt from the transferred markers on the next step.
 
 ## Internal Architecture
 
@@ -184,6 +184,8 @@ maxSpeed              atomic<u32>[1], positive-float bits for asynchronous CFL r
 The liquid-SDF, solid-face, pressure-diagnostic, and reseeding buffers are allocated lazily. With optional quality controls off and zero pressure tolerance, the legacy path records no corresponding passes and retains its previous memory footprint.
 
 P2G uses integer fixed-point atomics because baseline WebGPU has no portable floating-point atomic addition. Momentum and interpolation weights use the same scale, so normalization divides their decoded values. Particle velocity is CFL-clamped before encoding to prevent integer overflow.
+
+MLS-MPM also uses integer fixed-point P2G atomics, but its independent mass and momentum codecs are derived on the GPU for every substep. The particle histogram records the actual maximum P2G base-cell population, then a one-thread finalization pass bounds the contributors reaching one quadratic-stencil node and writes safe scales into the shared parameter buffer before P2G. No rest-density multiplier or host-tuned occupancy ceiling participates in this decision. If the observed occupancy and current velocity/stress bounds cannot retain even an integer scale of one, a sticky GPU status gates the transactional frame and reports the mathematically impossible range asynchronously.
 
 All 3D arrays flatten X-fastest:
 
@@ -478,7 +480,7 @@ The optional polygon renderer reconstructs an indexed surface-net mesh directly 
 
 Vertex storage is fixed at one 32-byte position/normal record per SDF cube. The triangle pool is bounded by `surfaceMaxTriangles` (one million by default) and the device storage-buffer limit; overflow is clipped rather than writing past the allocation. The renderer refracts the scene color, samples the environment, applies Fresnel/specular lighting, depth-tests against opaque scene geometry, and writes a liquid eye-depth target for foam occlusion.
 
-The level set is sampled at cell centres, while the authored simulation bounds lie on cell faces. When a side-wall cube transitions from the positive solid boundary layer to negative liquid, reconstruction snaps its X or Z vertex coordinate to that authored face. This closes the otherwise cell-wide inset on all four vertical walls without changing the SDF used by pressure, whitewater, or ray marching.
+The level set is sampled at cell centres, while the authored simulation bounds lie on cell faces. Polygon reconstruction forces only its stabilized SDF's outer X/Z samples positive, including when liquid particles occupy the solver's lateral edge cells. When a side-wall cube transitions from that positive boundary layer to negative liquid, reconstruction snaps its X or Z vertex coordinate to the authored face. This closes all four vertical walls without changing the coherent solver SDF used by pressure, whitewater, sheeting, or other simulation calculations.
 
 While polygon rendering is active, two four-byte staging buffers asynchronously sample the indirect draw's index count every 15 simulation frames. The shared particle-usage readout displays the resulting triangle count below the particle count without mapping the mesh buffers or stalling the render loop; multi-simulation hosts sum completed samples from all rendered polygon surfaces.
 
@@ -619,8 +621,8 @@ The shared **Debug (feature)** selector also exposes **Polygon wireframe**. Surf
 ## Dependencies
 
 - `engine/engine.ts`
-- `fluid/sim-common.ts`
-- `fluid/controls-panel.ts`
+- `fluid/core/sim-common.ts`
+- `fluid/controls/controls-panel.ts`
 - existing particle and surface renderers
 - Whiteboard method-independent state and preset infrastructure
 
@@ -677,13 +679,13 @@ No module-level cache or registration side effect is added.
 ## File Manifest
 
 - `docs/lite/architecture/56-fluid-flip.md`
-- `packages/babylon-lite/src/fluid/flip-sim.ts`
-- `packages/babylon-lite/src/fluid/controls-panel.ts`
-- `packages/babylon-lite/src/fluid/polygon-surface-render.ts`
+- `packages/babylon-lite/src/fluid/solvers/flip-sim.ts`
+- `packages/babylon-lite/src/fluid/controls/controls-panel.ts`
+- `packages/babylon-lite/src/fluid/rendering/polygon-surface-render.ts`
 - `lab/lite/src/demos/fluid.ts`
-- `lab/lite/src/demos/fluid/grid-settings.ts`
-- `lab/lite/src/demos/fluid/preset-io.ts`
-- `lab/lite/src/demos/fluid/blender-fluid-json.ts`
+- `packages/babylon-lite/src/fluid/authoring/grid-settings.ts`
+- `packages/babylon-lite/src/fluid/authoring/preset-io.ts`
+- `packages/babylon-lite/src/fluid/authoring/blender-fluid-json.ts`
 - `lab/lite/src/demos/fluid/quality-presets.ts`
 - `tests/lite/unit/fluid/fluid-grid-settings.test.ts`
 - `tests/lite/unit/fluid/fluid-blender-json.test.ts`

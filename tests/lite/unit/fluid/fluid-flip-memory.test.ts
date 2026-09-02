@@ -10,8 +10,9 @@ import {
     FLIP_PAGE_SIZE,
     flipMacFaceBufferBytes,
     pagedFlipStorageCounts,
+    resolveFlipPageLayout,
     rewriteFlipWgslForPagedStorage,
-} from "../../../../packages/babylon-lite/src/fluid/flip-sim";
+} from "../../../../packages/babylon-lite/src/fluid/solvers/flip-sim";
 
 describe("FLIP GPU memory estimate", () => {
     it("matches the solver buffer layout", () => {
@@ -42,7 +43,7 @@ describe("FLIP GPU memory estimate", () => {
             pagedGrid: true,
             pagedGridMaxPages: 8_000,
         });
-        expect(paged).toBe(767_360_860);
+        expect(paged).toBe(767_370_980);
         expect(paged).toBeLessThan(1024 ** 3);
         expect(estimateFlipGpuBytes(300_000, [600, 288, 600])).toBeGreaterThan(17 * 1024 ** 3);
     });
@@ -77,16 +78,31 @@ describe("FLIP GPU memory estimate", () => {
 
 describe("FLIP particle dispatch", () => {
     it("flattens two-dimensional dispatches in every particle shader", () => {
-        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/flip-sim.ts"), "utf8");
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/solvers/flip-sim.ts"), "utf8");
         expect(source).not.toContain("let i = gid.x;");
     });
 
-    it("dispatches paged cell and face passes over discovered pages", () => {
-        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/flip-sim.ts"), "utf8");
+    it("zeroes paged grid and state-mutating particle dispatches on overflow", () => {
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/solvers/flip-sim.ts"), "utf8");
         expect(source).toContain("flip-page-dispatch");
         expect(source).toContain("dispatchWorkgroupsIndirect(args, offset)");
-        expect(source).toContain("writeDispatch(0u, pages * ${FLIP_PAGE_CELLS}u)");
-        expect(source).toContain("writeDispatch(3u, pages * ${FLIP_PAGE_CELLS * 3}u)");
+        expect(source).toContain("writeDispatch(0u, select(pages * ${FLIP_PAGE_CELLS}u, 0u, overflow))");
+        expect(source).toContain("writeDispatch(3u, select(pages * ${FLIP_PAGE_CELLS * 3}u, 0u, overflow))");
+        expect(source).toContain("writeDispatch(6u, select(config.activeParticleGroups * ${WORKGROUP_SIZE}u, 0u, overflow))");
+        expect(source).toContain("writeDispatch(9u, select(config.allParticleGroups * ${WORKGROUP_SIZE}u, 0u, overflow))");
+        expect(source).toContain("writeDispatch(12u, select(${WORKGROUP_SIZE}u, 0u, overflow))");
+        expect(source).toContain("writeDispatch(15u, select(config.foamGroups * ${WORKGROUP_SIZE}u, 0u, overflow))");
+        expect(source).toContain("writeDispatch(18u, select(config.polygonCellItems, 0u, overflow))");
+        expect(source).toContain("writeDispatch(21u, select(config.polygonCubeItems, 0u, overflow))");
+        expect(source).toContain("function dispatchMutation(");
+        expect(source).toContain("restorePagedStepMetadata(metadata)");
+        expect(source).toContain("const redistributionDistance = reseedParticlesEnabled || particleSheetingEnabled ? 2.25 * dx : cflDistance");
+        expect(source).toContain("const sweepDistance = stepCount * (Math.max(cflDistance, redistributionDistance) + cflDistance + particleRadius)");
+        expect(source).toContain("pageStatusSnapshots.set(statusFrame, capturePagedStepMetadata())");
+        expect(source).toContain("atomicCompareExchangeWeak(&statusData[2], 0u, config.frameId)");
+        expect(source).toContain('const pageStatusIndex = pageStatusStates.indexOf("idle")');
+        expect(source).not.toContain('pageStatusStates.some((state) => state !== "idle")');
+        expect(source).not.toContain("deferredPagedDt");
         expect(source).toContain("let rows = max(1u, (groups + ${MAX_WORKGROUPS - 1}u) / ${MAX_WORKGROUPS}u)");
         expect(source).toContain("dispatchArgs[offset] = (groups + rows - 1u) / rows");
         expect(source).toContain("clearPagedGrid(encoder)");
@@ -95,83 +111,79 @@ describe("FLIP particle dispatch", () => {
     it("rewrites minified WGSL for paged cell and face addressing", () => {
         const compactWgsl =
             "const FIXED_POINT:f32=1.0;struct Params{x:u32,};fn gridDim(p:Params)->vec3<i32>{return vec3<i32>(1);}fn cellIndex(c:vec3<i32>,p:Params)->u32{let d=gridDim(p);return u32(c.x+d.x*(c.y+d.y*c.z));}fn inCellGrid(c:vec3<i32>,p:Params)->bool{return true;}fn storageCellExists(c:vec3<i32>,p:Params)->bool{return inCellGrid(c,p);}fn uDim(p:Params)->vec3<i32>{return gridDim(p);}fn vDim(p:Params)->vec3<i32>{return gridDim(p);}fn wDim(p:Params)->vec3<i32>{return gridDim(p);}fn faceCount(d:vec3<i32>)->u32{return 1u;}fn uCount(p:Params)->u32{return 1u;}fn vCount(p:Params)->u32{return 1u;}fn totalFaceCount(p:Params)->u32{return uCount(p)+vCount(p)+faceCount(wDim(p));}fn localFaceIndex(c:vec3<i32>,d:vec3<i32>)->u32{return 0u;}fn globalFaceIndex(kind:u32,c:vec3<i32>,p:Params)->u32{if(kind==0u){return 0u;}if(kind==1u){return 1u;}return 2u;}fn faceCoord(localIndex:u32,d:vec3<i32>)->vec3<i32>{let x=i32(localIndex%u32(d.x));let yz=i32(localIndex/u32(d.x));let y=yz%d.y;return vec3<i32>(x,y,yz/d.y);}fn faceKind(globalIndex:u32,p:Params)->u32{if(globalIndex<uCount(p)){return 0u;}if(globalIndex<uCount(p)+vCount(p)){return 1u;}return 2u;}fn faceLocalIndex(globalIndex:u32,kind:u32,p:Params)->u32{if(kind==0u){return globalIndex;}if(kind==1u){return globalIndex-uCount(p);}return globalIndex-uCount(p)-vCount(p);}fn faceGridDim(kind:u32,p:Params)->vec3<i32>{return gridDim(p);}@compute @workgroup_size(64)fn main(){}";
-        const rewritten = rewriteFlipWgslForPagedStorage(compactWgsl, {
-            blockDim: [2, 2, 2],
-            numBlocks: 8,
-            maxPages: 8,
-            storageCells: 4096,
-            storageFaces: 12288,
-            lookupWidth: 64,
-            lookupWords: 18,
-        });
+        const rewritten = rewriteFlipWgslForPagedStorage(compactWgsl, resolveFlipPageLayout([16, 16, 16], 8, 64));
         expect(rewritten).toContain("return FLIP_PAGE_STORAGE_CELLS");
         expect(rewritten).toContain("return FLIP_PAGE_STORAGE_FACES");
         expect(rewritten).toContain("return globalIndex % 3u");
         expect(rewritten).toContain("return globalIndex / 3u");
-        expect(rewritten).toContain("flipPageWord(FLIP_PAGE_MAP_OFFSET + flipPageBlockIndex(c)) != 0u");
+        expect(rewritten).toContain("return page != 0u && page <= FLIP_PAGE_MAX_PAGES;");
         expect(rewritten).not.toContain("return u32(c.x+d.x*(c.y+d.y*c.z))");
     });
 
     it("reuses the force bind group while only uniform contents change", () => {
-        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/flip-sim.ts"), "utf8");
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/solvers/flip-sim.ts"), "utf8");
         expect(source).toContain("forceBuffer !== spec.buffer");
     });
 
     it("appends finite inflow candidates with a budget-sized dispatch instead of scanning capacity", () => {
-        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/flip-sim.ts"), "utf8");
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/solvers/flip-sim.ts"), "utf8");
         expect(source).toContain("const FLOW_EMIT_APPEND_WGSL");
-        expect(source).toContain('dispatch(encoder, "flip-flow-emit-append"');
+        expect(source).toContain('"flip-flow-emit-append"');
+        expect(source).toContain("PAGE_DISPATCH_ACTIVE_PARTICLES_OFFSET");
         expect(source).toContain("Math.ceil(appendCount / WORKGROUP_SIZE)");
         expect(source).toContain("liveCount = Math.min(count, liveCount + appendCount)");
     });
 
     it("refills only under-occupied inflow cells independently of emission velocity", () => {
-        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/flip-sim.ts"), "utf8");
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/solvers/flip-sim.ts"), "utf8");
         expect(source).toContain("const FLOW_MARK_OCCUPANCY_WGSL");
         expect(source).toContain("fn fluidTryFillEmptySpace");
         expect(source).toContain("let markerTarget = max(1u, p.counts.y);");
         expect(source).toContain("if (current >= markerTarget)");
         expect(source).toContain("let launch = fluidPerParticleLaunch");
-        expect(source.indexOf('dispatch(encoder, "flip-flow-mark-occupancy"')).toBeLessThan(source.indexOf('dispatch(encoder, "flip-flow-emit-append"'));
+        expect(source.indexOf('"flip-flow-mark-occupancy"')).toBeLessThan(source.indexOf('"flip-flow-emit-append"'));
     });
 
     it("bounds uncapped inflow work by source capacity and skips full pools", () => {
-        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/flip-sim.ts"), "utf8");
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/solvers/flip-sim.ts"), "utf8");
         expect(source).toContain("fluidShapeVolume(emitter.shape, emitter.transform) / flowState.particleVolume");
         expect(source).toContain("const canRefillCapacity = flowFrame.deleteActive || flowState.activeCount < count;");
         expect(source).toContain("if (!flowOccupancyValid || flowFrame.deleteActive || releasedWarmupParticles)");
     });
 
     it("uses asynchronous previous-frame speed readback for adaptive CFL", () => {
-        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/flip-sim.ts"), "utf8");
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/solvers/flip-sim.ts"), "utf8");
         expect(source).toContain("atomicMax(&maxSpeedBits[0]");
         expect(source).toContain("void buffer");
         expect(source).toContain(".mapAsync(GPUMapMode.READ)");
-        expect(source).toContain("const cflSteps =");
+        expect(source).toContain("const cflDt =");
+        expect(source).toContain("scheduleFluidTimestep(timestepScheduler, dt, minSubsteps, adaptiveMaxSubDt, maxSubsteps)");
     });
 
-    it("uploads warm-up seed ranges using typed-array element offsets", () => {
-        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/flip-sim.ts"), "utf8");
-        expect(source).toContain("seedPositions, previous * 4, (liveCount - previous) * 4");
-        expect(source).toContain("seedVelocities, previous * 4, (liveCount - previous) * 4");
+    it("activates warm-up seed ranges through the overflow-gated GPU dispatch", () => {
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/solvers/flip-sim.ts"), "utf8");
+        expect(source).toContain('standalonePipeline("flip-warmup", FLIP_WARMUP_WGSL)');
+        expect(source).toContain("positions[index] = seedPositions[index]");
+        expect(source).toContain("velocities[index] = seedVelocities[index]");
+        expect(source).toContain("PAGE_DISPATCH_ACTIVE_PARTICLES_OFFSET");
     });
 
     it("keeps G2P within the portable compute storage-buffer limit", () => {
-        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/flip-sim.ts"), "utf8");
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/solvers/flip-sim.ts"), "utf8");
         const g2p = source.slice(source.indexOf("function buildG2pWgsl"), source.indexOf("const SPEED_REDUCE_WGSL"));
         expect(g2p).not.toContain("debugSpeed");
         expect(g2p).not.toContain("maxSpeedBits");
-        expect(source).toContain('dispatch(encoder, "flip-speed-reduce"');
+        expect(source).toContain('"flip-speed-reduce"');
     });
 
     it("skips physical material passes when their coefficients are zero", () => {
-        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/flip-sim.ts"), "utf8");
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/solvers/flip-sim.ts"), "utf8");
         expect(source).toContain("if (kinematicViscosity > 0 && viscosityIterations > 0)");
         expect(source).toContain("if (surfaceTension > 0)");
     });
 
     it("provides a lazy geometric multigrid pressure path alongside Jacobi", () => {
-        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/flip-sim.ts"), "utf8");
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/solvers/flip-sim.ts"), "utf8");
         expect(source).toContain('export type FlipPressureSolver = "jacobi" | "multigrid"');
         expect(source).toContain("const MULTIGRID_RESTRICT_WGSL");
         expect(source).toContain("const MULTIGRID_PROLONGATE_WGSL");
@@ -181,7 +193,7 @@ describe("FLIP particle dispatch", () => {
         expect(source).toContain('if (pressureSolver === "multigrid")');
         expect(source).toContain("encodeMultigridPressure(encoder)");
         expect(source).toContain("multigridResources?.gpuBytes ?? 0");
-        const controls = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/controls-panel.ts"), "utf8");
+        const controls = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/controls/controls-panel.ts"), "utf8");
         expect(controls).toContain('key: "pressureSolver"');
         expect(controls).toContain('{ label: "Weighted Jacobi", value: 0 }');
         expect(controls).toContain('{ label: "Multigrid", value: 1 }');
@@ -191,7 +203,7 @@ describe("FLIP particle dispatch", () => {
     });
 
     it("restricts residuals over the complete coarse-cell volume", () => {
-        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/flip-sim.ts"), "utf8");
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/solvers/flip-sim.ts"), "utf8");
         const coarseOperators = source.slice(source.indexOf("const MULTIGRID_SMOOTH_WGSL"), source.indexOf("const MULTIGRID_RESTRICT_WGSL"));
         const restriction = source.slice(source.indexOf("const MULTIGRID_RESTRICT_WGSL"), source.indexOf("const MULTIGRID_PROLONGATE_WGSL"));
         expect(coarseOperators).toContain("*diagonal += 1.0;");
@@ -203,7 +215,7 @@ describe("FLIP particle dispatch", () => {
     });
 
     it("bounds projected-grid velocity and RK2 advection by the CFL speed", () => {
-        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/flip-sim.ts"), "utf8");
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/solvers/flip-sim.ts"), "utf8");
         const project = source.slice(source.indexOf("function buildProjectWgsl"), source.indexOf("const EXTRAPOLATE_WGSL"));
         const g2p = source.slice(source.indexOf("function buildG2pWgsl"), source.indexOf("const SPEED_REDUCE_WGSL"));
         expect(project).toContain("let finiteProjected = select(0.0, rawProjected, rawProjected == rawProjected);");
@@ -214,7 +226,7 @@ describe("FLIP particle dispatch", () => {
     });
 
     it("keeps subcell liquid and solid geometry independently opt-in", () => {
-        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/flip-sim.ts"), "utf8");
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/solvers/flip-sim.ts"), "utf8");
         expect(source).toContain("const LIQUID_SDF_SCATTER_WGSL");
         expect(source).toContain("atomicMin(&orderedSdf");
         expect(source).toContain("let reconstructionRadius = max(p.solve.z, 0.75 * p.originDx.w)");
@@ -230,7 +242,7 @@ describe("FLIP particle dispatch", () => {
         expect(source).toContain("velocity[i] = vec2<f32>(geometry.y, 0.0)");
         expect(source).toContain("liquidSdfResources?.gpuBytes ?? 0");
         expect(source).toContain("solidFaceResources?.gpuBytes ?? 0");
-        const controls = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/controls-panel.ts"), "utf8");
+        const controls = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/controls/controls-panel.ts"), "utf8");
         expect(controls).toContain('key: "liquidSdf"');
         expect(controls).toContain('key: "ghostFluid"');
         expect(controls).toContain('key: "fractionalSolids"');
@@ -243,7 +255,7 @@ describe("FLIP particle dispatch", () => {
     });
 
     it("samples pressure quality asynchronously and adapts multigrid within a cycle cap", () => {
-        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/flip-sim.ts"), "utf8");
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/solvers/flip-sim.ts"), "utf8");
         expect(source).toContain("const PRESSURE_DIAGNOSTIC_REDUCE_WGSL");
         expect(source).toContain("const POST_DIVERGENCE_DIAGNOSTIC_WGSL");
         expect(source).toContain("relativeResidual > pressureTolerance");
@@ -252,7 +264,7 @@ describe("FLIP particle dispatch", () => {
         expect(source).toContain("function ensurePressureDiagnosticResources()");
         expect(source).toContain("destroyPressureDiagnosticResources()");
         expect(source).toContain("pressureDiagnosticResources?.gpuBytes ?? 0");
-        const controls = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/controls-panel.ts"), "utf8");
+        const controls = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/controls/controls-panel.ts"), "utf8");
         expect(controls).toContain('key: "pressureTolerance"');
         expect(controls).toContain('key: "pressureDiagnostics"');
         expect(controls).toContain("Pressure residual:");
@@ -260,7 +272,7 @@ describe("FLIP particle dispatch", () => {
     });
 
     it("keeps min-target-max marker reseeding lazy and recyclable", () => {
-        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/flip-sim.ts"), "utf8");
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/solvers/flip-sim.ts"), "utf8");
         expect(source).toContain("function buildReseedDeleteWgsl");
         expect(source).toContain("const RESEED_BUILD_WGSL");
         expect(source).toContain("function buildReseedEmitWgsl");
@@ -273,29 +285,32 @@ describe("FLIP particle dispatch", () => {
         expect(source).toContain("if (ticket == 0xffffffffu)");
         expect(source).toContain("fluidActivateParticle(donor);");
         expect(source).toContain('dispatchCells(encoder, "flip-reseed-build"');
-        expect(source.indexOf('dispatchCells(encoder, "flip-reseed-build"')).toBeLessThan(source.indexOf('dispatch(encoder, "flip-reseed-delete-overfull"'));
-        expect(source.indexOf('dispatch(encoder, "flip-reseed-delete-overfull"')).toBeLessThan(source.indexOf('dispatch(encoder, "flip-reseed-delete-surplus"'));
+        const encodeReseed = source.slice(source.indexOf("function encodeReseed("), source.indexOf("function rebuildQualityPipelines("));
+        expect(encodeReseed.indexOf('"flip-reseed-build"')).toBeLessThan(encodeReseed.indexOf('"flip-reseed-delete-overfull"'));
+        expect(encodeReseed.indexOf('"flip-reseed-delete-overfull"')).toBeLessThan(encodeReseed.indexOf('"flip-reseed-delete-surplus"'));
         expect(source).toContain("if (sceneSdf(position, 0.0) < radius)");
         expect(source).toContain("reseedResources?.gpuBytes ?? 0");
         expect(source).toContain("reseedResources.state.destroy()");
-        const controls = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/controls-panel.ts"), "utf8");
+        const controls = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/controls/controls-panel.ts"), "utf8");
         for (const key of ["reseedParticles", "reseedMinParticles", "reseedTargetParticles", "reseedMaxParticles", "reseedInterval"]) {
             expect(controls).toContain(`key: "${key}"`);
         }
     });
 
     it("adds bounded GPU sheeting and indexed surface reconstruction", () => {
-        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/flip-sim.ts"), "utf8");
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/solvers/flip-sim.ts"), "utf8");
         expect(source).toContain("const SHEETING_BUILD_WGSL");
         expect(source).toContain("fn isThinSheet");
         expect(source).toContain("fluidActivateParticle(i)");
-        expect(source).toContain('dispatch(encoder, "flip-sheeting-emit"');
+        expect(source).toContain('"flip-sheeting-emit"');
         expect(source).toContain("const SURFACE_NET_VERTEX_WGSL");
         expect(source).toContain("const SURFACE_NET_STABILIZE_WGSL");
         expect(source).toContain("const SURFACE_NET_INDEX_WGSL");
         expect(source).toContain("drawIndirect");
         expect(source).toContain("wireframeDrawIndirect");
-        expect(source).toContain('dispatch(encoder, "flip-polygon-surface-stabilize"');
+        expect(source).toContain('"flip-polygon-surface-stabilize",');
+        expect(source).toContain("PAGE_DISPATCH_POLYGON_CELLS_OFFSET");
+        expect(source).toContain("PAGE_DISPATCH_POLYGON_CUBES_OFFSET");
         expect(source).toContain("usage: GPUBufferUsage.STORAGE | GPUBufferUsage.VERTEX");
         expect(source).toContain("usage: GPUBufferUsage.STORAGE | GPUBufferUsage.INDEX");
         expect(source).toContain("liquidSdfBuffer: stabilizedSdf");
@@ -306,16 +321,16 @@ describe("FLIP particle dispatch", () => {
         expect(source).toContain("gridDimensions: dimensions");
         expect(source).toContain("function buildPolygonSdfUpsampleWgsl");
         expect(source).toContain('pagedRawPipeline("flip-polygon-sdf-upsample"');
-        expect(source).toContain('rawPipeline("flip-polygon-surface-stabilize"');
-        expect(source).toContain('rawPipeline("flip-polygon-surface-vertices"');
-        expect(source).toContain('rawPipeline("flip-polygon-surface-indices"');
+        expect(source).toContain('standalonePipeline("flip-polygon-surface-stabilize"');
+        expect(source).toContain('standalonePipeline("flip-polygon-surface-vertices"');
+        expect(source).toContain('standalonePipeline("flip-polygon-surface-indices"');
         expect(source).toContain("return f32(${LIQUID_SDF_LAYERS}) * p.originDx.w * p.solve.w;");
         expect(source).not.toContain("Paged grid does not yet support polygon-surface reconstruction");
         expect(source).toContain("polygonReconstructionMultiplier");
         expect(source).toContain("refreshPolygonSurface(encoder: GPUCommandEncoder)");
         expect(source).toContain("polygonSurfaceRefreshPending = true;");
         expect(source).toContain("const dimensions = gridDim.map");
-        expect(source).toContain('dispatch(encoder, "flip-polygon-sdf-upsample"');
+        expect(source).toContain('"flip-polygon-sdf-upsample",');
         expect(source).toContain("fineSdf[i] = mix(z0, z1, weight.z);");
         expect(source).toContain("if (c.x == 0 && !lowXNegative && highXNegative)");
         expect(source).toContain("if (c.z == 0 && !lowZNegative && highZNegative)");
@@ -324,13 +339,13 @@ describe("FLIP particle dispatch", () => {
         expect(source).toContain("return usesLiquidSdf() || polygonSurfaceEnabled;");
         expect(source).toContain('encodeLiquidSdf(encoder, "Surface")');
         expect(source).toMatch(/flip-polygon-surface-finalize[\s\S]*?resources\.finalizeBindGroup[\s\S]*?"Surface"/);
-        const controls = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/controls-panel.ts"), "utf8");
+        const controls = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/controls/controls-panel.ts"), "utf8");
         for (const key of ["particleSheeting", "sheetingStrength", "sheetingInterval", "polygonSurface"]) {
             expect(controls).toContain(`key: "${key}"`);
         }
         expect(controls).toContain('key: "polygonReconstructionMultiplier"');
         expect(controls).toContain('visibleWhen: { key: "polygonSurface", equals: 1 }');
-        const renderer = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/polygon-surface-render.ts"), "utf8");
+        const renderer = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/rendering/polygon-surface-render.ts"), "utf8");
         expect(renderer).toContain("drawIndexedIndirect");
         expect(renderer).toContain("setSims(sims: readonly FluidSim[]): void");
         expect(renderer).toContain("for (const currentSim of sims)");
@@ -408,49 +423,58 @@ describe("FLIP particle dispatch", () => {
         expect(controls).toContain('polygonShaderSelect.dataset.fluidPolygonShader = "true"');
         expect(controls).toContain('{ value: "ocean", label: "Ocean PBR" }');
         expect(controls).toContain("Triangles:\\u00a0Calculating...");
-        const foamRenderer = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/foam-render.ts"), "utf8");
-        expect(foamRenderer).toContain("let polygonDepth = u.gains.w > 1.5;");
-        expect(foamRenderer).toContain("orientationWeight = 1.0;");
+        const foamRenderer = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/rendering/foam-render.ts"), "utf8");
+        expect(foamRenderer).toContain('type FoamSurfaceDepthMode = "unfiltered" | "screen" | "polygon"');
+        expect(foamRenderer).toContain('polygonSurfaceDepth ? "polygon" : "screen"');
+        expect(foamRenderer).toContain("foamSplatPipelineCaches: WeakMap<GPUDevice, FoamSplatPipelineCache>");
+        expect(foamRenderer).toContain("buildSplatWgsl(activeParticles, surfaceDepthMode)");
+        expect(foamRenderer).toContain("let orientationWeight = 1.0;");
+        expect(foamRenderer).not.toContain("let polygonDepth = u.gains.w > 1.5;");
+        expect(foamRenderer).not.toContain("if (u.gains.w < 0.5)");
         expect(foamRenderer).toContain("r * 1.5 * (polygonSurfaceDepth ? 2 : 1)");
         expect(foamRenderer).toContain("setPolygonSurfaceDepth(on: boolean)");
         const demo = readFileSync(resolve(process.cwd(), "lab/lite/src/demos/fluid.ts"), "utf8");
-        expect(demo).toContain('stage === "Surface" ? "Surface render" : stage');
-        expect(demo).toContain('"Surface render", "Foam render"');
-        expect(demo).toContain("foamTask.setPolygonSurfaceDepth(true)");
-        expect(demo).toContain("polygonSurfaceTask.setEnvRotationY(rad)");
-        expect(demo).toContain("polygonSurfaceTask.setEnvReflection(exposure, contrast)");
-        expect(demo).toContain("polygonSurfaceTask.setFresnelF0(v)");
-        expect(demo).toContain('polygonSurfaceTask.setWireframe(mode === "polygonWireframe")');
-        expect(demo).toContain("onPolygonSurface: (enabled)");
+        expect(demo).toContain("attachFluidSimulationRenderLayer(activeSim");
+        expect(demo).toContain("attachFluidSimulationCollectionRenderLayer(simulationCollection");
+        expect(demo).toContain("configureFluidSimulationRenderLayer(foamTask");
+        expect(demo).toContain("reflectionExposure: values.reflectionExposure");
+        expect(demo).toContain("reflectionContrast: values.reflectionContrast");
+        expect(demo).toContain("waterReflectivity: values.reflectivity");
+        expect(demo).toContain('polygonWireframe: values.debug === "polygonWireframe"');
+        expect(demo).toContain("(values.schema.polygonSurface ?? 0) >= 0.5");
         expect(demo).toContain("controls.setPolygonTriangleCount");
-        expect(demo).toContain("activeSim.refreshPolygonSurface?.(engine._currentEncoder)");
+        expect(demo).toContain("refreshFluidSimulationPolygonSurface(activeSim)");
         const aquanova = readFileSync(resolve(process.cwd(), "lab/lite/src/demos/aquanova-fluid-sim.ts"), "utf8");
-        expect(aquanova).toContain("createFluidPolygonSurfaceTask");
-        expect(aquanova).toContain("polygonSurfaceTask.setSims(runningSims())");
-        expect(aquanova).toContain("onPolygonSurface: () => syncPolygonSurfaceRendering()");
-        expect(aquanova).toContain("polygonSurface: (phys.polygonSurface ?? 0) >= 0.5");
-        expect(aquanova).toContain("particleSheeting: (phys.particleSheeting ?? 0) >= 0.5");
-        expect(aquanova).toContain("reseedParticles: (phys.reseedParticles ?? 0) >= 0.5");
-        expect(aquanova).toContain("pressureDiagnostics: (phys.pressureDiagnostics ?? 0) >= 0.5");
-        expect(aquanova).toContain("polygonSurfaceTask.setEnvMap");
-        expect(aquanova).toContain('polygonSurfaceTask.setWireframe(mode === "polygonWireframe")');
-        expect(aquanova).toContain("polygonSurfaces.reduce");
+        expect(aquanova).toContain('mode: "polygon"');
+        expect(aquanova).toContain("refreshFluidSimulationCollectionPolygonSurfaces(simulationCollection)");
+        expect(aquanova).toContain('if (changed("schema"))');
+        expect(aquanova).toContain("syncPolygonSurfaceRendering()");
+        expect(aquanova).toContain("createFluidSimulation(engine");
+        expect(aquanova).toContain("physics: physValues[currentMethod]");
+        const facade = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/core/fluid-facade.ts"), "utf8");
+        expect(facade).toContain('physicsValue(physics, "polygonSurface")');
+        expect(facade).toContain('physicsValue(physics, "particleSheeting")');
+        expect(facade).toContain('physicsValue(physics, "reseedParticles")');
+        expect(facade).toContain('physicsValue(physics, "pressureDiagnostics")');
+        expect(aquanova).toContain("configureFluidSimulationRenderLayer(polygonSurfaceTask");
+        expect(aquanova).toContain('polygonWireframe: values.debug === "polygonWireframe"');
+        expect(aquanova).toContain("getFluidSimulationCollectionDiagnostics(simulationCollection).polygons");
     });
 
     it("keeps FLIP whitewater lazy and runs it once after the final substep", () => {
-        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/flip-sim.ts"), "utf8");
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/solvers/flip-sim.ts"), "utf8");
         expect(source).toContain("function ensureFoam(config: FoamConfig)");
         expect(source).toContain("if (surfaceTension > 0 || (foamEnabled && step === stepCount - 1))");
-        expect(source.indexOf('dispatch(encoder, "flip-g2p"')).toBeLessThan(source.indexOf('dispatch(encoder, "flip-foam-emit"'));
+        expect(source.indexOf('"flip-g2p"')).toBeLessThan(source.indexOf('"flip-foam-emit"'));
         expect(source).toContain("foamF32[11] = frameDt");
         expect(source).toContain("setFoam(config: FoamConfig | null)");
         expect(source).toContain("get diffuse(): DiffusePool | undefined");
     });
 
     it("profiles iterative FLIP stages with a bounded query count", () => {
-        const common = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/sim-common.ts"), "utf8");
-        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/flip-sim.ts"), "utf8");
-        const profiler = readFileSync(resolve(process.cwd(), "lab/lite/src/demos/fluid/gpu-profiler.ts"), "utf8");
+        const common = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/core/sim-common.ts"), "utf8");
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/solvers/flip-sim.ts"), "utf8");
+        const profiler = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/core/gpu-profiler.ts"), "utf8");
         const demo = readFileSync(resolve(process.cwd(), "lab/lite/src/demos/fluid.ts"), "utf8");
         expect(common).toContain("stageSpan?(stage: string)");
         expect(source).toContain("const activeProfileSpans = new Set<string>();");
@@ -461,18 +485,21 @@ describe("FLIP particle dispatch", () => {
         expect(profiler).toContain("stageSpan(stage: string)");
         expect(profiler).toContain("begin: { querySet, beginningOfPassWriteIndex: p.begin }");
         expect(profiler).toContain("end: { querySet, endOfPassWriteIndex: p.end }");
-        expect(demo).toContain("profiler!.stageSpan?.");
+        expect(demo).toContain("beginFluidSimulationProfilerFrame(profiler)");
+        expect(demo).toContain("endFluidSimulationProfilerFrame(profiler)");
+        expect(demo).toContain('gpu: { stages: ["Simulation", "Foam gen", "Surface", "Foam render", "Particles"]');
+        expect(demo).not.toContain('"Surface render"');
     });
 
     it("samples diffuse-particle usage asynchronously with per-kind workgroup reduction", () => {
-        const common = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/sim-common.ts"), "utf8");
+        const common = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/core/sim-common.ts"), "utf8");
         expect(common).toContain("export interface DiffuseParticleCounts");
         expect(common).toContain("var<workgroup> localCounts: array<atomic<u32>, 4>");
         expect(common).toContain("frame % 30 !== 0");
         expect(common).toContain(".mapAsync(GPUMapMode.READ)");
         expect(common).toContain("pass.dispatchWorkgroupsIndirect(activeDispatch, 0)");
         expect(common).toContain("@group(0) @binding(2) var<storage, read_write> computeArgs");
-        const controls = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/controls-panel.ts"), "utf8");
+        const controls = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/controls/controls-panel.ts"), "utf8");
         expect(controls).not.toContain("Active foam particles");
         expect(controls).toContain("\\u00a0/\\u00a0");
         expect(controls.indexOf('"Generate foam"')).toBeLessThan(controls.indexOf('"Generate spray"'));
@@ -494,7 +521,7 @@ describe("FLIP particle dispatch", () => {
     });
 
     it("classifies foam only on fluid cells that touch air", () => {
-        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/flip-sim.ts"), "utf8");
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/solvers/flip-sim.ts"), "utf8");
         const surface = source.slice(source.indexOf("const SURFACE_NORMAL_WGSL"), source.indexOf("const SURFACE_CURVATURE_WGSL"));
         const update = source.slice(source.indexOf("function buildFoamUpdateWgsl"), source.indexOf("function buildForceWgsl"));
         expect(surface).toContain("fn touchesAir");
@@ -507,7 +534,7 @@ describe("FLIP particle dispatch", () => {
     });
 
     it("keeps the FLIP foam emitter within eight storage buffers", () => {
-        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/flip-sim.ts"), "utf8");
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/solvers/flip-sim.ts"), "utf8");
         const emitter = source.slice(source.indexOf("function buildFoamEmitWgsl"), source.indexOf("function buildFoamUpdateWgsl"));
         expect(emitter).toContain("@group(0) @binding(2) var<storage, read> faceVelocity");
         expect(emitter).toContain("@group(0) @binding(9) var<storage, read_write> lifecycle");
@@ -524,7 +551,7 @@ describe("FLIP particle dispatch", () => {
     });
 
     it("supports FLIP foam layers and aerodynamic spray drag", () => {
-        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/flip-sim.ts"), "utf8");
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/solvers/flip-sim.ts"), "utf8");
         const update = source.slice(source.indexOf("function buildFoamUpdateWgsl"), source.indexOf("function buildForceWgsl"));
         expect(update).toContain("fn sampleFoamLayer");
         expect(update).toContain("foam.foamLayerDepth");
@@ -541,7 +568,7 @@ describe("FLIP particle dispatch", () => {
 
 describe("FLIP density drift correction", () => {
     it("does not apply compression expansion beside stationary solid cells", () => {
-        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/flip-sim.ts"), "utf8");
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/solvers/flip-sim.ts"), "utf8");
         expect(source).toContain("let nearSolid =");
         expect(source).toContain("if (nearSolid) {");
         expect(source).toContain("boundaryMoves = abs(sceneSdf(center, 0.002) - sceneSdf(center, 0.0)) > 1.0e-5;");
@@ -553,7 +580,7 @@ describe("FLIP density drift correction", () => {
 
 describe("FLIP marker redistribution", () => {
     it("reseeds only overcrowded cells toward valid lower-density neighbours", () => {
-        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/flip-sim.ts"), "utf8");
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/solvers/flip-sim.ts"), "utf8");
         expect(source).toContain("fn markerRedistribution");
         expect(source).toContain("let crowded = u32(ceil(1.25 * f32(p.counts.y)));");
         expect(source).toContain("let moveProbability = min(0.25");
@@ -564,7 +591,7 @@ describe("FLIP marker redistribution", () => {
 
 describe("fluid surface bind groups", () => {
     it("supports the shared Ocean PBR shading mode", () => {
-        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/fluid-surface-render.ts"), "utf8");
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/rendering/fluid-surface-render.ts"), "utf8");
         expect(source).toContain('export type FluidSurfaceShading = "physical" | "ocean"');
         expect(source).toContain("setShadingMode(mode: FluidSurfaceShading): void");
         expect(source).toContain('shadingMode === "ocean" ? 1 : 0');
@@ -586,7 +613,7 @@ describe("fluid surface bind groups", () => {
     });
 
     it("does not allocate bind groups directly in the per-frame execute path", () => {
-        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/fluid-surface-render.ts"), "utf8");
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/rendering/fluid-surface-render.ts"), "utf8");
         const execute = source.slice(source.indexOf("execute(): number {"), source.indexOf("dispose(): void", source.indexOf("execute(): number {")));
         expect(execute).not.toContain("device.createBindGroup");
         expect(source).toContain("const blurBindGroups = new Map<string, BlurBindGroupCacheEntry>()");

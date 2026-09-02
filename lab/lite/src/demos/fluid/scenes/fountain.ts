@@ -3,8 +3,7 @@
 // throttles how much settled water is relaunched, keeping most of it pooled.
 
 import { addToScene, createCylinder, createStandardMaterial, setMeshVisible } from "babylon-lite";
-import type { FluidEmitter, FluidFlowConfig, Mesh } from "babylon-lite";
-import type { SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
+import type { FluidEmitter, FluidFlowConfig, Mesh, SceneSdfSpec } from "babylon-lite";
 import type { FluidCtx, FluidDemo } from "../demo.js";
 import { ENV_STUDIO_URL } from "../demo.js";
 
@@ -24,7 +23,7 @@ function quatFromY(dir: [number, number, number]): [number, number, number, numb
     let ax = dir[2];
     const ay = 0;
     let az = -dir[0]; // cross(+Y, dir)
-    const axisLen = Math.hypot(ax, ay, az);
+    const axisLen = Math.sqrt(ax * ax + ay * ay + az * az);
     if (axisLen < 1e-6) {
         return dir[1] >= 0 ? [0, 0, 0, 1] : [1, 0, 0, 0]; // parallel to ±Y
     }
@@ -72,7 +71,7 @@ export function createFountainDemo(ctx: FluidCtx): FluidDemo {
             const oz = Math.sin(th);
             const dx = ox * fountainParams.ringOut;
             const dz = oz * fountainParams.ringOut;
-            const len = Math.hypot(dx, 1.1, dz);
+            const len = Math.sqrt(dx * dx + 1.1 * 1.1 + dz * dz);
             list.push({
                 id: `fountain-ring-${k + 1}`,
                 name: `Ring jet ${k + 1}`,
@@ -158,7 +157,7 @@ export function createFountainDemo(ctx: FluidCtx): FluidDemo {
                 continue;
             }
             const radius = e.shape.type === "sphere" ? e.shape.radius : 0.1;
-            const speed = Math.hypot(e.velocity[0], e.velocity[1], e.velocity[2]);
+            const speed = Math.sqrt(e.velocity[0] * e.velocity[0] + e.velocity[1] * e.velocity[1] + e.velocity[2] * e.velocity[2]);
             const dir: [number, number, number] = speed > 1e-6 ? [e.velocity[0] / speed, e.velocity[1] / speed, e.velocity[2] / speed] : [0, 1, 0];
             // Scale the unit-diameter bore to the emitter radius (X/Z only; height fixed).
             m.scaling.set(2 * radius, 1, 2 * radius);

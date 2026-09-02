@@ -57,6 +57,23 @@ async function setCheckboxByInfo(page: Page, titlePrefix: string, checked: boole
     );
 }
 
+test("PB-MPM liquid preset fallback keeps the selected material", async ({ page }) => {
+    test.setTimeout(120_000);
+    await page.goto("/demo-fluid.html");
+    await waitForCanvasReady(page, { timeout: 60_000, label: "Fluid demo" });
+
+    const canvas = page.locator("canvas");
+    await page.locator('select:has(option[value="capsule"])').selectOption("capsule");
+    const methodSelect = page.locator('select[data-fluid-method="true"]');
+    await methodSelect.selectOption("PB-MPM");
+    await expect(canvas).toHaveAttribute("data-method", "PB-MPM");
+
+    const materialSelect = page.getByText("PB-MPM material", { exact: true }).locator("..").locator("select");
+    await materialSelect.selectOption("3");
+    await expect(materialSelect).toHaveValue("3");
+    await expect(page.getByText(/^Visco plasticity/)).toBeVisible();
+});
+
 test("screen-space surface switches to Ocean PBR", async ({ page }) => {
     test.setTimeout(120_000);
     await page.goto("/demo-fluid.html");
@@ -243,12 +260,16 @@ test("Whiteboard preserves authored state across fluid methods", async ({ page }
     await spreadInput.pressSequentially("0.35");
     await spreadInput.blur();
     await expect(spreadInput).toHaveValue("0.35");
-    const delayBeforeStart = page
+    const delayBeforeStartFields = page
         .locator("label")
         .filter({ hasText: /^Delay before start/ })
         .locator("input");
-    await delayBeforeStart.fill("2.5");
-    await delayBeforeStart.blur();
+    const emitterDelayBeforeStart = delayBeforeStartFields.nth(0);
+    const sinkDelayBeforeStart = delayBeforeStartFields.nth(1);
+    await emitterDelayBeforeStart.fill("2.5");
+    await emitterDelayBeforeStart.blur();
+    await sinkDelayBeforeStart.fill("1.75");
+    await sinkDelayBeforeStart.blur();
     const sourceAndNormalField = page.locator("label").filter({ hasText: /^Source \+ normal/ });
     const sourceAndNormal = sourceAndNormalField.locator('input[type="checkbox"]');
     await sourceAndNormal.check();
@@ -305,7 +326,8 @@ test("Whiteboard preserves authored state across fluid methods", async ({ page }
     await expect(canvas).toHaveAttribute("data-mls-container-lo", /.+/);
     await expect(canvas).toHaveAttribute("data-mls-container-hi", /.+/);
     await expect(sourceAndNormal).toBeChecked();
-    await expect(delayBeforeStart).toHaveValue("2.5");
+    await expect(emitterDelayBeforeStart).toHaveValue("2.5");
+    await expect(sinkDelayBeforeStart).toHaveValue("1.75");
     await expect(sourceFactor).toHaveValue("0.75");
     await expect(normalVelocity).toHaveValue("-1.25");
 

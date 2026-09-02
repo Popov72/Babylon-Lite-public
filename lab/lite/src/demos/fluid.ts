@@ -41,7 +41,6 @@ import {
     createStandardMaterial,
     createUtilityLayer,
     fluidSimulationCellSize,
-    fluidSimulationParticleRadius,
     getEffectiveAspectRatio,
     getFrameGraph,
     getViewProjectionMatrix,
@@ -70,29 +69,99 @@ import {
     startEngine,
     updateLineSystem,
 } from "babylon-lite";
-import { createPbfSim } from "babylon-lite/fluid/pbf-sim.js";
 import {
-    createFlipSim,
-    estimateFlipGpuBytes,
-    flipMacFaceBufferBytes,
+    resolveFluidSimulationConfig,
+    resolveFluidAllocationPlan,
+    CURRENT_FLUID_SIMULATION_SEMANTICS,
+    fluidParticleBytesPerSlot,
+    fluidParticleBufferLimitBytes,
+    fluidDeviceParticleCapacity,
+    resolveFluidGridCompatibility,
+    fluidMaximumPageCapacity,
+    fitFluidGridResolution,
+    formatFluidPageDiagnostics,
+    FLUID_GRID_MAX_AXIS_CELLS,
+    mlsMpmDefaultPageCapacity,
+    resolveFluidRenderMode,
+    transformFluidFlow,
+} from "babylon-lite";
+import {
+    carryMethodIndependentState,
+    adoptFluidForceField,
+    adoptFluidSceneSdf,
+    applyFluidControls,
+    applyFluidGridSettings,
+    attachFluidSimulationCollectionRenderLayer,
+    attachFluidSimulationRenderLayer,
+    beginFluidSimulationProfilerFrame,
+    bindFluidControls,
+    configureFluidSimulationRenderLayer,
+    commitFluidReconfiguration,
+    createFluidInitialStatePlanCache,
+    createFluidSimulation,
+    createFluidSimulationCollection,
+    createFluidControlsPanel,
+    createFluidFlowEditor,
+    createFluidRenderEnvironment,
+    createFluidSimulationProfiler,
+    createRayForce,
+    createSolidGridBounds,
+    DEFAULT_FLUID_SCHEMAS,
+    disposeFluidControlsBinding,
+    exportJsonFromPairState,
     FLIP_DEFAULT_PAGE_CAPACITY,
-    FLIP_PAGE_CELLS,
-    FLIP_PAGE_SIZE,
-    pagedFlipStorageCounts,
+    fluidCaptureCompletionTime,
+    fluidSimulationLifecycle,
+    fluidSimulationStepDelta,
+    MAX_FLUID_POLYGON_POINTS,
+    parseBlenderFluidJson,
+    pbmpmParamKeysForMaterial,
+    presetFromExportJson,
     resolveFlipDiscretization,
-    transferFlipSimState,
-} from "babylon-lite/fluid/flip-sim.js";
-import type { FluidEmitter, FluidFlowConfig, FluidShape, FluidSink } from "babylon-lite";
-import type { FluidProfiler, FluidSim, SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
-import { countFluidInitialParticles, fluidShapeVolume, MAX_FLUID_POLYGON_POINTS } from "babylon-lite/fluid/sim-common.js";
-import { createMlsMpmSim } from "babylon-lite/fluid/mls-mpm-sim.js";
-import { createPbMpmSim, pbmpmParamKeysForMaterial } from "babylon-lite/fluid/pbmpm-sim.js";
-import { createRayForce } from "babylon-lite/fluid/ray-force.js";
-import { createParticleRenderTask } from "babylon-lite/fluid/particle-render.js";
-import { createFluidSurfaceTask } from "babylon-lite/fluid/fluid-surface-render.js";
-import { createFluidPolygonSurfaceTask } from "babylon-lite/fluid/polygon-surface-render.js";
-import { createFoamRenderTask } from "babylon-lite/fluid/foam-render.js";
-import type { FoamConfig } from "babylon-lite/fluid/sim-common.js";
+    scenePayloadFromBlenderFluidJson,
+    endFluidSimulationProfilerFrame,
+    getFluidSimulationDiagnostics,
+    importFluidPresetSession,
+    editFluidPresetSession,
+    exportFluidPresetSession,
+    fluidInitialEmitterVolume,
+    planFluidInitialState,
+    prepareFluidReconfigurationUpdate,
+    readFluidSimulationProfiler,
+    refreshFluidSimulationPolygonSurface,
+    resetFluidSimulation,
+    cancelFluidReconfiguration,
+    setFluidSimulationFlow,
+    setFluidSimulationFoam,
+    setFluidSimulationForceField,
+    setFluidSimulationMaterial,
+    setFluidSimulationParameter,
+    setFluidSimulationProfiler,
+    setFluidSimulationSceneSdf,
+    stepFluidSimulation,
+    syncFluidControls,
+    updateFluidSimulationEmitter,
+} from "babylon-lite";
+import type { FluidEmitter, FluidFlowConfig, FluidSceneSdf, FluidShape, FluidSimulationSemantics, FluidSink, ForceFieldSpec } from "babylon-lite";
+import type {
+    BlenderFluidScene,
+    FluidExportJson,
+    FluidFlowEditor,
+    FluidFlowObjectKind,
+    FluidDebug,
+    FluidForceField,
+    FluidSimulation,
+    FluidSimulationOptions,
+    FluidSimulationProfiler,
+    FluidControlsBinding,
+    FluidControlsApplicationPlan,
+    FluidControlsBindingTarget,
+    FluidControlValues,
+    FluidPresetSession,
+    FoamConfig,
+    FoamDebugTexture,
+    SceneSdfSpec,
+} from "babylon-lite";
 import type { AssetContainer, Mesh, Task, EnvironmentTextures, Renderable, Material, PbrMaterialProps, SceneNode, Vec3 } from "babylon-lite";
 import { buildHdrSkyboxRenderable } from "babylon-lite/material/pbr/background-hdr-skybox.js";
 import { retireGpuResources } from "babylon-lite/engine/gpu-resource-retirement.js";
@@ -100,18 +169,9 @@ import { retireGpuResources } from "babylon-lite/engine/gpu-resource-retirement.
 // re-exported from the package root, so the factory comes from its own module (the same
 // deep-import convention the fluid sim + HDR skybox already use here).
 import { createPostProcessTask } from "babylon-lite/frame-graph/post-process-task.js";
-import { createFluidProfiler } from "./fluid/gpu-profiler.js";
-import type { FluidProfilerImpl } from "./fluid/gpu-profiler.js";
-import { createFluidControlsPanel, DEFAULT_FLUID_SCHEMAS } from "babylon-lite/fluid/controls-panel.js";
 import { demoAssetUrl } from "./demo-asset-url.js";
 import type { DemoParam, FluidCtx, FluidDemo, FluidDomainBounds, FluidGridSettings, PairState, PendingForce } from "./fluid/demo.js";
-import { carryMethodIndependentState } from "./fluid/method-independent-state.js";
-import { exportJsonFromPairState, presetFromExportJson, type FluidExportJson } from "./fluid/preset-io.js";
-import { parseBlenderFluidJson, scenePayloadFromBlenderFluidJson, type BlenderFluidScene } from "./fluid/blender-fluid-json.js";
-import { createSolidGridBounds } from "./fluid/grid-bounds-visual.js";
 import { getQualityPreset, QUALITIES, DEFAULT_QUALITY, loadQualityPresets, type Quality } from "./fluid/quality-presets.js";
-import { fluidCaptureCompletionTime, fluidSimulationLifecycle, fluidSimulationStepDelta } from "./fluid/simulation-lifecycle.js";
-import { createFluidFlowEditor, type FluidFlowEditor, type FluidFlowObjectKind } from "./fluid/flow-editor.js";
 import { ENV_STUDIO_URL } from "./fluid/demo.js";
 import {
     cellSizeForPhysicsScale,
@@ -124,7 +184,6 @@ import {
     gridPositionForBounds,
     gridResolutionForScale,
     gridSizeForBounds,
-    highestFittingGridResolution,
     MPM_MAX_SCALE,
     MPM_MIN_SCALE,
     PBF_MAX_SCALE,
@@ -134,9 +193,9 @@ import {
     PHYS_MAX_SCALE,
     PHYS_MIN_SCALE,
     scaleLimitsForMethod,
-} from "./fluid/grid-settings.js";
+} from "babylon-lite";
 import { screenRay } from "./fluid/pick.js";
-import { CAP_A, CAP_B, CAP_R, createCapsuleDemo } from "./fluid/scenes/capsule.js";
+import { createCapsuleDemo } from "./fluid/scenes/capsule.js";
 import { createBoxDemo } from "./fluid/scenes/box.js";
 import { createFountainDemo } from "./fluid/scenes/fountain.js";
 import { createMarbleTowerDemo } from "./fluid/scenes/marbleTower.js";
@@ -146,13 +205,46 @@ import { createWhiteboardDemo } from "./fluid/scenes/whiteboard.js";
 // Particle count is chosen at runtime via the panel dropdown. The PBF rest
 // density is pinned (see below) so the count scales the liquid VOLUME, not the
 // packing density; MLS-MPM uses the same count so the two methods fill the tank
-// comparably. Recreating the sims (createSims) is the only way to resize the
-// GPU particle buffers, so the dropdown disposes and rebuilds both backends.
+// comparably. Recreating the sim (createSim) is the only way to resize the
+// GPU particle buffers, so the dropdown disposes and rebuilds the active backend.
 const PARTICLE_COUNTS = [40000, 80000, 120000, 150000, 200000, 300000, 500000, 750000, 1000000, 1200000, 1500000, 1800000, 2000000];
 const DEFAULT_PARTICLE_COUNT = 80000;
-const DEFAULT_PARTICLE_BYTES_PER_SLOT = 144;
-const FLIP_PARTICLE_BYTES_PER_SLOT = 40;
-const INACTIVE_GRID_RESOLUTION = 64;
+const SHARED_FLUID_BINDING_KEYS: readonly (keyof FluidControlValues)[] = [
+    "count",
+    "renderMode",
+    "polygonShader",
+    "color",
+    "independentRendering",
+    "half",
+    "thicknessDownscale",
+    "absorption",
+    "size",
+    "physScale",
+    "gridPosition",
+    "gridSize",
+    "gridResolution",
+    "markersPerCell",
+    "refraction",
+    "specular",
+    "reflectionExposure",
+    "reflectionContrast",
+    "reflectivity",
+    "depthBlur",
+    "depthBlurThreshold",
+    "thicknessBlur",
+    "surfaceFilter",
+    "narrowDelta",
+    "narrowMu",
+    "anisotropic",
+    "anisoSurfScale",
+    "activeBlocks",
+    "pagedGrid",
+    "pagedGridMaxPages",
+    "fusedBlockDiscovery",
+    "debug",
+    "schema",
+    "foam",
+];
 
 // World-space radius of the interactive Shift+RMB push force (mouse-stir). Shared
 // by every demo now the force is core-owned.
@@ -363,8 +455,6 @@ async function main(): Promise<void> {
 
     // Shared scene geometry for both backends so switching is apples-to-apples.
     // The domain spans both containers (capsule drain spread + the taller box).
-    const SPAWN_MIN: [number, number, number] = [-2, 4, -2];
-    const SPAWN_MAX: [number, number, number] = [2, 12, 2];
     const BOUNDS_MIN: [number, number, number] = [-20, 0, -20];
     const BOUNDS_MAX: [number, number, number] = [20, 20, 20];
     const defaultDomainBounds = (method: string, scale = 1): FluidDomainBounds => ({
@@ -379,19 +469,19 @@ async function main(): Promise<void> {
     const validGridSettings = (grid: FluidGridSettings): boolean => grid.position.every(Number.isFinite) && grid.size.every((value) => Number.isFinite(value) && value > 0);
     const gridSettingsEqual = (a: FluidGridSettings | undefined, b: FluidGridSettings | undefined): boolean =>
         a === undefined || b === undefined ? a === b : a.position.every((value, index) => value === b.position[index]) && a.size.every((value, index) => value === b.size[index]);
-    const GRID_CELLS_MAX = 2048;
-    const GRID_CELL_COUNT_MAX = Math.floor(engine._device.limits.maxStorageBufferBindingSize / 16);
-    const particleBufferLimit = Math.min(engine._device.limits.maxStorageBufferBindingSize, engine._device.limits.maxBufferSize);
-    const particleBytesPerSlot = (method: string): number => (method === "FLIP" ? FLIP_PARTICLE_BYTES_PER_SLOT : DEFAULT_PARTICLE_BYTES_PER_SLOT);
-    const deviceParticleCapacityForMethod = (method: string): number => Math.floor(particleBufferLimit / particleBytesPerSlot(method));
+    // Particle-buffer / device-limit sizing policy lives in the core (allocation-plan); the host only
+    // supplies its plain-number device limits and formats the user-facing copy.
+    const deviceLimits = { maxStorageBufferBindingSize: engine._device.limits.maxStorageBufferBindingSize, maxBufferSize: engine._device.limits.maxBufferSize };
+    const particleBufferLimit = fluidParticleBufferLimitBytes(deviceLimits);
+    const deviceParticleCapacityForMethod = (method: string): number => fluidDeviceParticleCapacity(deviceLimits, method);
     const syncDeviceParticleCapacity = (method: string): void => {
         canvas.dataset.deviceParticleCapacity = String(deviceParticleCapacityForMethod(method));
-        canvas.dataset.deviceParticleBytesPerSlot = String(particleBytesPerSlot(method));
+        canvas.dataset.deviceParticleBytesPerSlot = String(fluidParticleBytesPerSlot(method));
         canvas.dataset.deviceParticleBufferLimitBytes = String(particleBufferLimit);
     };
     syncDeviceParticleCapacity("PBF");
     const particleAllocationError = (count: number, method: string): string | undefined => {
-        const bytesPerSlot = particleBytesPerSlot(method);
+        const bytesPerSlot = fluidParticleBytesPerSlot(method);
         const deviceParticleCapacity = deviceParticleCapacityForMethod(method);
         return count > deviceParticleCapacity
             ? "Particle allocation requires " +
@@ -427,30 +517,13 @@ async function main(): Promise<void> {
         flipResolution = flipGridResolution
     ): string | undefined => {
         const cells = gridCellsForSettings(grid, method, physicsSize, flipResolution);
-        const oversizedAxis = cells.findIndex((value) => value > GRID_CELLS_MAX);
-        if (oversizedAxis >= 0) {
-            return `Grid size requires ${cells[oversizedAxis]!.toLocaleString()} cells on ${"XYZ"[oversizedAxis]} at the current ${
-                method === "FLIP" ? "Resolution divisions" : "Physics particle size"
-            }; maximum is ${GRID_CELLS_MAX.toLocaleString()}.`;
+        let allocationMethod: FluidSimulationOptions["method"];
+        if (method === "PBF" || method === "FLIP" || method === "MLS-MPM" || method === "PB-MPM") {
+            allocationMethod = method;
+        } else {
+            throw new RangeError(`[fluid] unsupported allocation method ${method}.`);
         }
-        const totalCells = cells[0] * cells[1] * cells[2];
-        if (method === "FLIP") {
-            const maxBytes = Math.min(engine._device.limits.maxStorageBufferBindingSize, engine._device.limits.maxBufferSize);
-            const faceBytes = flipPaging.enabled ? pagedFlipStorageCounts(flipPaging.maxPages).faces * 8 : flipMacFaceBufferBytes(cells);
-            if (faceBytes > maxBytes) {
-                return `${flipPaging.enabled ? `Page capacity ${flipPaging.maxPages.toLocaleString()}` : `Grid ${cells.join(" \u00d7 ")}`}\u00a0requires\u00a0${(
-                    faceBytes /
-                    (1024 * 1024)
-                ).toFixed(1)}\u00a0MiB per ${flipPaging.enabled ? "paged" : "packed"} FLIP MAC buffer;\u00a0this device's per-storage-buffer binding limit is\u00a0${(
-                    maxBytes /
-                    (1024 * 1024)
-                ).toFixed(1)}\u00a0MiB.`;
-            }
-            return undefined;
-        }
-        return totalCells > GRID_CELL_COUNT_MAX
-            ? `Grid size requires ${totalCells.toLocaleString()} cells at the current Physics particle size; this device supports at most ${GRID_CELL_COUNT_MAX.toLocaleString()}.`
-            : undefined;
+        return resolveFluidGridCompatibility(allocationMethod, cells, deviceLimits, allocationMethod === "FLIP" ? flipPaging : undefined).message;
     };
 
     // Gridless presets retain the historical hidden domain multiplier. Once a pair has an
@@ -459,6 +532,8 @@ async function main(): Promise<void> {
     let domainScale = 1;
     let builtDomainScale = 1;
     let methodName = "PBF";
+    let controlsBinding: FluidControlsBinding | null = null;
+    let simulationSemantics: FluidSimulationSemantics = CURRENT_FLUID_SIMULATION_SEMANTICS;
     let gridSettings: FluidGridSettings | undefined;
     let builtGridSettings: FluidGridSettings | undefined;
     let builtGridMethod = methodName;
@@ -474,29 +549,38 @@ async function main(): Promise<void> {
     let flipMarkersPerCell = FLIP_DEFAULT_MARKERS_PER_CELL;
     let builtFlipMarkersPerCell = flipMarkersPerCell;
 
-    // Seed box scaled with the physics particle size. The fixed spawn box only
-    // matches the rest density at 1×; at other sizes the seed is far under-dense
-    // (small particles → violent collapse) or over-dense (big particles → eruption),
-    // which shows up as white spray. Scaling the box half-extents with the size
-    // holds the seed-to-rest density ratio ~constant so the fluid settles calmly at
-    // every size. Clamped to stay inside the base tank footprint and above ground.
-    function scaledSpawn(s: number): { min: [number, number, number]; max: [number, number, number] } {
-        const cx = (SPAWN_MIN[0] + SPAWN_MAX[0]) / 2;
-        const cy = (SPAWN_MIN[1] + SPAWN_MAX[1]) / 2;
-        const cz = (SPAWN_MIN[2] + SPAWN_MAX[2]) / 2;
-        const hx = Math.min(((SPAWN_MAX[0] - SPAWN_MIN[0]) / 2) * s, 4);
-        const hz = Math.min(((SPAWN_MAX[2] - SPAWN_MIN[2]) / 2) * s, 4);
-        const hy = Math.min(((SPAWN_MAX[1] - SPAWN_MIN[1]) / 2) * s, 7);
-        const yMin = Math.max(1, cy - hy);
-        const yMax = Math.min(17, cy + hy);
-        return { min: [cx - hx, yMin, cz - hz], max: [cx + hx, yMax, cz + hz] };
+    // ── Single active fluid backend (review finding 11) ──────────────────────
+    // Only the SELECTED solver is ever constructed. Capacity / grid / paging /
+    // method changes rebuild that one backend and dispose the outgoing one, so no
+    // interaction path synchronously allocates the three unrelated backends — which
+    // previously cost multi-second stalls and up to 4x peak GPU memory. These
+    // per-method build tallies plus the active-backend / transition-byte read-outs
+    // make that guarantee observable to the memory diagnostics and the regressions.
+    const backendBuildCounts: Record<string, number> = { PBF: 0, FLIP: 0, "MLS-MPM": 0, "PB-MPM": 0 };
+    let totalBackendBuilds = 0;
+    let activeSimMethod = methodName;
+    let lastTransitionPeakBytes = 0;
+    function publishBackendDiagnostics(): void {
+        canvas.dataset.simulationActiveBackend = activeSimMethod;
+        canvas.dataset.simulationBackendBuilds = String(totalBackendBuilds);
+        canvas.dataset.backendBuildsPbf = String(backendBuildCounts.PBF ?? 0);
+        canvas.dataset.backendBuildsFlip = String(backendBuildCounts.FLIP ?? 0);
+        canvas.dataset.backendBuildsMlsMpm = String(backendBuildCounts["MLS-MPM"] ?? 0);
+        canvas.dataset.backendBuildsPbMpm = String(backendBuildCounts["PB-MPM"] ?? 0);
+    }
+    function trackSimBuild(method: string): void {
+        backendBuildCounts[method] = (backendBuildCounts[method] ?? 0) + 1;
+        totalBackendBuilds++;
+        activeSimMethod = method;
+        publishBackendDiagnostics();
     }
 
-    // Backends are (re)built by createSims so the particle-count dropdown can
-    // resize the GPU buffers (the only way to change count is to reallocate). The
-    // capsule tank geometry seeds the sims' built-in fallback confinement (a legacy
-    // default; the demo's injected sceneSdf always overrides it).
-    function createSims(count: number, scale: number): { pbf: FluidSim; flip: FluidSim; mpm: FluidSim; pbmpm: FluidSim } {
+    // The selected backend is (re)built by createSim so the particle-count dropdown
+    // can resize the GPU buffers (the only way to change count is to reallocate). The
+    // capsule tank geometry seeds the sim's built-in fallback confinement (a legacy
+    // default; the demo's injected sceneSdf always overrides it). Exactly one of the
+    // four candidate solvers is instantiated — the others short-circuit to null.
+    function simulationOptions(count: number, scale: number): FluidSimulationOptions {
         const allocationError = particleAllocationError(count, methodName);
         if (allocationError) {
             throw new RangeError(allocationError);
@@ -521,20 +605,28 @@ async function main(): Promise<void> {
         // Extreme scale values remain opt-in because timestep and density settings
         // may also need adjustment.
         const pbfScale = methodName === "PBF" ? clampScale(scale, PBF_MIN_SCALE, PBF_MAX_SCALE) : 1;
-        const flipScale = 1;
         const mpmScale = methodName === "MLS-MPM" ? clampScale(scale, MPM_MIN_SCALE, MPM_MAX_SCALE) : 1;
         const pbmpmScale = methodName === "PB-MPM" ? clampScale(scale, PBMPM_MIN_SCALE, PBMPM_MAX_SCALE) : 1;
         const ds = domainScale;
         const scaleTriple = (t: [number, number, number]): [number, number, number] => [t[0] * ds, t[1] * ds, t[2] * ds];
         const explicitGrid = gridSettings !== undefined;
         const explicitBounds = gridSettings ? gridBounds(gridSettings.position, gridSettings.size) : undefined;
-        const discretization = fluidDiscretization(scale);
-        const particleRadius = explicitGrid ? fluidSimulationParticleRadius(discretization) : undefined;
-        const cellSize = explicitGrid ? fluidSimulationCellSize(methodName, discretization) : undefined;
-        const inactiveCellSize = gridSettings ? Math.max(...gridSettings.size) / INACTIVE_GRID_RESOLUTION : undefined;
-        const pbfCellSize = methodName === "PBF" ? cellSize : inactiveCellSize;
-        const mpmCellSize = methodName === "MLS-MPM" ? cellSize : inactiveCellSize;
-        const pbmpmCellSize = methodName === "PB-MPM" ? cellSize : inactiveCellSize;
+        // The "fluid" compatibility profile is the single home for this host's discretization policy:
+        // it reproduces the previous explicit-grid (shared fluidSimulation* discretization) and the
+        // gridless legacy fallback (0.09*scale radius, cellSizeForPhysicsScale cell size, both x domain
+        // scale) exactly. FLIP derives its own grid from the resolution, so only non-FLIP backends use it.
+        const activeScale = methodName === "PBF" ? pbfScale : methodName === "MLS-MPM" ? mpmScale : methodName === "PB-MPM" ? pbmpmScale : 1;
+        const nonFlipConfig =
+            methodName === "FLIP"
+                ? null
+                : resolveFluidSimulationConfig("fluid", {
+                      method: methodName,
+                      physicsScale: explicitGrid ? scale : activeScale,
+                      explicitGrid,
+                      domainScale: ds,
+                      semantics: simulationSemantics,
+                      ...(explicitBounds ? { bounds: explicitBounds } : {}),
+                  });
         if (gridSettings) {
             const allocationError = gridAllocationError(gridSettings, methodName, scale);
             if (allocationError) {
@@ -549,130 +641,179 @@ async function main(): Promise<void> {
         const pbfGroundY = useGridFloor ? pbfBoundsMin[1] : 0;
         const mpmGroundY = useGridFloor ? mpmBoundsMin[1] : 0;
         canvas.dataset.simulationGroundY = String(methodName === "PBF" || methodName === "FLIP" ? pbfGroundY : mpmGroundY);
-        const pbfSpawn = scaledSpawn(pbfScale);
-        const flipSpawn = scaledSpawn(flipScale);
-        const mpmSpawn = scaledSpawn(mpmScale);
-        const pbmpmSpawn = scaledSpawn(pbmpmScale);
         // Backend 1 — Position Based Fluids (the original solver).
-        const pbf = createPbfSim(engine, {
-            count: pbfCount,
-            particleRadius: particleRadius ?? 0.09 * pbfScale * ds,
-            smoothingRadius: pbfCellSize ?? 0.4 * pbfScale * (explicitGrid ? 1 : ds),
-            spawnMin: explicitGrid ? pbfSpawn.min : scaleTriple(pbfSpawn.min),
-            spawnMax: explicitGrid ? pbfSpawn.max : scaleTriple(pbfSpawn.max),
-            capsuleA: CAP_A,
-            capsuleB: CAP_B,
-            capsuleRadius: CAP_R,
-            groundY: pbfGroundY,
-            restDensity: 341 / (pbfScale * pbfScale * pbfScale),
-            boundsMin: pbfBoundsMin,
-            boundsMax: pbfBoundsMax,
-            maxPerCell: 48,
-            relaxation: 50 / (pbfScale * pbfScale),
-        });
+        const pbf =
+            methodName === "PBF"
+                ? ({
+                      method: "PBF",
+                      particleCount: pbfCount,
+                      bounds: { min: pbfBoundsMin, max: pbfBoundsMax },
+                      physicsScale: explicitGrid ? scale : pbfScale,
+                      compatibilityProfile: "fluid",
+                      semantics: simulationSemantics,
+                      explicitGrid,
+                      domainScale: ds,
+                      particleRadius: nonFlipConfig!.particleRadius,
+                      groundY: pbfGroundY,
+                      physics: {
+                          restDensity: 341,
+                          relaxation: 50,
+                      },
+                  } satisfies FluidSimulationOptions)
+                : null;
 
         // Backend 2 — FLIP (marker particles + incompressible staggered MAC grid).
-        const flip = createFlipSim(engine, {
-            count: flipCount,
-            markersPerCell: flipMarkersPerCell,
-            spawnMin: explicitGrid ? flipSpawn.min : scaleTriple(flipSpawn.min),
-            spawnMax: explicitGrid ? flipSpawn.max : scaleTriple(flipSpawn.max),
-            groundY: pbfGroundY,
-            boundsMin: pbfBoundsMin,
-            boundsMax: pbfBoundsMax,
-            ...(methodName === "FLIP" ? { gridResolution: flipGridResolution } : {}),
-            gravity: 9.8,
-            flipRatio: 0.95,
-            pressureIterations: 40,
-            pressureRelaxation: 0.8,
-            velocityDamping: 0,
-            kinematicViscosity: 0,
-            viscosityIterations: 12,
-            surfaceTension: 0,
-            restitution: 0,
-            minSubsteps: 1,
-            maxSubsteps: 8,
-            cflNumber: 2,
-            pagedGrid: flipPagedGrid,
-            pagedGridMaxPages: flipPagedGridMaxPages,
-            onPagedGridPages: (requiredPages, capacity) => {
-                controls.setPagedGridStatus(`${requiredPages.toLocaleString()}\u00a0/\u00a0${capacity.toLocaleString()}\u00a0pages`);
-                canvas.dataset.pagedGridPages = String(requiredPages);
-                canvas.dataset.pagedGridPageCapacity = String(capacity);
-            },
-            onPagedGridOverflow: (requiredPages, capacity) => {
-                const message = `Page capacity exceeded: ${requiredPages.toLocaleString()} required, ${capacity.toLocaleString()} allocated. Increase Page capacity.`;
-                controls.setPagedGridStatus(message, true);
-                canvas.dataset.pagedGridOverflow = "true";
-                console.error(`[FLIP] ${message}`);
-            },
-        });
+        const flip =
+            methodName === "FLIP"
+                ? ({
+                      method: "FLIP",
+                      particleCount: flipCount,
+                      bounds: { min: pbfBoundsMin, max: pbfBoundsMax },
+                      physicsScale: 1,
+                      compatibilityProfile: "fluid",
+                      semantics: simulationSemantics,
+                      explicitGrid,
+                      domainScale: ds,
+                      gridResolution: flipGridResolution,
+                      markersPerCell: flipMarkersPerCell,
+                      groundY: pbfGroundY,
+                      physics: {
+                          gravity: 9.8,
+                          flipRatio: 0.95,
+                          pressureIterations: 40,
+                          pressureRelaxation: 0.8,
+                          velocityDamping: 0,
+                          kinematicViscosity: 0,
+                          viscosityIterations: 12,
+                          surfaceTension: 0,
+                          restitution: 0,
+                          minSubsteps: 1,
+                          maxSubsteps: 8,
+                          cflNumber: 2,
+                      },
+                      pagedGrid: flipPagedGrid,
+                      pagedGridMaxPages: flipPagedGridMaxPages,
+                      onPagedGridPages: (requiredPages, capacity) => {
+                          if (controlsBinding) {
+                              syncFluidControls(controlsBinding, { pageDiagnostics: { method: "FLIP", requiredPages, capacity } });
+                          } else {
+                              controls.setPagedGridStatus(formatFluidPageDiagnostics(requiredPages, capacity));
+                              canvas.dataset.pagedGridPages = String(requiredPages);
+                              canvas.dataset.pagedGridPageCapacity = String(capacity);
+                          }
+                      },
+                      onPagedGridOverflow: (requiredPages, capacity) => {
+                          const message = `Page capacity exceeded: ${requiredPages.toLocaleString()} required, ${capacity.toLocaleString()} allocated. Increase Page capacity.`;
+                          if (controlsBinding) {
+                              syncFluidControls(controlsBinding, { pageDiagnostics: { method: "FLIP", requiredPages, capacity, overflow: true } });
+                          } else {
+                              controls.setPagedGridStatus(message, true);
+                              canvas.dataset.pagedGridOverflow = "true";
+                          }
+                          console.error(`[FLIP] ${message}`);
+                      },
+                  } satisfies FluidSimulationOptions)
+                : null;
 
         // Backend 3 — MLS-MPM (grid-transfer; scales to far more particles).
-        const mpm = createMlsMpmSim(engine, {
-            count: mpmCount,
-            particleRadius: particleRadius ?? 0.09 * mpmScale * ds,
-            spawnMin: explicitGrid ? mpmSpawn.min : scaleTriple(mpmSpawn.min),
-            spawnMax: explicitGrid ? mpmSpawn.max : scaleTriple(mpmSpawn.max),
-            capsuleA: CAP_A,
-            capsuleB: CAP_B,
-            capsuleRadius: CAP_R,
-            groundY: mpmGroundY,
-            // Drop the MLS grid floor below every demo floor (box/fountain at y=0,
-            // capsule bottom at y=2) so a demo floor is confined by its own scene
-            // SDF (like the side walls) rather than the grid's 2-cell domain-border
-            // v.y=0 zone — which coincided with y=0 and cancelled gravity there,
-            // leaving the fluid hovering a row above the floor (PBF hard-clamps, so
-            // it sat flush). The border now sits harmlessly below all demo floors.
-            // The -1 floor offset scales with the domain too so the grid dims stay constant.
-            boundsMin: mpmBoundsMin,
-            boundsMax: mpmBoundsMax,
-            dx: mpmCellSize ?? 0.22 * mpmScale * (explicitGrid ? 1 : ds),
-            restDensity: 3,
-            stiffness: 350,
-            gravity: 9.8,
-            viscosity: 0.3,
-            substeps: 3,
-            damping: 0.995,
-            affineDamping: 0.9,
-            groundDamp: 0.85,
-            groundDampHeight: 1.5,
-            activeBlocks: mpmActiveBlocks,
-            pagedGrid: mpmPagedGrid,
-            pagedGridMaxPages: mpmPagedGridMaxPages,
-            fusedBlockDiscovery: mpmFusedBlockDiscovery,
-            onPagedGridOverflow: (requiredPages, capacity) => {
-                const message = `Page capacity exceeded: ${requiredPages.toLocaleString()} required, ${capacity.toLocaleString()} allocated. Increase Page capacity.`;
-                controls.setPagedGridStatus(message, true);
-                canvas.dataset.pagedGridOverflow = "true";
-                console.error(`[MLS-MPM] ${message}`);
-            },
-        });
+        const mpm =
+            methodName === "MLS-MPM"
+                ? ({
+                      method: "MLS-MPM",
+                      particleCount: mpmCount,
+                      bounds: { min: mpmBoundsMin, max: mpmBoundsMax },
+                      physicsScale: explicitGrid ? scale : mpmScale,
+                      compatibilityProfile: "fluid",
+                      semantics: simulationSemantics,
+                      explicitGrid,
+                      domainScale: ds,
+                      particleRadius: nonFlipConfig!.particleRadius,
+                      groundY: mpmGroundY,
+                      // Drop the MLS grid floor below every demo floor (box/fountain at y=0,
+                      // capsule bottom at y=2) so a demo floor is confined by its own scene
+                      // SDF (like the side walls) rather than the grid's 2-cell domain-border
+                      // v.y=0 zone — which coincided with y=0 and cancelled gravity there,
+                      // leaving the fluid hovering a row above the floor (PBF hard-clamps, so
+                      // it sat flush). The border now sits harmlessly below all demo floors.
+                      // The -1 floor offset scales with the domain too so the grid dims stay constant.
+                      physics: {
+                          restDensity: 3,
+                          stiffness: 350,
+                          gravity: 9.8,
+                          viscosity: 0.3,
+                          substeps: 3,
+                          damping: 0.995,
+                          affineDamping: 0.9,
+                          groundDamp: 0.85,
+                          groundDampHeight: 1.5,
+                      },
+                      activeBlocks: mpmActiveBlocks,
+                      pagedGrid: mpmPagedGrid,
+                      pagedGridMaxPages: mpmPagedGridMaxPages,
+                      fusedBlockDiscovery: mpmFusedBlockDiscovery,
+                      onPagedGridPages: (requiredPages, capacity) => {
+                          if (controlsBinding) {
+                              syncFluidControls(controlsBinding, { pageDiagnostics: { method: "MLS-MPM", requiredPages, capacity } });
+                          } else {
+                              controls.setPagedGridStatus(formatFluidPageDiagnostics(requiredPages, capacity));
+                          }
+                      },
+                      onPagedGridOverflow: (requiredPages, capacity) => {
+                          const message = `Page capacity exceeded: ${requiredPages.toLocaleString()} required, ${capacity.toLocaleString()} allocated. Increase Page capacity.`;
+                          if (controlsBinding) {
+                              syncFluidControls(controlsBinding, { pageDiagnostics: { method: "MLS-MPM", requiredPages, capacity, overflow: true } });
+                          } else {
+                              controls.setPagedGridStatus(message, true);
+                              canvas.dataset.pagedGridOverflow = "true";
+                          }
+                          console.error(`[MLS-MPM] ${message}`);
+                      },
+                  } satisfies FluidSimulationOptions)
+                : null;
 
         // Backend 4 — Position-Based MPM.
-        const pbmpm = createPbMpmSim(engine, {
-            count: pbmpmCount,
-            particleRadius: particleRadius ?? 0.09 * pbmpmScale * ds,
-            spawnMin: explicitGrid ? pbmpmSpawn.min : scaleTriple(pbmpmSpawn.min),
-            spawnMax: explicitGrid ? pbmpmSpawn.max : scaleTriple(pbmpmSpawn.max),
-            groundY: mpmGroundY,
-            boundsMin: mpmBoundsMin,
-            boundsMax: mpmBoundsMax,
-            dx: pbmpmCellSize ?? 0.22 * pbmpmScale * (explicitGrid ? 1 : ds),
-            gravity: 9.8,
-            substeps: 3,
-            iterations: 5,
-            liquidRelaxation: 1.5,
-            liquidViscosity: 0.01,
-            elasticityRatio: 0.3,
-            elasticRelaxation: 0.3,
-            frictionAngle: 35,
-            plasticity: 0.8,
-            material: pbmpmMaterial,
-            restitution: 0,
-        });
+        const pbmpm =
+            methodName === "PB-MPM"
+                ? ({
+                      method: "PB-MPM",
+                      particleCount: pbmpmCount,
+                      bounds: { min: mpmBoundsMin, max: mpmBoundsMax },
+                      physicsScale: explicitGrid ? scale : pbmpmScale,
+                      compatibilityProfile: "fluid",
+                      semantics: simulationSemantics,
+                      explicitGrid,
+                      domainScale: ds,
+                      particleRadius: nonFlipConfig!.particleRadius,
+                      groundY: mpmGroundY,
+                      physics: {
+                          gravity: 9.8,
+                          substeps: 3,
+                          iterations: 5,
+                          liquidRelaxation: 1.5,
+                          liquidViscosity: 0.01,
+                          elasticityRatio: 0.3,
+                          elasticRelaxation: 0.3,
+                          frictionAngle: 35,
+                          plasticity: 0.8,
+                          restitution: 0,
+                      },
+                      material: pbmpmMaterial,
+                  } satisfies FluidSimulationOptions)
+                : null;
 
-        return { pbf, flip, mpm, pbmpm };
+        // Exactly one candidate matched methodName; the rest stayed null and cost no
+        // GPU allocation. Fail loudly rather than silently on an unknown method.
+        const built = pbf ?? flip ?? mpm ?? pbmpm;
+        if (!built) {
+            throw new Error(`Cannot build fluid backend for unknown method "${methodName}".`);
+        }
+        return built;
+    }
+
+    function createSim(count: number, scale: number): FluidSimulation {
+        const simulation = createFluidSimulation(engine, simulationOptions(count, scale));
+        trackSimBuild(methodName);
+        return simulation;
     }
 
     let particleCount = DEFAULT_PARTICLE_COUNT;
@@ -683,53 +824,46 @@ async function main(): Promise<void> {
     let physicsScale = 1; // physics particle-size multiplier (rebuilds sims)
     let pbmpmMaterial = 0;
     let flipPagedGrid = false;
-    const maxFlipPagedGridPages = Math.max(
-        1,
-        Math.floor((Math.min(engine._device.limits.maxStorageBufferBindingSize, engine._device.limits.maxBufferSize) / 8 - 1) / (FLIP_PAGE_CELLS * 3))
-    );
+    const fluidDeviceLimits = engine._device.limits;
     const maxFlipPagedGridPagesFor = (grid: FluidGridSettings, resolution: number): number => {
         const dim = flipDiscretizationForGrid(grid, resolution).gridDim;
-        const virtualPageCount = Math.ceil(dim[0] / FLIP_PAGE_SIZE) * Math.ceil(dim[1] / FLIP_PAGE_SIZE) * Math.ceil(dim[2] / FLIP_PAGE_SIZE);
-        return Math.min(maxFlipPagedGridPages, virtualPageCount);
+        return fluidMaximumPageCapacity("FLIP", dim, fluidDeviceLimits);
     };
+    const maxMlsPagedGridPagesFor = (grid: FluidGridSettings, scale: number): number =>
+        fluidMaximumPageCapacity("MLS-MPM", gridCellsForSettings(grid, "MLS-MPM", scale), fluidDeviceLimits);
+    const maxFlipPagedGridPages = fluidMaximumPageCapacity("FLIP", [FLUID_GRID_MAX_AXIS_CELLS, FLUID_GRID_MAX_AXIS_CELLS, FLUID_GRID_MAX_AXIS_CELLS], fluidDeviceLimits);
     let flipPagedGridMaxPages = Math.min(maxFlipPagedGridPages, FLIP_DEFAULT_PAGE_CAPACITY);
     let mpmActiveBlocks = false;
     let mpmPagedGrid = false;
-    const maxPagedGridPages = Math.max(1, Math.floor(engine._device.limits.maxStorageBufferBindingSize / 1024) - 1);
-    let mpmPagedGridMaxPages = Math.min(maxPagedGridPages, Math.max(1000, Math.round((DEFAULT_PARTICLE_COUNT * 27 * 1.5) / 64000) * 1000));
+    const maxPagedGridPages = fluidMaximumPageCapacity("MLS-MPM", [FLUID_GRID_MAX_AXIS_CELLS, FLUID_GRID_MAX_AXIS_CELLS, FLUID_GRID_MAX_AXIS_CELLS], fluidDeviceLimits);
+    let mpmPagedGridMaxPages = Math.min(maxPagedGridPages, mlsMpmDefaultPageCapacity(DEFAULT_PARTICLE_COUNT));
     let mpmFusedBlockDiscovery = false;
-    let { pbf: pbfSim, flip: flipSim, mpm: mpmSim, pbmpm: pbmpmSim } = createSims(particleCount, physicsScale);
-    let activeSim: FluidSim = pbfSim;
+    const activeSim = createSim(particleCount, physicsScale);
     let quality: Quality = DEFAULT_QUALITY; // low/middle/high preset tier (panel dropdown)
     /** Demos the user has already opened once, so FluidDemo.defaultMethod/defaultQuality are
      *  honoured on the first visit only. Seeded with the start-up demo below. */
     const visitedDemos = new Set<string>();
-    function simForMethod(name: string): FluidSim {
-        if (name === "PBF") {
-            return pbfSim;
-        }
-        if (name === "FLIP") {
-            return flipSim;
-        }
-        if (name === "PB-MPM") {
-            return pbmpmSim;
-        }
-        return mpmSim;
-    }
     // Interactive push force (Shift+RMB mouse-stir): a ready-made injectable force
     // field shared by both backends. The frame loop drives it via setRay + toggles
     // it on the ACTIVE sim via setForceField, so it dispatches its own dedicated
     // compute pass ONLY while a push is active (and compiles lazily on first use).
     const rayForce = createRayForce(engine._device);
+    const forceFieldHandles = new WeakMap<ForceFieldSpec, FluidForceField>();
+    function forceFieldHandle(spec: ForceFieldSpec | null): FluidForceField | null {
+        if (!spec) {
+            return null;
+        }
+        let handle = forceFieldHandles.get(spec);
+        if (!handle) {
+            handle = adoptFluidForceField(engine, spec);
+            forceFieldHandles.set(spec, handle);
+        }
+        return handle;
+    }
     let activeFlow: FluidFlowConfig = { emitters: [], sinks: [] };
     let installedFlow: FluidFlowConfig = { emitters: [], sinks: [] };
     let flowEditor: FluidFlowEditor | null = null;
-    const initialFlowSignature = (flow: FluidFlowConfig): string =>
-        JSON.stringify({
-            initialEmittersFillCapacity: flow.initialEmittersFillCapacity ?? false,
-            emitters: flow.emitters.filter((emitter) => emitter.behavior === "initial"),
-        });
-    let builtInitialFlowSignature = initialFlowSignature(activeFlow);
+    let builtInitialStateKey = "";
     interface ImportedEmitterSourceBinding {
         emitterId: string;
         node: SceneNode;
@@ -763,39 +897,48 @@ async function main(): Promise<void> {
     // resizes, and the format matches the swapchain so the final pass is a 1:1 resample.
     const postRT = createRenderTarget({ lbl: "fluid-post-color", format: engine.format, samples: 1, size: engine });
 
-    const particleTask = createParticleRenderTask(engine, scene, { colorRT: sceneColorRT, depthRT, camera: cam, sim: activeSim });
-    addTask(scene, particleTask);
+    const simulationCollection = createFluidSimulationCollection(engine, [activeSim]);
+    const particleTask = attachFluidSimulationRenderLayer(activeSim, {
+        scene,
+        camera: cam,
+        mode: "spheres",
+        colorTarget: sceneColorRT,
+        depthTarget: depthRT,
+    });
     // Fluid surface renderer + frame compositor: reads the offscreen scene colour
     // and writes the composite target. In sphere mode it just blits the scene (with the
     // impostors already drawn into it); in surface mode it reconstructs and
     // shades the liquid surface (refraction of the scene).
-    const surfaceTask = createFluidSurfaceTask(engine, scene, { bgRT: sceneColorRT, outRT: postRT, depthRT, camera: cam, sim: activeSim });
-    addTask(scene, surfaceTask);
-    const polygonSurfaceTask = createFluidPolygonSurfaceTask(engine, scene, {
-        bgRT: sceneColorRT,
-        outRT: postRT,
-        depthRT,
+    const surfaceTask = attachFluidSimulationRenderLayer(activeSim, {
+        scene,
         camera: cam,
-        sim: activeSim,
+        mode: "surface",
+        backgroundTarget: sceneColorRT,
+        outputTarget: postRT,
+        depthTarget: depthRT,
     });
-    addTask(scene, polygonSurfaceTask);
+    const polygonSurfaceTask = attachFluidSimulationRenderLayer(activeSim, {
+        scene,
+        camera: cam,
+        mode: "polygon",
+        backgroundTarget: sceneColorRT,
+        outputTarget: postRT,
+        depthTarget: depthRT,
+    });
 
     // Foam (diffuse-particle) renderer — draws the active sim's spray/foam/bubble pool
     // as sprites OVER the composited fluid surface (added after surfaceTask), depth-
     // tested against the shared scene depth so opaque geometry occludes it. Only the
     // for every backend that exposes setFoam()/diffuse.
-    const foamTask = createFoamRenderTask(engine, scene, {
-        colorRT: postRT,
-        depthRT,
+    const foamTask = attachFluidSimulationCollectionRenderLayer(simulationCollection, {
+        scene,
         camera: cam,
-        sim: activeSim,
-        // Screen-space foam reads the fluid-surface eye-Z for surface occlusion +
-        // submerged classification. Fetched per-frame (surfaceTask reallocates it
-        // on resize / half-res), null in sphere/blit mode → foam falls back to "no
-        // water" (spray/foam on top, no submerged bubbles).
-        getSurfaceDepth: () => polygonSurfaceTask.surfaceDepthView() ?? surfaceTask.surfaceDepthView(),
+        mode: "foam",
+        colorTarget: postRT,
+        depthTarget: depthRT,
+        surfaceLayer: surfaceTask,
+        polygonSurfaceLayer: polygonSurfaceTask,
     });
-    addTask(scene, foamTask);
     let simulationDuration = 0;
     let simulationAlphaDecay = 2;
     let simulationTimeScale = 1;
@@ -1027,11 +1170,11 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     // draw on top of it. Track that mode and suppress the foam render whenever it is active.
     let surfaceDebugActive = false;
     function foamRenderVisible(): boolean {
-        return simulationOpacity > 0 && controls.getValues().foam.enabled && !!activeSim.setFoam && !surfaceDebugActive;
+        return simulationOpacity > 0 && controls.getValues().foam.enabled && !surfaceDebugActive;
     }
-    function pushFoam(): void {
+    function currentFoamConfig(): FoamConfig {
         const f = controls.getValues().foam;
-        const cfg: FoamConfig = {
+        return {
             activeParticles: true,
             generateSpray: f.generateSpray,
             generateFoam: f.generateFoam,
@@ -1053,48 +1196,42 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             tMax: f.tMax,
             poolScale: f.poolScale,
         };
-        activeSim.setFoam?.(f.enabled ? cfg : null);
-        foamTask.setEnabled(foamRenderVisible());
+    }
+    function pushFoam(): void {
+        const f = controls.getValues().foam;
+        const cfg = currentFoamConfig();
+        setFluidSimulationFoam(activeSim, f.enabled ? cfg : null);
+        configureFluidSimulationRenderLayer(foamTask, { enabled: foamRenderVisible() });
     }
     // Re-apply after any sim rebuild / backend switch: (re)enable foam on the new active
     // sim (allocates its pool) THEN rebind the renderer to that pool.
     function applyFoam(): void {
         pushFoam();
-        foamTask.setSim(activeSim);
-        foamTask.setSurfaceFiltering(controls.getValues().foam.surfaceFiltering ?? methodName === "FLIP");
+        configureFluidSimulationRenderLayer(foamTask, {
+            foam: {
+                surfaceFiltering: controls.getValues().foam.surfaceFiltering ?? methodName === "FLIP",
+            },
+        });
     }
 
-    // ── Opt-in GPU timing (see ./fluid/gpu-profiler.ts) ──────────────────────
+    // ── Opt-in GPU timing ────────────────────────────────────────────────────
     // The profiler is created lazily the first time the user enables timing; if the
     // headless/host GPU lacks the "timestamp-query" feature we never create it and
     // the UI shows a graceful fallback. When enabled it is wired to BOTH sims and all
     // three render tasks so every fluid pass is tagged with timestampWrites; when off
     // we wire null everywhere so there is zero timing cost.
     const timingSupported = engine._device.features.has("timestamp-query");
-    let profiler: FluidProfilerImpl | null = null;
+    let profiler: FluidSimulationProfiler | null = null;
     let timingEnabled = false;
     // Push the profiler (or null) to both backends + every render task. Re-called after
     // a sim rebuild / backend switch (the sims are recreated; the tasks persist).
     function applyProfiler(): void {
-        const p: FluidProfiler | null =
-            timingEnabled && profiler
-                ? {
-                      pass(stage) {
-                          return profiler!.pass(stage === "Surface" ? "Surface render" : stage);
-                      },
-                      stageSpan(stage) {
-                          return profiler!.stageSpan?.(stage === "Surface" ? "Surface render" : stage);
-                      },
-                  }
-                : null;
-        pbfSim.setProfiler?.(p);
-        flipSim.setProfiler?.(p);
-        mpmSim.setProfiler?.(p);
-        pbmpmSim.setProfiler?.(p);
-        particleTask.setProfiler(p);
-        surfaceTask.setProfiler(p);
-        polygonSurfaceTask.setProfiler(p);
-        foamTask.setProfiler(p);
+        const activeProfiler = timingEnabled ? profiler : null;
+        setFluidSimulationProfiler(activeSim, activeProfiler);
+        configureFluidSimulationRenderLayer(particleTask, { profiler: activeProfiler });
+        configureFluidSimulationRenderLayer(surfaceTask, { profiler: activeProfiler });
+        configureFluidSimulationRenderLayer(polygonSurfaceTask, { profiler: activeProfiler });
+        configureFluidSimulationRenderLayer(foamTask, { profiler: activeProfiler });
     }
     // Timing is always on when the GPU supports timestamp-query: create + wire the
     // profiler unconditionally at startup (no opt-in checkbox). If the feature is
@@ -1102,7 +1239,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     // a fallback note instead of the per-stage rows.
     if (timingSupported) {
         try {
-            profiler = createFluidProfiler(engine._device);
+            profiler = createFluidSimulationProfiler(engine);
             timingEnabled = true;
         } catch (err) {
             console.warn("[fluid] GPU timing unavailable", err);
@@ -1126,8 +1263,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             if (timingEnabled && profiler) {
                 // Close the whole-frame envelope (frameStop) AFTER every other pass, then
                 // resolve. The envelope's end-to-start span is the frame's total GPU time.
-                profiler.frameStop(engine._currentEncoder);
-                profiler.resolveInto(engine._currentEncoder);
+                endFluidSimulationProfilerFrame(profiler);
             }
             return 0;
         },
@@ -1364,8 +1500,9 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             scene._renderableVersion++;
             activeSky = slot.sky;
         }
-        surfaceTask.setEnvMap({ view: slot.env.specularCubeView, sampler: slot.env.cubeSampler });
-        polygonSurfaceTask.setEnvMap({ view: slot.env.specularCubeView, sampler: slot.env.cubeSampler });
+        const environment = createFluidRenderEnvironment(slot.env);
+        configureFluidSimulationRenderLayer(surfaceTask, { environment });
+        configureFluidSimulationRenderLayer(polygonSurfaceTask, { environment });
     }
 
     function setHostSkyVisible(visible: boolean): void {
@@ -1423,45 +1560,48 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         world[1] - position[1],
         world[2] - position[2],
     ];
-    const withFlowPosition = <T extends FluidEmitter | FluidSink>(object: T, position: [number, number, number]): T => {
-        const copy = structuredClone(object);
-        copy.transform.position = position;
-        return copy;
-    };
-    const flowToWorld = (flow: FluidFlowConfig, position = effectiveGridSettings().position): FluidFlowConfig => ({
-        emitters: flow.emitters.map((emitter) => withFlowPosition(emitter, gridLocalToWorld(emitter.transform.position, position))),
-        sinks: flow.sinks.map((sink) => withFlowPosition(sink, gridLocalToWorld(sink.transform.position, position))),
-        ...(flow.initialEmittersFillCapacity !== undefined ? { initialEmittersFillCapacity: flow.initialEmittersFillCapacity } : {}),
-    });
-    const flowToGridLocal = (flow: FluidFlowConfig, position = effectiveGridSettings().position): FluidFlowConfig => ({
-        emitters: flow.emitters.map((emitter) => withFlowPosition(emitter, worldToGridLocal(emitter.transform.position, position))),
-        sinks: flow.sinks.map((sink) => withFlowPosition(sink, worldToGridLocal(sink.transform.position, position))),
-        ...(flow.initialEmittersFillCapacity !== undefined ? { initialEmittersFillCapacity: flow.initialEmittersFillCapacity } : {}),
-    });
+    const flowToWorld = (flow: FluidFlowConfig, position = effectiveGridSettings().position): FluidFlowConfig => transformFluidFlow(flow, { translation: position });
+    const flowToGridLocal = (flow: FluidFlowConfig, position = effectiveGridSettings().position): FluidFlowConfig =>
+        transformFluidFlow(flow, { translation: [-position[0], -position[1], -position[2]] });
+    const flipInitialStatePlans = createFluidInitialStatePlanCache();
     const calculateFlipParticlePlan = (
         requested: number,
         resolution: number,
         markersPerCell: number,
         flow: FluidFlowConfig,
         grid: FluidGridSettings
-    ): { active: number; total: number; required: number } => {
-        const requestedCapacity = Math.max(1, Math.min(Number.MAX_SAFE_INTEGER, Math.round(requested)));
-        if (flow.initialEmittersFillCapacity) {
-            return { active: requestedCapacity, total: requestedCapacity, required: requestedCapacity };
-        }
-        const initial = flow.emitters.filter((emitter) => emitter.enabled && emitter.behavior === "initial");
-        if (initial.some((emitter) => emitter.sampling !== "volume")) {
-            return { active: requestedCapacity, total: requestedCapacity, required: requestedCapacity };
-        }
-        const authoredVolume = initial.reduce((sum, emitter) => sum + fluidShapeVolume(emitter.shape, emitter.transform), 0);
-        const markerVolume = flipDiscretizationForGrid(grid, resolution, markersPerCell).markerVolume;
-        const derived = Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.ceil(authoredVolume / markerVolume)));
-        return { active: Math.min(requestedCapacity, derived), total: requestedCapacity, required: derived };
+    ): { active: number; total: number; required: number; initialStateKey: string; emitterCounts: ReadonlyMap<string, number> } => {
+        const total = Math.max(1, Math.min(Number.MAX_SAFE_INTEGER, Math.round(requested)));
+        const particleVolume = flipDiscretizationForGrid(grid, resolution, markersPerCell).markerVolume;
+        const initialState = flipInitialStatePlans.resolve({
+            particleCapacity: total,
+            particleVolume,
+            flow: flowToWorld(flow, grid.position),
+            bounds: gridBounds(grid.position, grid.size),
+            deriveInitialCount: true,
+        });
+        return {
+            active: initialState.activeCount,
+            total,
+            required: initialState.requiredCount,
+            initialStateKey: initialState.initialStateKey,
+            emitterCounts: initialState.emitterCounts,
+        };
     };
-    const flipParticlePlan = (requested: number, flow = activeFlow, resolution = flipGridResolution): { active: number; total: number; required: number } => {
+    const flipParticlePlan = (
+        requested: number,
+        flow = activeFlow,
+        resolution = flipGridResolution
+    ): { active: number; total: number; required: number; initialStateKey: string; emitterCounts: ReadonlyMap<string, number> } => {
         if (methodName !== "FLIP") {
             const requestedCapacity = Math.max(1, Math.min(Number.MAX_SAFE_INTEGER, Math.round(requested)));
-            return { active: requestedCapacity, total: requestedCapacity, required: requestedCapacity };
+            return {
+                active: requestedCapacity,
+                total: requestedCapacity,
+                required: requestedCapacity,
+                initialStateKey: `legacy:${requestedCapacity}`,
+                emitterCounts: new Map(),
+            };
         }
         return calculateFlipParticlePlan(requested, resolution, flipMarkersPerCell, flow, effectiveGridSettings("FLIP"));
     };
@@ -1470,9 +1610,10 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         if (methodName !== "FLIP") {
             return counts;
         }
+        const plan = flipParticlePlan(flipParticleCapacityRequest);
         const resetCounts = activeSim.initialEmitterParticleCounts;
         const resetMatchesCurrentPlan =
-            initialFlowSignature(activeFlow) === builtInitialFlowSignature &&
+            plan.initialStateKey === builtInitialStateKey &&
             gridSettingsEqual(gridSettings, builtGridSettings) &&
             builtGridMethod === "FLIP" &&
             builtFlipGridResolution === flipGridResolution &&
@@ -1485,32 +1626,8 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             }
             return counts;
         }
-        const initial = activeFlow.emitters.filter((emitter) => emitter.enabled && emitter.behavior === "initial");
-        const volumes = initial.map((emitter) => fluidShapeVolume(emitter.shape, emitter.transform));
-        const totalVolume = volumes.reduce((sum, volume) => sum + volume, 0);
-        if (!(totalVolume > 0)) {
-            return counts;
-        }
-        const activeCount = flipParticlePlan(flipParticleCapacityRequest).active;
-        const allocations = volumes.map((volume, index) => {
-            const exact = (activeCount * volume) / totalVolume;
-            return { index, count: Math.floor(exact), remainder: exact - Math.floor(exact) };
-        });
-        const remainderCount = activeCount - allocations.reduce((sum, allocation) => sum + allocation.count, 0);
-        const ranked = [...allocations].sort((a, b) => {
-            const remainder = b.remainder - a.remainder;
-            if (remainder !== 0) {
-                return remainder;
-            }
-            const aid = initial[a.index]!.id;
-            const bid = initial[b.index]!.id;
-            return aid < bid ? -1 : aid > bid ? 1 : a.index - b.index;
-        });
-        for (let index = 0; index < remainderCount; index++) {
-            ranked[index]!.count++;
-        }
-        for (const allocation of allocations) {
-            counts.set(initial[allocation.index]!.id, allocation.count);
+        for (const [id, count] of plan.emitterCounts) {
+            counts.set(id, count);
         }
         return counts;
     }
@@ -1538,8 +1655,8 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             const plan = flipParticlePlan(flipParticleCapacityRequest, activeFlow, resolution);
             return plan.required <= plan.total && gridAllocationError(grid, "FLIP", physicsScale, undefined, resolution) === undefined;
         };
-        const fittedResolution = highestFittingGridResolution(requestedResolution, GRID_RESOLUTION_MIN, fits);
-        if (fittedResolution === undefined) {
+        const fit = fitFluidGridResolution(requestedResolution, GRID_RESOLUTION_MIN, fits);
+        if (!fit) {
             const minimumPlan = flipParticlePlan(flipParticleCapacityRequest, activeFlow, GRID_RESOLUTION_MIN);
             const gridError = gridAllocationError(grid, "FLIP", physicsScale, undefined, GRID_RESOLUTION_MIN);
             throw new RangeError(
@@ -1553,7 +1670,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         }
         return {
             requestedResolution,
-            fittedResolution,
+            fittedResolution: fit.fittedResolution,
         };
     }
     function flipPendingCapacityStatus(): string {
@@ -1591,25 +1708,27 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         }
     }
     function refreshFoamParticleCounts(): void {
-        const enabled = controls.getValues().foam.enabled && !!activeSim.setFoam;
-        const diffuse = enabled ? activeSim.diffuse : undefined;
-        const counts = diffuse?.counts;
-        controls.setFoamParticleCounts(counts, enabled, diffuse?.capacity);
+        const enabled = controls.getValues().foam.enabled;
+        const diffuse = enabled ? getFluidSimulationDiagnostics(activeSim).diffuse : null;
+        controls.setFoamParticleCounts(diffuse ?? undefined, enabled, diffuse?.capacity);
         canvas.dataset.diffuseParticlesEnabled = String(enabled);
         canvas.dataset.diffuseParticleCapacity = String(diffuse?.capacity ?? 0);
-        if (!counts) {
+        if (!diffuse) {
             delete canvas.dataset.diffuseParticleCount;
             delete canvas.dataset.sprayParticleCount;
             delete canvas.dataset.foamParticleCount;
             delete canvas.dataset.bubbleParticleCount;
             return;
         }
-        canvas.dataset.diffuseParticleCount = String(counts.total);
-        canvas.dataset.sprayParticleCount = String(counts.spray);
-        canvas.dataset.foamParticleCount = String(counts.foam);
-        canvas.dataset.bubbleParticleCount = String(counts.bubble);
+        canvas.dataset.diffuseParticleCount = String(diffuse.total);
+        canvas.dataset.sprayParticleCount = String(diffuse.spray);
+        canvas.dataset.foamParticleCount = String(diffuse.foam);
+        canvas.dataset.bubbleParticleCount = String(diffuse.bubble);
     }
     function refreshParticleUsageStatus(activeCount = activeSim.activeCount ?? activeSim.count): void {
+        if (controlsBinding) {
+            syncFluidControls(controlsBinding);
+        }
         refreshInitialEmitterParticleCount();
         refreshFoamParticleCounts();
         const pressureDiagnostics = methodName === "FLIP" ? activeSim.pressureDiagnostics : undefined;
@@ -1628,8 +1747,8 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             delete canvas.dataset.pressureIterationsUsed;
         }
         canvas.dataset.simulationGpuBytes = String(activeSim.gpuBytes);
-        const polygonSurface = methodName === "FLIP" ? activeSim.polygonSurface : undefined;
-        controls.setPolygonTriangleCount(polygonSurface?.triangleCount, polygonSurface !== undefined);
+        const polygonSurface = methodName === "FLIP" ? getFluidSimulationDiagnostics(activeSim).polygon : null;
+        controls.setPolygonTriangleCount(polygonSurface?.triangleCount, polygonSurface !== null);
         if (polygonSurface) {
             canvas.dataset.polygonReconstructionMultiplier = String(polygonSurface.reconstructionMultiplier);
         } else {
@@ -1651,24 +1770,42 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         const plan = flipParticlePlan(flipParticleCapacityRequest);
         const effectiveGrid = effectiveGridSettings();
         const gridDim = flipDiscretizationForGrid(effectiveGrid, flipGridResolution).gridDim;
-        const restartGpuBytes = estimateFlipGpuBytes(plan.total, gridDim, (controls.getPhysicsValues("FLIP").pressureSolver ?? 0) >= 0.5 ? "multigrid" : "jacobi", {
-            pagedGrid: flipPagedGrid,
-            pagedGridMaxPages: flipPagedGridMaxPages,
-            pressureDiagnostics: (controls.getPhysicsValues("FLIP").pressureDiagnostics ?? 0) >= 0.5 || (controls.getPhysicsValues("FLIP").pressureTolerance ?? 0) > 0,
-            liquidSdf: (controls.getPhysicsValues("FLIP").liquidSdf ?? 0) >= 0.5,
-            fractionalSolids: (controls.getPhysicsValues("FLIP").fractionalSolids ?? 0) >= 0.5,
-            reseedParticles: (controls.getPhysicsValues("FLIP").reseedParticles ?? 0) >= 0.5,
-            particleSheeting: (controls.getPhysicsValues("FLIP").particleSheeting ?? 0) >= 0.5,
-            polygonSurface: (controls.getPhysicsValues("FLIP").polygonSurface ?? 0) >= 0.5,
-            polygonReconstructionMultiplier: controls.getPhysicsValues("FLIP").polygonReconstructionMultiplier ?? 1,
-        });
+        const restartGpuBytes =
+            controlsBinding?.memory.steadyBytes ??
+            resolveFluidAllocationPlan({
+                method: "FLIP",
+                particleCount: plan.total,
+                gridDim,
+                flipWarmup: {
+                    initialLiveCount: plan.active,
+                    initialTargetCount: plan.active,
+                },
+                pressureSolver: (controls.getPhysicsValues("FLIP").pressureSolver ?? 0) >= 0.5 ? "multigrid" : "jacobi",
+                quality: {
+                    pagedGrid: flipPagedGrid,
+                    pagedGridMaxPages: flipPagedGridMaxPages,
+                    pressureDiagnostics: (controls.getPhysicsValues("FLIP").pressureDiagnostics ?? 0) >= 0.5 || (controls.getPhysicsValues("FLIP").pressureTolerance ?? 0) > 0,
+                    liquidSdf: (controls.getPhysicsValues("FLIP").liquidSdf ?? 0) >= 0.5,
+                    fractionalSolids: (controls.getPhysicsValues("FLIP").fractionalSolids ?? 0) >= 0.5,
+                    reseedParticles: (controls.getPhysicsValues("FLIP").reseedParticles ?? 0) >= 0.5,
+                    particleSheeting: (controls.getPhysicsValues("FLIP").particleSheeting ?? 0) >= 0.5,
+                    polygonSurface: (controls.getPhysicsValues("FLIP").polygonSurface ?? 0) >= 0.5,
+                    polygonReconstructionMultiplier: controls.getPhysicsValues("FLIP").polygonReconstructionMultiplier ?? 1,
+                },
+                foam: {
+                    enabled: controls.getValues().foam.enabled,
+                    activeParticles: true,
+                    poolScale: controls.getValues().foam.poolScale,
+                },
+                limits: deviceLimits,
+            }).steadyBytes;
         const gridRestartPending =
             flipGridResolution !== builtFlipGridResolution ||
             !gridSettingsEqual(gridSettings, builtGridSettings) ||
             builtGridMethod !== methodName ||
             flipMarkersPerCell !== builtFlipMarkersPerCell;
         const restartPreviewPending =
-            gridRestartPending || initialFlowSignature(activeFlow) !== builtInitialFlowSignature || plan.total !== activeSim.count || restartGpuBytes !== activeSim.gpuBytes;
+            gridRestartPending || plan.initialStateKey !== builtInitialStateKey || plan.total !== activeSim.count || restartGpuBytes !== activeSim.gpuBytes;
         controls.setParticleUsage(
             activeCount,
             activeSim.count,
@@ -1684,10 +1821,10 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         canvas.dataset.restartSimulationGpuBytes = String(restartGpuBytes);
     }
     function setInstalledFlow(): void {
-        pbfSim.setFlow(installedFlow);
-        flipSim.setFlow(installedFlow);
-        mpmSim.setFlow(installedFlow);
-        pbmpmSim.setFlow(installedFlow);
+        // Only the active backend exists, so flow installs land on it directly. A method
+        // switch always rebuilds the target backend (see rebuildSims) and re-applies the
+        // installed flow through applyMethod, so no dormant backend can drift out of sync.
+        setFluidSimulationFlow(activeSim, installedFlow);
     }
     function applyFlow(): void {
         if (methodName === "FLIP") {
@@ -1709,10 +1846,8 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     function updateFlipMarkerDensityWarning(activeCount: number): void {
         let message = "";
         if (methodName === "FLIP" && !installedFlow.emitters.some((emitter) => emitter.enabled && emitter.behavior === "inflow")) {
-            const authoredVolume = installedFlow.emitters
-                .filter((emitter) => emitter.enabled && emitter.behavior === "initial" && emitter.sampling === "volume")
-                .reduce((sum, emitter) => sum + fluidShapeVolume(emitter.shape, emitter.transform), 0);
             const discretization = flipDiscretizationForGrid(effectiveGridSettings("FLIP"), flipGridResolution);
+            const authoredVolume = fluidInitialEmitterVolume(installedFlow);
             const markersPerCell = authoredVolume > 0 ? (activeCount * discretization.dx ** 3) / authoredVolume : 0;
             if (markersPerCell > FLIP_HIGH_MARKERS_PER_CELL) {
                 message =
@@ -1736,13 +1871,13 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             if (index < 0) {
                 return;
             }
-            installedFlow.emitters[index] = withFlowPosition(object as FluidEmitter, gridLocalToWorld(object.transform.position, position));
+            installedFlow.emitters[index] = transformFluidFlow({ emitters: [object as FluidEmitter], sinks: [] }, { translation: position }).emitters[0]!;
         } else {
             const index = installedFlow.sinks.findIndex((candidate) => candidate.id === object.id);
             if (index < 0) {
                 return;
             }
-            installedFlow.sinks[index] = withFlowPosition(object as FluidSink, gridLocalToWorld(object.transform.position, position));
+            installedFlow.sinks[index] = transformFluidFlow({ emitters: [], sinks: [object as FluidSink] }, { translation: position }).sinks[0]!;
         }
         setInstalledFlow();
         if (!importedScene) {
@@ -1799,8 +1934,8 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         }
         applyFlow();
         syncImportedMeshAnimations(!preserveSceneAnimations);
-        activeSim.reset();
-        builtInitialFlowSignature = initialFlowSignature(activeFlow);
+        resetFluidSimulation(activeSim);
+        builtInitialStateKey = flipParticlePlan(requestedParticleCount()).initialStateKey;
         restartSimulationLifecycle();
         if (clearHoles) {
             clearSceneHoles();
@@ -1856,8 +1991,11 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         delete canvas.dataset.importedHostSkyHidden;
     }
 
-    function applySceneSdf(): void {
-        const demo = activeDemo!;
+    function currentSceneSdf(): FluidSceneSdf {
+        if (!activeDemo) {
+            throw new Error("[fluid] cannot resolve the scene SDF before the initial demo is active.");
+        }
+        const demo = activeDemo;
         if (importedScene) {
             syncImportedSceneGridTransform(importedScene);
         } else {
@@ -1873,10 +2011,12 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             delete canvas.dataset.mlsContainerLo;
             delete canvas.dataset.mlsContainerHi;
         }
-        pbfSim.setSceneSdf(sdf);
-        flipSim.setSceneSdf(sdf);
-        mpmSim.setSceneSdf(mlsSdf);
-        pbmpmSim.setSceneSdf(sdf);
+        // MLS-MPM consumes the whiteboard container SDF; every other backend uses the
+        // demo/imported SDF. Only the active backend is resident, so pick its variant.
+        return adoptFluidSceneSdf(engine, methodName === "MLS-MPM" ? mlsSdf : sdf);
+    }
+    function applySceneSdf(): void {
+        setFluidSimulationSceneSdf(activeSim, currentSceneSdf());
         applyFlow();
     }
 
@@ -2120,7 +2260,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             local[2] * Math.abs(object.transform.scale[2]),
         ];
         const [rawX, rawY, rawZ, rawW] = object.transform.rotation;
-        const invLength = 1 / Math.max(Math.hypot(rawX, rawY, rawZ, rawW), 1e-12);
+        const invLength = 1 / Math.max(Math.sqrt(rawX * rawX + rawY * rawY + rawZ * rawZ + rawW * rawW), 1e-12);
         const x = rawX * invLength;
         const y = rawY * invLength;
         const z = rawZ * invLength;
@@ -2153,7 +2293,10 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             includeFlowShapeBounds(minimum, maximum, object);
         }
         const center: [number, number, number] = [(minimum[0] + maximum[0]) * 0.5, (minimum[1] + maximum[1]) * 0.5, (minimum[2] + maximum[2]) * 0.5];
-        const radius = Math.max(0.1, Math.hypot((maximum[0] - minimum[0]) * 0.5, (maximum[1] - minimum[1]) * 0.5, (maximum[2] - minimum[2]) * 0.5));
+        const halfX = (maximum[0] - minimum[0]) * 0.5;
+        const halfY = (maximum[1] - minimum[1]) * 0.5;
+        const halfZ = (maximum[2] - minimum[2]) * 0.5;
+        const radius = Math.max(0.1, Math.sqrt(halfX * halfX + halfY * halfY + halfZ * halfZ));
         const aspect = Math.max(getEffectiveAspectRatio(cam, canvas.width, canvas.height), 1e-6);
         const horizontalFov = 2 * Math.atan(Math.tan(cam.fov * 0.5) * aspect);
         const limitingFov = Math.min(cam.fov, horizontalFov);
@@ -2190,10 +2333,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             } else {
                 delete emitter.sourceVelocity;
             }
-            pbfSim.updateFlowEmitter(emitter);
-            flipSim.updateFlowEmitter(emitter);
-            mpmSim.updateFlowEmitter(emitter);
-            pbmpmSim.updateFlowEmitter(emitter);
+            updateFluidSimulationEmitter(activeSim, emitter);
             binding.lastPosition = position;
         }
         const first = imported.sourceBindings[0];
@@ -2211,11 +2351,11 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     // A combo box to switch method, per-method parameter sliders (applied live),
     // and a reset button. The per-method schema (each entry mirrors the sim's
     // current default and remembers the last value the user set) is shared with the
-    // other fluid apps via `DEFAULT_FLUID_SCHEMAS` (fluid/controls-panel).
+    // other fluid apps via `DEFAULT_FLUID_SCHEMAS` (fluid/controls/controls-panel).
 
     // The shared control panel (GENERAL / RENDER / FOAM / PHYSICS sections + the
     // pinned top-left GPU-timing panel) is built by the reusable component
-    // (./fluid/controls-panel.ts); this demo owns only the scene-specific "Demo"
+    // (./fluid/controls/controls-panel.ts); this demo owns only the scene-specific "Demo"
     // section (scene dropdown + demo params + the container-visibility toggle) and the
     // "Export" section, mounted into the component's slots. Every on* callback below
     // applies the SAME effect the old inline handler did; the component's programmatic
@@ -2315,8 +2455,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         envRotVal.textContent = `${Math.round(deg)}\u00b0`;
         const rad = (deg * Math.PI) / 180;
         setEnvironmentRotation(scene, rad);
-        surfaceTask.setEnvRotationY(rad);
-        polygonSurfaceTask.setEnvRotationY(rad);
+        configureFluidSimulationRenderLayer(surfaceTask, { environmentRotationY: rad });
+        configureFluidSimulationRenderLayer(polygonSurfaceTask, { environmentRotationY: rad });
     };
     envRotInput.oninput = () => applyEnvRotation(parseFloat(envRotInput.value));
     envRotRow.append(envRotHead, envRotInput);
@@ -2408,6 +2548,40 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     const initialGridSettings = defaultGridSettings(methodName, domainScale);
     const initialFlipDiscretization = flipDiscretizationForGrid(initialGridSettings, flipGridResolution);
 
+    function finishFluidControlPlan(bindingPlan: FluidControlsApplicationPlan, changedKeys: readonly (keyof FluidControlValues)[]): void {
+        if (bindingPlan.reconfigure) {
+            particleCount = activeSim.count;
+            lastTransitionPeakBytes = controlsBinding!.memory.transitionPeakBytes;
+            trackSimBuild(methodName);
+            builtGridSettings = gridSettings ? cloneGridSettings(gridSettings) : undefined;
+            builtGridMethod = methodName;
+            builtPhysicsScale = physicsScale;
+            builtFlipGridResolution = flipGridResolution;
+            builtFlipMarkersPerCell = flipMarkersPerCell;
+            builtWithGridFloor = importedCollisionActive || activeDemo?.useGridFloor === true;
+            builtDomainScale = domainScale;
+            canvas.dataset.simulationTransitionBytes = String(lastTransitionPeakBytes);
+            canvas.dataset.particleCount = String(particleCount);
+            canvas.dataset.flipParticleCapacityRequest = String(flipParticleCapacityRequest);
+            canvas.dataset.activeBlocks = String(mpmActiveBlocks);
+            canvas.dataset.pagedGrid = String(methodName === "FLIP" ? flipPagedGrid : mpmPagedGrid);
+            canvas.dataset.pagedGridMaxPages = String(methodName === "FLIP" ? flipPagedGridMaxPages : mpmPagedGridMaxPages);
+            canvas.dataset.fusedBlockDiscovery = String(mpmFusedBlockDiscovery);
+            builtInitialStateKey = flipParticlePlan(requestedParticleCount()).initialStateKey;
+            syncGridControls();
+            syncGridBoundsWireframe();
+            refreshParticleUsageStatus();
+            if (changedKeys.some((key) => key === "count" || key === "physScale" || key === "gridResolution" || key === "markersPerCell")) {
+                restartSimulationLifecycle();
+            }
+        }
+        if (bindingPlan.restartRequired) {
+            syncGridControls();
+            refreshParticleUsageStatus();
+            controls.setGridStatus(flipPendingCapacityStatus());
+        }
+    }
+
     const controls = createFluidControlsPanel({
         schemas: DEFAULT_FLUID_SCHEMAS,
         methods: Object.keys(DEFAULT_FLUID_SCHEMAS),
@@ -2495,194 +2669,336 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                 subsurfaceColor: "#b8d1f2",
             },
         },
-        gpu: { stages: ["Simulation", "Foam gen", "Surface render", "Foam render", "Particles"], supported: profiler !== null },
-        on: {
-            onMethod: (name) => switchPair(activeDemo!, name),
-            onMaterial: (material) => switchPair(activeDemo!, methodName, quality, material),
-            onParticleCount: (n) => setParticleCount(n),
-            onSimulationDuration: (seconds) => {
-                simulationDuration = seconds;
-                syncSimulationLifecycle();
-            },
-            onAlphaDecay: (seconds) => {
-                simulationAlphaDecay = seconds;
-                syncSimulationLifecycle();
-            },
-            onRenderMode: (spheres) => applyRenderMode(spheres),
-            onPolygonShader: (mode) => {
-                surfaceTask.setShadingMode(mode);
-                polygonSurfaceTask.setShadingMode(mode);
-                canvas.dataset.surfaceShader = mode;
-                canvas.dataset.polygonShader = mode;
-            },
-            onColor: (rgb) => {
-                surfaceTask.setFluidColor(rgb);
-                polygonSurfaceTask.setFluidColor(rgb);
-                particleTask.setTint(rgb);
-            },
-            onAbsorption: (v) => {
-                surfaceTask.setAbsorption(v);
-                polygonSurfaceTask.setAbsorption(v);
-            },
-            onParticleSize: (s) => {
-                surfaceTask.setSizeScale(s);
-                particleTask.setSizeScale(s);
-            },
-            onRefraction: (v) => {
-                surfaceTask.setRefractionStrength(v);
-                polygonSurfaceTask.setRefractionStrength(v);
-            },
-            onSpecular: (v) => {
-                surfaceTask.setSpecularPower(v);
-                polygonSurfaceTask.setSpecularPower(v);
-            },
-            onReflection: (exposure, contrast) => {
-                surfaceTask.setEnvReflection(exposure, contrast);
-                polygonSurfaceTask.setEnvReflection(exposure, contrast);
-            },
-            onReflectivity: (v) => {
-                surfaceTask.setFresnelF0(v);
-                polygonSurfaceTask.setFresnelF0(v);
-            },
-            onDepthBlur: (size, threshold) => surfaceTask.setDepthBlur(size, threshold),
-            onThicknessBlur: (v) => surfaceTask.setThicknessBlur(v),
-            onHalf: (on) => surfaceTask.setHalfRender(on),
-            onSurfaceFilter: (m) => surfaceTask.setSurfaceFilter(m),
-            onNarrowRange: (delta, mu) => surfaceTask.setNarrowRange(delta, mu),
-            onAnisotropic: (v) => {
-                surfaceTask.setAnisotropic(v);
-                renderAnisotropic = v;
-                applyEffectiveRenderMode();
-            },
-            onAnisotropySurfScale: (v) => surfaceTask.setAnisotropySurfScale(v),
-            onThicknessDownscale: (v) => surfaceTask.setThicknessDownscale(v),
-            onShowContainer: (visible) => activeDemo?.setContainerVisible?.(importedScene ? false : visible),
-            onDebug: (mode) => {
-                surfaceTask.setDebug(mode === "polygonWireframe" ? "none" : mode);
-                polygonSurfaceTask.setWireframe(mode === "polygonWireframe");
-                // Hide foam sprites while a surface debug texture is shown (they composite over it).
-                surfaceDebugActive = mode !== "none";
-                foamTask.setEnabled(foamRenderVisible());
-            },
-            onPhysicsParam: (k, v) => applyParam(activeSim, k, v),
-            onPolygonSurface: (enabled) => {
-                renderPolygonSurface = methodName === "FLIP" && enabled;
-                applyEffectiveRenderMode();
-            },
-            onPhysScale: (s) => setPhysicsScale(s),
-            onGridResolution: (resolution) => setGridResolution(resolution),
-            onMarkersPerCell: (markersPerCell) => setMarkersPerCell(markersPerCell),
-            onFlipParticleCapacity: (capacity) => setFlipParticleCapacity(capacity),
-            onGridSettings: (position, size) => setGridSettings({ position, size }),
-            onGridGizmo: (visible) => setGridGizmoVisible(visible),
-            onShowGridBounds: (visible) => {
-                showGridBounds = visible;
-                canvas.dataset.showGridBounds = String(visible);
-                syncGridBoundsWireframe();
-            },
-            onShowGridBoundsSolid: (visible) => {
-                showGridBoundsSolid = visible;
-                canvas.dataset.showGridBoundsSolid = String(visible);
-                syncGridBoundsWireframe();
-            },
-            onActiveBlocks: (enabled) => {
-                if (enabled === mpmActiveBlocks) return;
-                mpmActiveBlocks = enabled;
-                rebuildSims(particleCount, physicsScale);
-            },
-            onPagedGrid: (enabled) => {
-                controls.setPagedGridStatus("");
-                canvas.dataset.pagedGridOverflow = "false";
+        gpu: { stages: ["Simulation", "Foam gen", "Surface", "Foam render", "Particles"], supported: profiler !== null },
+        onApply: (values, changedKeys) => {
+            const applyingPairState = loadingPairState;
+            const pairChange = changedKeys.includes("method") || changedKeys.includes("material");
+            const bindingPlan =
+                controlsBinding && (applyingPairState || !pairChange) ? applyFluidControls(controlsBinding, values, applyingPairState ? undefined : changedKeys) : null;
+            if (bindingPlan) {
+                const appliedKeys = applyingPairState ? bindingPlan.changedKeys : changedKeys;
+                finishFluidControlPlan(bindingPlan, appliedKeys);
+                if (appliedKeys.includes("gridPosition") || appliedKeys.includes("gridSize")) {
+                    syncGridBoundsWireframe();
+                    syncGridGizmo();
+                }
+            }
+            const changed = (key: keyof typeof values): boolean => changedKeys.includes(key) && (!controlsBinding || !SHARED_FLUID_BINDING_KEYS.includes(key));
+
+            // Pair changes load another complete control snapshot, so run them after this snapshot
+            // callback returns rather than nesting a controls transaction inside onApply.
+            if (!applyingPairState && (changed("method") || changed("material"))) {
+                const nextMethod = values.method;
+                const nextMaterial = values.material;
+                queueMicrotask(() => switchPair(activeDemo!, nextMethod, quality, nextMaterial));
+            }
+            if (changed("count")) {
                 if (methodName === "FLIP") {
-                    if (enabled === flipPagedGrid) return;
-                    flipPagedGrid = enabled;
-                    rebuildSims(requestedParticleCount(), physicsScale, true);
-                    return;
+                    setFlipParticleCapacity(values.count);
+                } else {
+                    setParticleCount(values.count);
                 }
-                if (enabled === mpmPagedGrid) return;
-                mpmPagedGrid = enabled;
-                rebuildSims(particleCount, physicsScale);
-            },
-            onPagedGridMaxPages: (pages) => {
-                const flip = methodName === "FLIP";
-                const pageCapacityLimit = flip ? maxFlipPagedGridPagesFor(effectiveGridSettings(), flipGridResolution) : maxPagedGridPages;
-                const clampedPages = Math.min(pages, pageCapacityLimit);
-                controls.setPagedGridMaxPages(clampedPages, pageCapacityLimit);
-                controls.setPagedGridStatus("");
-                canvas.dataset.pagedGridOverflow = "false";
-                if (flip) {
-                    if (clampedPages === flipPagedGridMaxPages) return;
-                    flipPagedGridMaxPages = clampedPages;
-                    if (flipPagedGrid) {
-                        rebuildSims(requestedParticleCount(), physicsScale, true);
+            }
+            if (changed("simulationDuration")) {
+                simulationDuration = values.simulationDuration;
+                syncSimulationLifecycle();
+            }
+            if (changed("alphaDecay")) {
+                simulationAlphaDecay = values.alphaDecay;
+                syncSimulationLifecycle();
+            }
+            if (changed("renderMode")) {
+                applyRenderMode(values.renderMode === "spheres");
+            }
+            const renderProfileChanged = [
+                "polygonShader",
+                "color",
+                "absorption",
+                "size",
+                "refraction",
+                "specular",
+                "reflectionExposure",
+                "reflectionContrast",
+                "reflectivity",
+                "depthBlur",
+                "depthBlurThreshold",
+                "thicknessBlur",
+                "half",
+                "surfaceFilter",
+                "narrowDelta",
+                "narrowMu",
+                "anisotropic",
+                "anisoSurfScale",
+                "thicknessDownscale",
+            ].some((key) => changed(key as keyof typeof values));
+            if (renderProfileChanged) {
+                const profile = {
+                    waterColor: values.color,
+                    polygonShader: values.polygonShader,
+                    absorption: values.absorption,
+                    particleSize: values.size,
+                    refractionStrength: values.refraction,
+                    specularPower: values.specular,
+                    reflectionExposure: values.reflectionExposure,
+                    reflectionContrast: values.reflectionContrast,
+                    waterReflectivity: values.reflectivity,
+                    surfaceDepthBlur: values.depthBlur,
+                    depthBlurEdgeThreshold: values.depthBlurThreshold,
+                    surfaceThicknessBlur: values.thicknessBlur,
+                    halfRendering: values.half,
+                    surfaceFilter: values.surfaceFilter,
+                    narrowRangeDelta: values.narrowDelta,
+                    narrowRangeMu: values.narrowMu,
+                    anisotropicSurface: values.anisotropic,
+                    anisoRadiusDamping: values.anisoSurfScale,
+                    thicknessDownscale: values.thicknessDownscale,
+                };
+                configureFluidSimulationRenderLayer(surfaceTask, { profile });
+                configureFluidSimulationRenderLayer(polygonSurfaceTask, { profile });
+                configureFluidSimulationRenderLayer(particleTask, { profile });
+                canvas.dataset.surfaceShader = values.polygonShader;
+                canvas.dataset.polygonShader = values.polygonShader;
+                if (changed("anisotropic")) {
+                    renderAnisotropic = values.anisotropic;
+                    applyEffectiveRenderMode();
+                }
+            }
+            if (changed("showContainer")) {
+                activeDemo?.setContainerVisible?.(importedScene ? false : values.showContainer);
+            }
+            if (changed("debug")) {
+                configureFluidSimulationRenderLayer(surfaceTask, {
+                    debug: values.debug === "polygonWireframe" ? "none" : (values.debug as FluidDebug),
+                });
+                configureFluidSimulationRenderLayer(polygonSurfaceTask, {
+                    polygonWireframe: values.debug === "polygonWireframe",
+                });
+                surfaceDebugActive = values.debug !== "none";
+                configureFluidSimulationRenderLayer(foamTask, { enabled: foamRenderVisible() });
+            }
+            if (changed("schema")) {
+                for (const [key, value] of Object.entries(values.schema)) {
+                    applyParam(activeSim, key, value);
+                }
+                renderPolygonSurface = methodName === "FLIP" && (values.schema.polygonSurface ?? 0) >= 0.5;
+                applyEffectiveRenderMode();
+            }
+            if (changed("physScale")) {
+                setPhysicsScale(values.physScale);
+            }
+            if (changed("gridResolution")) {
+                setGridResolution(values.gridResolution);
+            }
+            if (changed("markersPerCell")) {
+                setMarkersPerCell(values.markersPerCell);
+            }
+            if (changed("showGridBounds")) {
+                showGridBounds = values.showGridBounds;
+                canvas.dataset.showGridBounds = String(showGridBounds);
+                syncGridBoundsWireframe();
+            }
+            if (changed("showGridBoundsSolid")) {
+                showGridBoundsSolid = values.showGridBoundsSolid;
+                canvas.dataset.showGridBoundsSolid = String(showGridBoundsSolid);
+                syncGridBoundsWireframe();
+            }
+
+            const pagingChanged = changed("activeBlocks") || changed("pagedGrid") || changed("pagedGridMaxPages") || changed("fusedBlockDiscovery");
+            if (pagingChanged) {
+                const previousPaging = {
+                    mpmActiveBlocks,
+                    mpmPagedGrid,
+                    mpmPagedGridMaxPages,
+                    mpmFusedBlockDiscovery,
+                    flipPagedGrid,
+                    flipPagedGridMaxPages,
+                };
+                let rebuild = false;
+                try {
+                    if (methodName === "FLIP") {
+                        if (changed("pagedGrid") && values.pagedGrid !== flipPagedGrid) {
+                            flipPagedGrid = values.pagedGrid;
+                            rebuild = true;
+                        }
+                        if (changed("pagedGridMaxPages")) {
+                            const pages = Math.min(values.pagedGridMaxPages, maxFlipPagedGridPagesFor(effectiveGridSettings(), flipGridResolution));
+                            if (pages !== flipPagedGridMaxPages) {
+                                flipPagedGridMaxPages = pages;
+                                rebuild ||= flipPagedGrid;
+                            }
+                            controls.setPagedGridMaxPages(flipPagedGridMaxPages, maxFlipPagedGridPagesFor(effectiveGridSettings(), flipGridResolution));
+                        }
+                    } else {
+                        if (changed("activeBlocks") && values.activeBlocks !== mpmActiveBlocks) {
+                            mpmActiveBlocks = values.activeBlocks;
+                            rebuild = true;
+                        }
+                        if (changed("pagedGrid") && values.pagedGrid !== mpmPagedGrid) {
+                            mpmPagedGrid = values.pagedGrid;
+                            rebuild = true;
+                        }
+                        if (changed("pagedGridMaxPages")) {
+                            const limit = maxMlsPagedGridPagesFor(effectiveGridSettings(), physicsScale);
+                            const pages = Math.min(values.pagedGridMaxPages, limit);
+                            if (pages !== mpmPagedGridMaxPages) {
+                                mpmPagedGridMaxPages = pages;
+                                rebuild ||= mpmPagedGrid;
+                            }
+                            controls.setPagedGridMaxPages(mpmPagedGridMaxPages, limit);
+                        }
+                        if (changed("fusedBlockDiscovery") && values.fusedBlockDiscovery !== mpmFusedBlockDiscovery) {
+                            mpmFusedBlockDiscovery = values.fusedBlockDiscovery;
+                            rebuild = true;
+                        }
                     }
-                    return;
+                    controls.setPagedGridStatus("");
+                    canvas.dataset.pagedGridOverflow = "false";
+                    if (rebuild) {
+                        rebuildSims(requestedParticleCount(), physicsScale, methodName === "FLIP");
+                    }
+                } catch (error) {
+                    ({ mpmActiveBlocks, mpmPagedGrid, mpmPagedGridMaxPages, mpmFusedBlockDiscovery, flipPagedGrid, flipPagedGridMaxPages } = previousPaging);
+                    throw error;
                 }
-                if (clampedPages === mpmPagedGridMaxPages) return;
-                mpmPagedGridMaxPages = clampedPages;
-                if (mpmPagedGrid) {
-                    rebuildSims(particleCount, physicsScale);
-                }
-            },
-            onFusedBlockDiscovery: (enabled) => {
-                if (enabled === mpmFusedBlockDiscovery) return;
-                mpmFusedBlockDiscovery = enabled;
-                rebuildSims(particleCount, physicsScale);
-            },
+            }
+            if (changed("foam")) {
+                const foam = values.foam;
+                pushFoam();
+                configureFluidSimulationRenderLayer(foamTask, {
+                    foam: {
+                        surfaceFiltering: foam.surfaceFiltering ?? methodName === "FLIP",
+                        softness: foam.softness,
+                        density: foam.density,
+                        subsurfaceStrength: foam.subsurfaceStrength,
+                        subsurfaceColor: foam.subsurfaceColor,
+                        sizeScale: foam.size,
+                        blurRadius: foam.blurRadius,
+                        lightIntensity: foam.lightIntensity,
+                        ambient: foam.ambient,
+                        aoStrength: foam.aoStrength,
+                        normalStrength: foam.normalStrength,
+                        debugByKind: foam.debugByKind ?? false,
+                        debugTexture: foam.debugTexture as FoamDebugTexture,
+                    },
+                });
+            }
+        },
+        on: {
+            onGridSettings: (position, size) => (controlsBinding ? undefined : setGridSettings({ position, size })),
+            onGridGizmo: (visible) => setGridGizmoVisible(visible),
             onReset: (preserveSceneAnimations) => resetActiveFlow(true, preserveSceneAnimations),
-            onFoamEnable: () => pushFoam(),
-            onFoamKinds: () => pushFoam(),
-            onFoamSurfaceFiltering: (enabled) => foamTask.setSurfaceFiltering(enabled),
-            onFoamKta: () => {
-                if (controls.getValues().foam.enabled) {
-                    pushFoam();
-                }
-            },
-            onFoamKwc: () => {
-                if (controls.getValues().foam.enabled) {
-                    pushFoam();
-                }
-            },
-            onFoamAdvanced: () => {
-                if (controls.getValues().foam.enabled) {
-                    pushFoam();
-                }
-            },
-            onFoamLifetime: () => {
-                if (controls.getValues().foam.enabled) {
-                    pushFoam();
-                }
-            },
-            onFoamBuoyancy: () => {
-                if (controls.getValues().foam.enabled) {
-                    pushFoam();
-                }
-            },
-            onFoamDrag: () => {
-                if (controls.getValues().foam.enabled) {
-                    pushFoam();
-                }
-            },
-            onFoamPool: () => {
-                if (controls.getValues().foam.enabled) {
-                    pushFoam(); // reallocates the ring on change
-                }
-            },
-            onFoamThresholds: (t0, t1) => foamTask.setThresholds(t0, t1),
-            onFoamSubsurface: (v) => foamTask.setSubsurfaceStrength(v),
-            onFoamSubColor: (rgb) => foamTask.setSubsurfaceColor(rgb),
-            onFoamSize: (v) => foamTask.setSizeScale(v),
-            onFoamBlur: (v) => foamTask.setBlurRadius(v),
-            onFoamLight: (v) => foamTask.setLightIntensity(v),
-            onFoamAmbient: (v) => foamTask.setAmbient(v),
-            onFoamAO: (v) => foamTask.setAOStrength(v),
-            onFoamNormal: (v) => foamTask.setNormalStrength(v),
-            onFoamDebugByKind: (on) => foamTask.setDebugByKind(on),
-            onFoamDebugTexture: (v) => foamTask.setDebugTexture(v),
         },
     });
-    surfaceTask.setShadingMode(controls.getValues().polygonShader);
-    polygonSurfaceTask.setShadingMode(controls.getValues().polygonShader);
+    const fluidControlHostState = () => ({
+        particleCount,
+        physicsScale,
+        flipParticleCapacityRequest,
+        pbmpmMaterial,
+        mpmActiveBlocks,
+        mpmPagedGrid,
+        mpmPagedGridMaxPages,
+        mpmFusedBlockDiscovery,
+        flipPagedGrid,
+        flipPagedGridMaxPages,
+        flipGridResolution,
+        flipMarkersPerCell,
+        gridSettings: gridSettings ? cloneGridSettings(gridSettings) : undefined,
+        renderSpheres,
+        renderAnisotropic,
+        renderPolygonSurface,
+        surfaceDebugActive,
+    });
+    const restoreFluidControlHostState = (state: ReturnType<typeof fluidControlHostState>): void => {
+        ({
+            particleCount,
+            physicsScale,
+            flipParticleCapacityRequest,
+            pbmpmMaterial,
+            mpmActiveBlocks,
+            mpmPagedGrid,
+            mpmPagedGridMaxPages,
+            mpmFusedBlockDiscovery,
+            flipPagedGrid,
+            flipPagedGridMaxPages,
+            flipGridResolution,
+            flipMarkersPerCell,
+        } = state);
+        gridSettings = state.gridSettings ? cloneGridSettings(state.gridSettings) : undefined;
+        ({ renderSpheres, renderAnisotropic, renderPolygonSurface, surfaceDebugActive } = state);
+    };
+    const applyFluidControlHostState = (snapshot: Readonly<FluidControlValues>, changedKeys: readonly (keyof FluidControlValues)[]): void => {
+        physicsScale = snapshot.physScale;
+        if (changedKeys.includes("gridPosition") || changedKeys.includes("gridSize")) {
+            gridSettings = { position: [...snapshot.gridPosition], size: [...snapshot.gridSize] };
+        }
+        flipGridResolution = snapshot.gridResolution;
+        flipMarkersPerCell = snapshot.markersPerCell;
+        renderSpheres = snapshot.renderMode === "spheres";
+        renderAnisotropic = snapshot.anisotropic;
+        renderPolygonSurface = methodName === "FLIP" && (snapshot.schema.polygonSurface ?? 0) >= 0.5;
+        surfaceDebugActive = snapshot.debug !== "none";
+        if (methodName === "FLIP") {
+            flipParticleCapacityRequest = snapshot.count;
+            particleCount = flipParticleCapacity(snapshot.count, activeFlow, snapshot.gridResolution);
+            flipPagedGrid = snapshot.pagedGrid;
+            flipPagedGridMaxPages = snapshot.pagedGridMaxPages;
+        } else {
+            particleCount = snapshot.count;
+            if (methodName === "MLS-MPM") {
+                mpmActiveBlocks = snapshot.activeBlocks || snapshot.pagedGrid;
+                mpmPagedGrid = snapshot.pagedGrid;
+                mpmPagedGridMaxPages = snapshot.pagedGridMaxPages;
+                mpmFusedBlockDiscovery = snapshot.fusedBlockDiscovery;
+            }
+        }
+    };
+    const fluidControlTarget = (simulation: FluidSimulation, snapshot: Readonly<FluidControlValues>): FluidControlsBindingTarget => {
+        const requested = methodName === "FLIP" ? flipParticleCapacity(snapshot.count, activeFlow, snapshot.gridResolution) : snapshot.count;
+        const base = simulationOptions(requested, snapshot.physScale);
+        return {
+            simulation,
+            preserveState: !loadingPairState,
+            activeCount: simulation.activeCount ?? simulation.count,
+            options: {
+                ...base,
+                flow: flowToWorld(activeFlow),
+                sceneSdf: currentSceneSdf(),
+                forceField: simulation.forceField,
+                profiler: simulation.profiler,
+            },
+        };
+    };
+    function initializeFluidControlsBinding(): void {
+        if (controlsBinding) {
+            return;
+        }
+        controlsBinding = bindFluidControls({
+            controls,
+            target: activeSim,
+            deviceLimits,
+            maxParticleCount: Math.max(...Object.keys(DEFAULT_FLUID_SCHEMAS).map(deviceParticleCapacityForMethod)),
+            renderLayers: {
+                particles: particleTask,
+                surface: surfaceTask,
+                polygon: polygonSurfaceTask,
+                foam: foamTask,
+            },
+            surfaceDebugActive: () => surfaceDebugActive,
+            simulationOpacity: () => simulationOpacity,
+            resolveTarget: fluidControlTarget,
+            captureHostState: fluidControlHostState,
+            applyHostState: applyFluidControlHostState,
+            restoreHostState: restoreFluidControlHostState,
+            onPageDiagnostics: (diagnostics) => {
+                canvas.dataset.pagedGridPages = String(diagnostics.requiredPages);
+                canvas.dataset.pagedGridPageCapacity = String(diagnostics.capacity);
+                canvas.dataset.pagedGridOverflow = String(diagnostics.overflow);
+            },
+        });
+        window.addEventListener("pagehide", () => controlsBinding && disposeFluidControlsBinding(controlsBinding), { once: true });
+    }
+    configureFluidSimulationRenderLayer(surfaceTask, { profile: { polygonShader: controls.getValues().polygonShader } });
+    configureFluidSimulationRenderLayer(polygonSurfaceTask, { profile: { polygonShader: controls.getValues().polygonShader } });
     canvas.dataset.surfaceShader = controls.getValues().polygonShader;
     canvas.dataset.polygonShader = controls.getValues().polygonShader;
 
@@ -2701,17 +3017,25 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     function exportParameters(): void {
         // Serialise the live UI into the shared grouped shape (the same format the on-disk
         // quality presets use), so an exported file can be dropped straight into presets/.
-        const data = exportJsonFromPairState(activeDemo!.key, methodName, readLivePairState(methodName));
+        const state = readLivePairState(methodName);
+        const retained =
+            (currentPairKey ? presetSessions.get(currentPairKey) : undefined) ?? importFluidPresetSession(exportJsonFromPairState(activeDemo!.key, methodName, state), state);
+        const application: Parameters<typeof exportFluidPresetSession>[1]["application"] = {};
         if (importedScene) {
-            data.meta.demo = "blender";
-            data.scene = {
+            application.scene = {
                 ...scenePayloadFromBlenderFluidJson(importedScene.bundle),
                 anchorPosition: [...importedScene.referenceGridPosition],
             };
             if (importedScene.bundle.preset.source) {
-                data.source = structuredClone(importedScene.bundle.preset.source);
+                application.source = structuredClone(importedScene.bundle.preset.source);
             }
         }
+        const data = exportFluidPresetSession(retained, {
+            demo: importedScene ? "blender" : activeDemo!.key,
+            method: methodName,
+            state,
+            application,
+        });
         const json = JSON.stringify(data, null, 2);
         const blob = new Blob([json], { type: "application/json" });
         const url = URL.createObjectURL(blob);
@@ -2733,22 +3057,35 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         if (switchMethod && importedMethod !== methodName) {
             switchPair(activeDemo!, importedMethod, quality);
         }
-        const partial = presetFromExportJson(json);
         const current = readLivePairState(methodName);
-        const currentDomainScale = typeof current.demoParams.meshScale === "number" ? current.demoParams.meshScale : domainScale;
-        const importedDomainScale = typeof partial.demoParams?.meshScale === "number" ? partial.demoParams.meshScale : currentDomainScale;
-        const mergedGrid = partial.grid ? cloneGridSettings(partial.grid) : current.grid ? cloneGridSettings(current.grid) : undefined;
-        domainScale = importedDomainScale;
-        loadPairState({
-            ...current,
-            ...partial,
-            grid: mergedGrid,
-            schema: { ...current.schema, ...(partial.schema ?? {}) },
-            demoParams: { ...current.demoParams, ...(partial.demoParams ?? {}) },
-            emitters: partial.emitters ?? current.emitters,
-            sinks: partial.sinks ?? current.sinks,
-            foam: partial.foam ? { ...current.foam!, ...partial.foam } : current.foam,
-        });
+        const previousDomainScale = domainScale;
+        const previousSession = currentPairKey ? presetSessions.get(currentPairKey) : undefined;
+        const session = importFluidPresetSession(json, current);
+        try {
+            if (currentPairKey) {
+                presetSessions.set(currentPairKey, session);
+            }
+            const imported = session.state;
+            const currentDomainScale = typeof current.demoParams.meshScale === "number" ? current.demoParams.meshScale : domainScale;
+            const importedDomainScale = typeof imported.demoParams.meshScale === "number" ? imported.demoParams.meshScale : currentDomainScale;
+            domainScale = importedDomainScale;
+            loadPairState(imported);
+        } catch (error) {
+            domainScale = previousDomainScale;
+            if (currentPairKey) {
+                if (previousSession) {
+                    presetSessions.set(currentPairKey, previousSession);
+                } else {
+                    presetSessions.delete(currentPairKey);
+                }
+            }
+            try {
+                loadPairState(current);
+            } catch (rollbackError) {
+                throw new AggregateError([error, rollbackError], "Fluid preset preparation failed and its previous control snapshot could not be restored.");
+            }
+            throw error;
+        }
     }
     async function installImportedBundle(bundle: BlenderFluidScene, generation: number, targetDemo: FluidDemo): Promise<void> {
         const importedMethod = bundle.preset.meta?.method;
@@ -2912,38 +3249,36 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         }
         const plan = calculateFlipParticlePlan(json.particleCount, partial.gridResolution, partial.markersPerCell, flow, partial.grid);
         const particleVolume = flipDiscretizationForGrid(partial.grid, partial.gridResolution, partial.markersPerCell).markerVolume;
-        const worldFlow: FluidFlowConfig = {
-            emitters: flow.emitters.map((emitter) => ({
-                ...emitter,
-                transform: {
-                    ...emitter.transform,
-                    position: emitter.transform.position.map((value, axis) => value + partial.grid!.position[axis]!) as [number, number, number],
-                },
-            })),
-            sinks: flow.sinks,
-        };
+        const worldFlow = transformFluidFlow(flow, { translation: partial.grid.position });
         const halfSize = partial.grid.size.map((value) => value * 0.5) as [number, number, number];
         const bounds = {
             min: partial.grid.position.map((value, axis) => value - halfSize[axis]!) as [number, number, number],
             max: partial.grid.position.map((value, axis) => value + halfSize[axis]!) as [number, number, number],
         };
-        const required = countFluidInitialParticles(plan.required, worldFlow, particleVolume, bounds, true)?.activeCount ?? plan.required;
+        const initialState = planFluidInitialState({
+            particleCapacity: plan.required,
+            particleVolume,
+            flow: worldFlow,
+            bounds,
+            deriveInitialCount: true,
+        });
+        const required = initialState.requiredCount;
         const importedCapacity = Math.max(json.particleCount, required);
         if (required <= 100_000) {
             json.particleCount = Math.max(required, importedParticleCount(importedCapacity));
             return;
         }
         const safeCount = 40_000;
-        const acceptedVolume = required * particleVolume;
-        const fittedResolution = highestFittingGridResolution(partial.gridResolution, GRID_RESOLUTION_MIN, (resolution) => {
+        const acceptedVolume = initialState.clippedVolume;
+        const fit = fitFluidGridResolution(partial.gridResolution, GRID_RESOLUTION_MIN, (resolution) => {
             const markerVolume = flipDiscretizationForGrid(partial.grid!, resolution, partial.markersPerCell!).markerVolume;
             return Math.ceil(acceptedVolume / markerVolume) <= safeCount;
         });
         const requested = required.toLocaleString("en-US");
         const safeAction =
-            fittedResolution === undefined
+            fit === null
                 ? "use 40,000 particles instead"
-                : "reduce Resolution divisions from " + partial.gridResolution.toLocaleString("en-US") + " to " + fittedResolution.toLocaleString("en-US");
+                : "reduce Resolution divisions from " + partial.gridResolution.toLocaleString("en-US") + " to " + fit.fittedResolution.toLocaleString("en-US");
         const useSafeSettings = window.confirm(
             "High particle count: " +
                 requested +
@@ -2961,8 +3296,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             return;
         }
         json.particleCount = safeCount;
-        if (fittedResolution !== undefined) {
-            json.gridResolution = fittedResolution;
+        if (fit) {
+            json.gridResolution = fit.fittedResolution;
         } else {
             json.initialEmittersFillCapacity = true;
         }
@@ -3491,20 +3826,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     function refreshFlowUI(): void {
         flowEditor?.setFlow(activeFlow);
     }
-    // Apply a solver parameter, folding in the physics particle-size coupling.
-    // The sliders expose the base (1×) values; PBF's restDensity and constraint
-    // relaxation must additionally track the particle scale (restDensity ∝
-    // 1/scale³, relaxation ∝ 1/scale²) — using the same floored scale createSims
-    // built the grid with — or the rescaled fluid leaves its stable regime. MLS-MPM
-    // couples purely through its cell size dx (set at creation), so no fold-in.
-    function applyParam(sim: FluidSim, key: string, value: number): void {
-        let v = value;
-        if (methodName === "PBF") {
-            const s = clampScale(physicsScale, PBF_MIN_SCALE, PBF_MAX_SCALE);
-            if (key === "restDensity") v = value / (s * s * s);
-            else if (key === "relaxation") v = value / (s * s);
-        }
-        sim.setParam(key, v);
+    function applyParam(sim: FluidSimulation, key: string, value: number): void {
+        setFluidSimulationParameter(sim, key, value);
         if (key === "gravity" && sim === activeSim) {
             canvas.dataset.gravity = String(value);
         }
@@ -3527,32 +3850,33 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     }
 
     function applyMethod(name: string, resetSimulation = true): void {
-        activeSim = simForMethod(name);
+        // activeSim already holds the backend for `name`: rebuildSims constructs it before
+        // calling here, and the no-rebuild path in loadPairState only re-enters with the
+        // current method. There is no dormant per-method solver to swap in.
         methodName = name;
         syncDeviceParticleCapacity(name);
         if (name === "PB-MPM") {
-            pbmpmSim.setMaterial?.(pbmpmMaterial);
+            setFluidSimulationMaterial(activeSim, pbmpmMaterial);
         }
         // Sand renders as uniformly-coloured grains (no velocity brightening); water/jelly keep the
         // speed-based highlight. This is a render characteristic derived from the material — NOT forced
         // here on the colour or render MODE (those come from the per-material preset / pair state, so a
         // count-change re-applyMethod doesn't reset a user's colour).
-        particleTask.setVelocityBrighten(name === "PB-MPM" && pbmpmMaterial === PBMPM_SAND_MATERIAL ? 0 : 1);
+        configureFluidSimulationRenderLayer(particleTask, {
+            particleVelocityBrighten: name === "PB-MPM" && pbmpmMaterial === PBMPM_SAND_MATERIAL ? 0 : 1,
+        });
         for (const [key, value] of Object.entries(controls.getPhysicsValues(name))) {
             applyParam(activeSim, key, value);
         }
         applyFlow();
         if (resetSimulation) {
-            activeSim.reset();
+            resetFluidSimulation(activeSim);
         }
-        builtInitialFlowSignature = initialFlowSignature(activeFlow);
+        builtInitialStateKey = flipParticlePlan(requestedParticleCount()).initialStateKey;
         if (resetSimulation) {
             restartSimulationLifecycle();
             clearSceneHoles();
         }
-        particleTask.setSim(activeSim);
-        surfaceTask.setSim(activeSim);
-        polygonSurfaceTask.setSim(activeSim);
         renderPolygonSurface = name === "FLIP" && (controls.getPhysicsValues("FLIP").polygonSurface ?? 0) >= 0.5;
         applyEffectiveRenderMode();
         applyFoam(); // rebind the foam renderer + (re)enable foam on the new active sim
@@ -3563,7 +3887,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         controls.setVisiblePhysicsParams(name === "PB-MPM" ? pbmpmParamKeysForMaterial(pbmpmMaterial) : null);
         controls.setMaterial(pbmpmMaterial);
         canvas.dataset.method = methodName;
-        const pageCapacityLimit = name === "FLIP" ? maxFlipPagedGridPagesFor(effectiveGridSettings(), flipGridResolution) : maxPagedGridPages;
+        const pageCapacityLimit =
+            name === "FLIP" ? maxFlipPagedGridPagesFor(effectiveGridSettings(), flipGridResolution) : maxMlsPagedGridPagesFor(effectiveGridSettings(), physicsScale);
         if (name === "FLIP") {
             flipPagedGridMaxPages = Math.min(flipPagedGridMaxPages, pageCapacityLimit);
         } else {
@@ -3590,30 +3915,22 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     let renderAnisotropic = false;
     let renderPolygonSurface = false;
     function applyEffectiveRenderMode(): void {
-        polygonSurfaceTask.setEnabled(false);
-        foamTask.setPolygonSurfaceDepth(false);
-        if (renderSpheres && renderAnisotropic) {
-            // Both ON: inspection view — show the true anisotropic ellipsoids as opaque lit
-            // splats (the opaque sphere task is disabled so it doesn't overlap them).
-            particleTask.setEnabled(false);
-            surfaceTask.setMode("ellipsoidDebug");
-            canvas.dataset.render = "ellipsoids";
-        } else if (renderSpheres) {
-            particleTask.setEnabled(true);
-            surfaceTask.setMode("blit");
-            canvas.dataset.render = "spheres";
-        } else if (renderPolygonSurface && methodName === "FLIP") {
-            particleTask.setEnabled(false);
-            surfaceTask.setMode("blit");
-            polygonSurfaceTask.setEnabled(true);
-            foamTask.setPolygonSurfaceDepth(true);
-            canvas.dataset.render = "polygon";
-        } else {
-            // Surface view. Anisotropy (when on) still shapes the surface itself, as before.
-            particleTask.setEnabled(false);
-            surfaceTask.setMode("surface");
-            canvas.dataset.render = "surface";
-        }
+        const mode = resolveFluidRenderMode({
+            method: methodName as FluidSimulationOptions["method"],
+            renderSpheres,
+            anisotropicSurface: renderAnisotropic,
+            polygonSurface: renderPolygonSurface,
+            foamEnabled: controls.getValues().foam.enabled,
+            surfaceDebugActive,
+        });
+        configureFluidSimulationRenderLayer(particleTask, { enabled: mode.particleEnabled });
+        configureFluidSimulationRenderLayer(surfaceTask, { surfaceMode: mode.surfaceMode });
+        configureFluidSimulationRenderLayer(polygonSurfaceTask, { enabled: mode.polygonEnabled });
+        configureFluidSimulationRenderLayer(foamTask, {
+            enabled: simulationOpacity > 0 && mode.foamEnabled,
+            foam: { polygonSurfaceDepth: mode.foamPolygonSurfaceDepth },
+        });
+        canvas.dataset.render = mode.diagnosticMode;
     }
     function applyRenderMode(spheres: boolean): void {
         renderSpheres = spheres;
@@ -3717,6 +4034,22 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         if (!validGridSettings(next)) {
             return "Grid position must be finite and Grid size must contain positive finite world-space dimensions.";
         }
+        if (controlsBinding) {
+            try {
+                const bindingPlan = applyFluidGridSettings(controlsBinding, next.position, next.size);
+                finishFluidControlPlan(bindingPlan, ["gridPosition", "gridSize"]);
+                syncGridControls();
+                syncGridBoundsWireframe();
+                syncGridGizmo();
+                refreshParticleUsageStatus();
+                return bindingPlan.restartRequired ? flipPendingCapacityStatus() || undefined : undefined;
+            } catch (error) {
+                syncGridControls();
+                syncGridBoundsWireframe();
+                syncGridGizmo();
+                return error instanceof Error ? error.message : String(error);
+            }
+        }
         if (methodName !== "FLIP") {
             const allocationError = gridAllocationError(next, methodName, physicsScale);
             if (allocationError) {
@@ -3739,21 +4072,55 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         return flipPendingCapacityStatus() || undefined;
     }
 
-    // Rebuild all sims at a new particle count, physics size and active grid.
+    // Rebuild the ACTIVE backend at a new particle count, physics size and grid. Only the
+    // selected solver is (re)constructed and only the outgoing selected solver is disposed,
+    // so a capacity / grid / paging change never allocates an unrelated backend. The
+    // The outgoing simulation stays live until the replacement has validated and allocated.
+    // After the render tasks are retargeted, its facade-owned resources retire behind the
+    // next submission fence. FLIP can additionally copy compatible state before retirement.
     function rebuildSims(count: number, scale: number, preserveFlipState = false): void {
+        const previousParticleCount = particleCount;
+        const previousPhysicsScale = physicsScale;
+        const previousCapacityRequest = flipParticleCapacityRequest;
         if (methodName === "FLIP") {
             flipParticleCapacityRequest = Math.max(1, Math.round(count));
         }
         particleCount = flipParticleCapacity(count);
         physicsScale = scale;
-        const previous = { pbf: pbfSim, flip: flipSim, mpm: mpmSim, pbmpm: pbmpmSim };
-        if (!preserveFlipState) {
-            previous.pbf.dispose();
-            previous.flip.dispose();
-            previous.mpm.dispose();
-            previous.pbmpm.dispose();
+        let prepared: ReturnType<typeof prepareFluidReconfigurationUpdate> | null = null;
+        try {
+            const base = simulationOptions(particleCount, scale);
+            const physics = { ...(base.physics ?? {}) };
+            for (const [key, value] of Object.entries(controls.getPhysicsValues(methodName))) {
+                physics[key] = value;
+            }
+            const foamValues = controls.getValues().foam;
+            prepared = prepareFluidReconfigurationUpdate(
+                activeSim,
+                {
+                    ...base,
+                    physics,
+                    flow: flowToWorld(activeFlow),
+                    foam: foamValues.enabled ? currentFoamConfig() : null,
+                    sceneSdf: currentSceneSdf(),
+                    forceField: activeSim.forceField,
+                    profiler: activeSim.profiler,
+                },
+                preserveFlipState
+            );
+            lastTransitionPeakBytes = prepared.transitionPeakBytes;
+            commitFluidReconfiguration(prepared);
+        } catch (error) {
+            if (prepared) {
+                cancelFluidReconfiguration(prepared);
+            }
+            particleCount = previousParticleCount;
+            physicsScale = previousPhysicsScale;
+            flipParticleCapacityRequest = previousCapacityRequest;
+            throw error;
         }
-        ({ pbf: pbfSim, flip: flipSim, mpm: mpmSim, pbmpm: pbmpmSim } = createSims(particleCount, scale));
+        trackSimBuild(methodName);
+        canvas.dataset.simulationTransitionBytes = String(lastTransitionPeakBytes);
         builtGridSettings = gridSettings ? cloneGridSettings(gridSettings) : undefined;
         builtGridMethod = methodName;
         builtPhysicsScale = scale;
@@ -3761,25 +4128,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         builtFlipMarkersPerCell = flipMarkersPerCell;
         builtWithGridFloor = importedCollisionActive || activeDemo?.useGridFloor === true;
         builtDomainScale = domainScale; // sims are now built at the current domain scale
-        applySceneSdf();
         applyMethod(methodName, !preserveFlipState);
-        if (preserveFlipState) {
-            const encoder = engine._device.createCommandEncoder({ label: "flip-backend-state-transfer" });
-            const transferred = transferFlipSimState(encoder, previous.flip, flipSim);
-            if (transferred) {
-                engine._device.queue.submit([encoder.finish()]);
-            } else {
-                activeSim.reset();
-                restartSimulationLifecycle();
-                clearSceneHoles();
-            }
-            retireGpuResources(engine, () => {
-                previous.pbf.dispose();
-                previous.flip.dispose();
-                previous.mpm.dispose();
-                previous.pbmpm.dispose();
-            });
-        }
         syncGridControls();
         syncGridBoundsWireframe();
         syncFlowWireframe("emitter");
@@ -3846,6 +4195,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     const DEMO_PARAM_DEFAULTS: Record<string, Record<string, number>> = {};
 
     const pairStates = new Map<string, PairState>();
+    const presetSessions = new Map<string, FluidPresetSession>();
     const methodIndependentStates = new Map<string, PairState>();
     let currentPairKey: string | null = null;
 
@@ -3854,6 +4204,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         const flow = flowToGridLocal(demo.flow(), flowPosition);
         const sand = method === "PB-MPM" && material === PBMPM_SAND_MATERIAL;
         return {
+            simulationSemantics: CURRENT_FLUID_SIMULATION_SEMANTICS,
             schema: { ...SCHEMA_DEFAULTS[method]! },
             demoParams: { ...(DEMO_PARAM_DEFAULTS[demo.key] ?? {}) },
             simulationDuration: RENDER_DEFAULTS.simulationDuration,
@@ -3892,8 +4243,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             anisoSurfScale: RENDER_DEFAULTS.anisoSurfScale,
             activeBlocks: method === "MLS-MPM" ? false : undefined,
             pagedGrid: method === "MLS-MPM" || method === "FLIP" ? false : undefined,
-            pagedGridMaxPages:
-                method === "FLIP" ? FLIP_DEFAULT_PAGE_CAPACITY : method === "MLS-MPM" ? Math.max(1000, Math.round((RENDER_DEFAULTS.count * 27 * 1.5) / 64000) * 1000) : undefined,
+            pagedGridMaxPages: method === "FLIP" ? FLIP_DEFAULT_PAGE_CAPACITY : method === "MLS-MPM" ? mlsMpmDefaultPageCapacity(RENDER_DEFAULTS.count) : undefined,
             fusedBlockDiscovery: method === "MLS-MPM" ? false : undefined,
             foam: { ...FOAM_DEFAULTS, surfaceFiltering: method === "FLIP" },
             showContainer: true,
@@ -3936,7 +4286,10 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             showGridBounds: p.showGridBounds ?? base.showGridBounds,
             showGridBoundsSolid: p.showGridBoundsSolid ?? base.showGridBoundsSolid,
             count: p.count ?? base.count,
-            material: p.material ?? base.material,
+            // The requested PB-MPM material identifies the pair being loaded. A missing
+            // material-specific preset may fall back to liquid look/physics defaults, but
+            // its serialized material must not switch the selected pair back to liquid.
+            material: method === "PB-MPM" ? base.material : (p.material ?? base.material),
             camera: p.camera ?? base.camera,
             renderMode: p.renderMode ?? base.renderMode,
             polygonShader: p.polygonShader ?? base.polygonShader,
@@ -3979,6 +4332,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             if (p.type === "number") demoParams[p.key] = p.value;
         }
         return {
+            simulationSemantics,
             schema: controls.getPhysicsValues(method),
             demoParams,
             simulationDuration: v.simulationDuration,
@@ -4035,6 +4389,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     let loadingPairState = false;
     function loadPairState(st: PairState): void {
         const demo = activeDemo!;
+        simulationSemantics = st.simulationSemantics ?? CURRENT_FLUID_SIMULATION_SEMANTICS;
         const nextGridSettings = st.grid ? cloneGridSettings(st.grid) : undefined;
         if (nextGridSettings && !validGridSettings(nextGridSettings)) {
             throw new Error("Invalid fluid grid: position must be finite and size must be positive.");
@@ -4050,8 +4405,11 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         const pagedMethod = methodName === "MLS-MPM" || methodName === "FLIP";
         const nextPagedGrid = pagedMethod ? (st.pagedGrid ?? false) : methodName === "FLIP" ? flipPagedGrid : mpmPagedGrid;
         const nextActiveBlocks = methodName === "MLS-MPM" ? nextPagedGrid || (st.activeBlocks ?? false) : mpmActiveBlocks;
-        const pageCapacityLimit = methodName === "FLIP" ? maxFlipPagedGridPagesFor(nextGridSettings ?? effectiveGridSettings(), nextGridResolution) : maxPagedGridPages;
-        const defaultPageCapacity = methodName === "FLIP" ? FLIP_DEFAULT_PAGE_CAPACITY : Math.max(1000, Math.round((st.count * 27 * 1.5) / 64000) * 1000);
+        const pageCapacityLimit =
+            methodName === "FLIP"
+                ? maxFlipPagedGridPagesFor(nextGridSettings ?? effectiveGridSettings(), nextGridResolution)
+                : maxMlsPagedGridPagesFor(nextGridSettings ?? effectiveGridSettings(), nextPhysicsScale);
+        const defaultPageCapacity = methodName === "FLIP" ? FLIP_DEFAULT_PAGE_CAPACITY : mlsMpmDefaultPageCapacity(st.count);
         const nextPagedGridMaxPages = Math.min(
             pageCapacityLimit,
             pagedMethod ? (st.pagedGridMaxPages ?? defaultPageCapacity) : methodName === "FLIP" ? flipPagedGridMaxPages : mpmPagedGridMaxPages
@@ -4072,21 +4430,11 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                 throw new Error(allocationError);
             }
         }
-        // Sync the component's current method BEFORE pushing the physics values so
-        // setPhysics targets the target method's slider block (methodName is already the
-        // target method here — switchPair set it before calling loadPairState).
-        controls.setMethod(methodName);
-        controls.setPhysics(st.schema);
-        controls.setGridResolution(nextGridResolution);
-        controls.setMarkersPerCell(nextMarkersPerCell);
-        controls.setSimulationDuration(st.simulationDuration ?? 0);
-        controls.setAlphaDecay(st.alphaDecay ?? 2);
         simulationTimeScale = Math.min(100, Math.max(0.01, st.simulationTimeScale ?? 1));
         canvas.dataset.simulationTimeScale = String(simulationTimeScale);
         if (typeof st.material === "number") {
             pbmpmMaterial = st.material;
         }
-        controls.setMaterial(pbmpmMaterial);
         loadingPairState = true;
         try {
             for (const k of Object.keys(st.demoParams)) {
@@ -4095,126 +4443,148 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             if (st.demoState) {
                 demo.restoreState?.(st.demoState);
             }
+            const targetGrid = nextGridSettings ?? defaultGridSettings(methodName, domainScale);
+            const targetCellSize =
+                methodName === "FLIP"
+                    ? flipDiscretizationForGrid(targetGrid, nextGridResolution).dx
+                    : nextGridSettings
+                      ? fluidSimulationCellSize(methodName, fluidDiscretization(nextPhysicsScale))
+                      : cellSizeForPhysicsScale(methodName, nextPhysicsScale) * domainScale;
+            activeFlow = st.legacyFlow
+                ? flowToGridLocal(demo.flow(), targetGrid.position)
+                : {
+                      emitters: structuredClone(st.emitters ?? []),
+                      sinks: structuredClone(st.sinks ?? []),
+                      ...(st.initialEmittersFillCapacity !== undefined ? { initialEmittersFillCapacity: st.initialEmittersFillCapacity } : {}),
+                  };
+            // Publish one complete target snapshot. During pair loading, onApply lets the
+            // shared binding derive every changed key from this snapshot so host state is
+            // committed before resolveTarget evaluates the new method, scale, and grid.
+            controls.runTransaction(() => {
+                controls.setMethod(methodName);
+                controls.setPhysics(st.schema);
+                controls.setMaterial(pbmpmMaterial);
+                if (methodName === "FLIP") {
+                    controls.setFlipParticleCapacity(st.count);
+                } else {
+                    controls.setParticleCount(st.count);
+                }
+                controls.setPhysScale(nextPhysicsScale);
+                controls.setGridSettings([...targetGrid.position], [...targetGrid.size], targetCellSize);
+                controls.setGridResolution(nextGridResolution);
+                controls.setMarkersPerCell(nextMarkersPerCell);
+                controls.setSimulationDuration(st.simulationDuration ?? 0);
+                controls.setAlphaDecay(st.alphaDecay ?? 2);
+                controls.setColor(st.color);
+                controls.setIndependentRendering(st.independentRendering ?? false);
+                controls.setHalf(st.half);
+                controls.setThicknessDownscale(st.thicknessDownscale);
+                controls.setParticleSize(st.size);
+                controls.setAbsorption(st.absorption);
+                // Surface render mode + shading sliders (each optional; only apply if present).
+                if (st.renderMode !== undefined) {
+                    controls.setRenderMode(st.renderMode === "spheres");
+                }
+                if (st.polygonShader !== undefined) {
+                    controls.setPolygonShader(st.polygonShader);
+                }
+                if (st.refraction !== undefined) {
+                    controls.setRefraction(st.refraction);
+                }
+                if (st.specular !== undefined) {
+                    controls.setSpecular(st.specular);
+                }
+                // Reflection exposure/contrast share one host callback, so restore both together and fall
+                // back to the live value when a preset carries only one — otherwise the pair's second
+                // value would be pushed as whatever the previous demo left behind.
+                if (st.reflectionExposure !== undefined || st.reflectionContrast !== undefined) {
+                    const cur = controls.getValues();
+                    controls.setReflection(st.reflectionExposure ?? cur.reflectionExposure, st.reflectionContrast ?? cur.reflectionContrast);
+                }
+                if (st.reflectivity !== undefined) {
+                    controls.setReflectivity(st.reflectivity);
+                }
+                // The two depth sliders share one setter — restore both (fall back to the current
+                // value when a preset carries only one) so the final surface-filter call matches.
+                if (st.depthBlur !== undefined || st.depthBlurThreshold !== undefined) {
+                    const cur = controls.getValues();
+                    controls.setDepthBlur(st.depthBlur ?? cur.depthBlur, st.depthBlurThreshold ?? cur.depthBlurThreshold);
+                }
+                if (st.thicknessBlur !== undefined) {
+                    controls.setThicknessBlur(st.thicknessBlur);
+                }
+                if (st.surfaceFilter !== undefined) {
+                    controls.setSurfaceFilter(st.surfaceFilter);
+                }
+                if (st.narrowDelta !== undefined || st.narrowMu !== undefined) {
+                    const cur = controls.getValues();
+                    controls.setNarrowRange(st.narrowDelta ?? cur.narrowDelta, st.narrowMu ?? cur.narrowMu);
+                }
+                if (st.anisotropic !== undefined) {
+                    controls.setAnisotropic(st.anisotropic);
+                }
+                if (st.anisoSurfScale !== undefined) {
+                    controls.setAnisotropySurfScale(st.anisoSurfScale);
+                }
+                controls.setActiveBlocks(nextActiveBlocks);
+                controls.setPagedGrid(nextPagedGrid);
+                controls.setPagedGridMaxPages(nextPagedGridMaxPages, pageCapacityLimit);
+                controls.setPagedGridStatus("");
+                canvas.dataset.pagedGridOverflow = "false";
+                controls.setFusedBlockDiscovery(nextFusedBlockDiscovery);
+                // Missing softness/density/subsurface values in older presets retain the current look.
+                if (st.foam) {
+                    const f = st.foam;
+                    const cur = controls.getValues().foam;
+                    controls.setFoam({
+                        enabled: f.enabled,
+                        activeParticles: true,
+                        generateSpray: f.generateSpray ?? true,
+                        generateFoam: f.generateFoam ?? true,
+                        generateBubbles: f.generateBubbles ?? true,
+                        surfaceFiltering: f.surfaceFiltering ?? methodName === "FLIP",
+                        kTa: f.kTa,
+                        kWc: f.kWc,
+                        kTurb: f.kTurb ?? cur.kTurb,
+                        energySpeedMin: f.energySpeedMin ?? cur.energySpeedMin,
+                        energySpeedMax: f.energySpeedMax ?? cur.energySpeedMax,
+                        curvatureMin: f.curvatureMin ?? cur.curvatureMin,
+                        curvatureMax: f.curvatureMax ?? cur.curvatureMax,
+                        turbulenceMin: f.turbulenceMin ?? cur.turbulenceMin,
+                        turbulenceMax: f.turbulenceMax ?? cur.turbulenceMax,
+                        foamLayerDepth: f.foamLayerDepth ?? cur.foamLayerDepth,
+                        sprayDrag: f.sprayDrag ?? cur.sprayDrag,
+                        kb: f.kb,
+                        kd: f.kd,
+                        tMin: f.tMin,
+                        tMax: f.tMax,
+                        poolScale: f.poolScale,
+                        size: f.size ?? cur.size,
+                        blurRadius: f.blurRadius,
+                        lightIntensity: f.lightIntensity,
+                        ambient: f.ambient,
+                        aoStrength: f.aoStrength,
+                        normalStrength: f.normalStrength,
+                        debugTexture: f.debugTexture,
+                        softness: f.softness ?? cur.softness,
+                        density: f.density ?? cur.density,
+                        subsurfaceStrength: f.subsurfaceStrength ?? cur.subsurfaceStrength,
+                        subsurfaceColor: f.subsurfaceColor ?? cur.subsurfaceColor,
+                    });
+                }
+                // Container/nozzle-mesh visibility (applied to the demo by switchPair's post-load
+                // setContainerVisible(...) below).
+                if (st.showContainer !== undefined) {
+                    controls.setShowContainer(st.showContainer);
+                }
+                showGridBounds = st.showGridBounds ?? false;
+                showGridBoundsSolid = st.showGridBoundsSolid ?? false;
+                controls.setShowGridBounds(showGridBounds);
+                controls.setShowGridBoundsSolid(showGridBoundsSolid);
+            });
         } finally {
             loadingPairState = false;
         }
-        const flowPosition = (nextGridSettings ?? defaultGridSettings(methodName, domainScale)).position;
-        activeFlow = st.legacyFlow
-            ? flowToGridLocal(demo.flow(), flowPosition)
-            : {
-                  emitters: structuredClone(st.emitters ?? []),
-                  sinks: structuredClone(st.sinks ?? []),
-                  ...(st.initialEmittersFillCapacity !== undefined ? { initialEmittersFillCapacity: st.initialEmittersFillCapacity } : {}),
-              };
-        controls.setColor(st.color);
-        controls.setIndependentRendering(st.independentRendering ?? false);
-        controls.setHalf(st.half);
-        controls.setThicknessDownscale(st.thicknessDownscale);
-        controls.setParticleSize(st.size);
-        controls.setAbsorption(st.absorption);
-        // Surface render mode + shading sliders (each optional; only apply if present).
-        if (st.renderMode !== undefined) {
-            controls.setRenderMode(st.renderMode === "spheres");
-        }
-        if (st.polygonShader !== undefined) {
-            controls.setPolygonShader(st.polygonShader);
-        }
-        if (st.refraction !== undefined) {
-            controls.setRefraction(st.refraction);
-        }
-        if (st.specular !== undefined) {
-            controls.setSpecular(st.specular);
-        }
-        // Reflection exposure/contrast share one host callback, so restore both together and fall
-        // back to the live value when a preset carries only one — otherwise the pair's second
-        // value would be pushed as whatever the previous demo left behind.
-        if (st.reflectionExposure !== undefined || st.reflectionContrast !== undefined) {
-            const cur = controls.getValues();
-            controls.setReflection(st.reflectionExposure ?? cur.reflectionExposure, st.reflectionContrast ?? cur.reflectionContrast);
-        }
-        if (st.reflectivity !== undefined) {
-            controls.setReflectivity(st.reflectivity);
-        }
-        // The two depth sliders share one setter — restore both (fall back to the current
-        // value when a preset carries only one) so the final surface-filter call matches.
-        if (st.depthBlur !== undefined || st.depthBlurThreshold !== undefined) {
-            const cur = controls.getValues();
-            controls.setDepthBlur(st.depthBlur ?? cur.depthBlur, st.depthBlurThreshold ?? cur.depthBlurThreshold);
-        }
-        if (st.thicknessBlur !== undefined) {
-            controls.setThicknessBlur(st.thicknessBlur);
-        }
-        if (st.surfaceFilter !== undefined) {
-            controls.setSurfaceFilter(st.surfaceFilter);
-        }
-        if (st.narrowDelta !== undefined || st.narrowMu !== undefined) {
-            const cur = controls.getValues();
-            controls.setNarrowRange(st.narrowDelta ?? cur.narrowDelta, st.narrowMu ?? cur.narrowMu);
-        }
-        if (st.anisotropic !== undefined) {
-            controls.setAnisotropic(st.anisotropic);
-        }
-        if (st.anisoSurfScale !== undefined) {
-            controls.setAnisotropySurfScale(st.anisoSurfScale);
-        }
-        controls.setActiveBlocks(nextActiveBlocks);
-        controls.setPagedGrid(nextPagedGrid);
-        controls.setPagedGridMaxPages(nextPagedGridMaxPages, pageCapacityLimit);
-        controls.setPagedGridStatus("");
-        canvas.dataset.pagedGridOverflow = "false";
-        controls.setFusedBlockDiscovery(nextFusedBlockDiscovery);
-        // Foam block (optional). The component sets the enable state + config + UI here;
-        // the authoritative push to the active sim happens via applyFoam() inside
-        // applyMethod() below. Missing softness/density/subsurface (older presets) keep
-        // the current values.
-        if (st.foam) {
-            const f = st.foam;
-            const cur = controls.getValues().foam;
-            controls.setFoam({
-                enabled: f.enabled,
-                activeParticles: true,
-                generateSpray: f.generateSpray ?? true,
-                generateFoam: f.generateFoam ?? true,
-                generateBubbles: f.generateBubbles ?? true,
-                surfaceFiltering: f.surfaceFiltering ?? methodName === "FLIP",
-                kTa: f.kTa,
-                kWc: f.kWc,
-                kTurb: f.kTurb ?? cur.kTurb,
-                energySpeedMin: f.energySpeedMin ?? cur.energySpeedMin,
-                energySpeedMax: f.energySpeedMax ?? cur.energySpeedMax,
-                curvatureMin: f.curvatureMin ?? cur.curvatureMin,
-                curvatureMax: f.curvatureMax ?? cur.curvatureMax,
-                turbulenceMin: f.turbulenceMin ?? cur.turbulenceMin,
-                turbulenceMax: f.turbulenceMax ?? cur.turbulenceMax,
-                foamLayerDepth: f.foamLayerDepth ?? cur.foamLayerDepth,
-                sprayDrag: f.sprayDrag ?? cur.sprayDrag,
-                kb: f.kb,
-                kd: f.kd,
-                tMin: f.tMin,
-                tMax: f.tMax,
-                poolScale: f.poolScale,
-                size: f.size ?? cur.size,
-                blurRadius: f.blurRadius,
-                lightIntensity: f.lightIntensity,
-                ambient: f.ambient,
-                aoStrength: f.aoStrength,
-                normalStrength: f.normalStrength,
-                debugTexture: f.debugTexture,
-                softness: f.softness ?? cur.softness,
-                density: f.density ?? cur.density,
-                subsurfaceStrength: f.subsurfaceStrength ?? cur.subsurfaceStrength,
-                subsurfaceColor: f.subsurfaceColor ?? cur.subsurfaceColor,
-            });
-        }
-        // Container/nozzle-mesh visibility (applied to the demo by switchPair's post-load
-        // setContainerVisible(...) below).
-        if (st.showContainer !== undefined) {
-            controls.setShowContainer(st.showContainer);
-        }
-        showGridBounds = st.showGridBounds ?? false;
-        showGridBoundsSolid = st.showGridBoundsSolid ?? false;
-        controls.setShowGridBounds(showGridBounds);
-        controls.setShowGridBoundsSolid(showGridBoundsSolid);
         // Core-owned viewing options the pair pins. Both are optional so files written before
         // they existed restore the defaults rather than turning themselves off/on at random.
         if (st.envIntensity !== undefined && st.envIntensity !== envIntensity) {
@@ -4318,6 +4688,10 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         if (currentPairKey !== null && (!importedScene || preservingImportedScene) && !suppressPairSnapshot) {
             const snapshot = readLivePairState(methodName);
             pairStates.set(currentPairKey, snapshot);
+            const session = presetSessions.get(currentPairKey);
+            if (session) {
+                presetSessions.set(currentPairKey, editFluidPresetSession(session, { state: snapshot }));
+            }
             if (activeDemo?.methodIndependentAuthoring) {
                 methodIndependentStates.set(activeDemo.key, snapshot);
             }
@@ -4349,7 +4723,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             applySceneSdf();
             refreshDemoParams();
             pendingForce = null;
-            activeSim.reset();
+            resetFluidSimulation(activeSim);
             restartSimulationLifecycle();
             clearSceneHoles();
         }
@@ -4396,7 +4770,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         camera: cam,
         ground,
         sceneSdfBuffer,
-        getActiveSim: () => activeSim,
+        getActiveSimulation: () => activeSim,
+        rebindSceneSdf: applySceneSdf,
         resetActiveSim: () => resetActiveFlow(false),
         refreshFlow: () => {
             if (loadingPairState) {
@@ -4404,8 +4779,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             }
             activeFlow = flowToGridLocal(activeDemo!.flow());
             applyFlow();
-            activeSim.reset();
-            builtInitialFlowSignature = initialFlowSignature(activeFlow);
+            resetFluidSimulation(activeSim);
+            builtInitialStateKey = flipParticlePlan(requestedParticleCount()).initialStateKey;
             restartSimulationLifecycle();
             refreshFlowUI();
         },
@@ -4419,7 +4794,6 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             return Math.max(Math.abs(bounds.min[0]), Math.abs(bounds.max[0]), Math.abs(bounds.min[2]), Math.abs(bounds.max[2]));
         },
         viewProjection: () => getViewProjectionMatrix(cam, getEffectiveAspectRatio(cam, canvas.width, canvas.height)),
-        getProfiler: () => (timingEnabled ? profiler : null),
         setDomainScale: (s: number) => {
             if (s === domainScale) {
                 return;
@@ -4504,11 +4878,10 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         const lifecycle = fluidSimulationLifecycle(simulationElapsed, simulationDuration, simulationAlphaDecay);
         simulationOpacity = lifecycle.opacity;
         simulationStopped = lifecycle.stopped;
-        particleTask.setOpacity(simulationOpacity);
-        surfaceTask.setOpacity(simulationOpacity);
-        polygonSurfaceTask.setOpacity(simulationOpacity);
-        foamTask.setOpacity(simulationOpacity);
-        foamTask.setEnabled(foamRenderVisible());
+        configureFluidSimulationRenderLayer(particleTask, { opacity: simulationOpacity });
+        configureFluidSimulationRenderLayer(surfaceTask, { opacity: simulationOpacity });
+        configureFluidSimulationRenderLayer(polygonSurfaceTask, { opacity: simulationOpacity });
+        configureFluidSimulationRenderLayer(foamTask, { opacity: simulationOpacity, enabled: foamRenderVisible() });
         canvas.dataset.simulationOpacity = simulationOpacity.toFixed(3);
         canvas.dataset.simulationStopped = simulationStopped ? "true" : "false";
     }
@@ -4570,8 +4943,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         // open the whole-frame envelope (frameStart) so the "Total" row reports the real
         // total GPU time of the frame, not just the sum of the itemised passes.
         if (timingEnabled && profiler) {
-            profiler.beginFrame();
-            profiler.frameStart(engine._currentEncoder);
+            beginFluidSimulationProfilerFrame(profiler);
         }
         // Smoothed FPS: average the frame interval over ~0.5 s, then refresh.
         fpsAccumMs += deltaMs;
@@ -4585,7 +4957,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             fpsFrames = 0;
             // Refresh the timing + memory read-outs on the same ~2 Hz cadence as the FPS counter.
             if (gpu) {
-                gpu.refreshTiming(timingEnabled && profiler ? profiler.results() : null);
+                gpu.refreshTiming(timingEnabled && profiler ? readFluidSimulationProfiler(profiler) : null);
                 gpu.refreshMemory(activeSim.gpuBytes, engine.canvas.width, engine.canvas.height);
             }
         }
@@ -4598,7 +4970,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             if (!importedScene) {
                 activeDemo?.update(0);
             }
-            activeSim.reset();
+            resetFluidSimulation(activeSim);
             restartSimulationLifecycle();
             captureStarted = true;
             canvas.dataset.captureStarted = "true";
@@ -4608,24 +4980,24 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         // an active Shift+RMB drag. Idle frames disable it — nothing force-related runs.
         if (pendingForce) {
             rayForce.setRay(pendingForce.origin, pendingForce.dir, pendingForce.push, pendingForce.radius, pendingForce.accel);
-            activeSim.setForceField(rayForce.spec);
+            setFluidSimulationForceField(activeSim, forceFieldHandle(rayForce.spec));
             pendingForce = null;
         } else {
-            activeSim.setForceField(importedScene ? null : (activeDemo?.forceField?.() ?? null));
+            setFluidSimulationForceField(activeSim, forceFieldHandle(importedScene ? null : (activeDemo?.forceField?.() ?? null)));
         }
         // "P" pauses: freeze the obstacles + the solver so the fluid stops advancing.
         // Rendering and the camera keep running, so you can inspect the frozen state;
         // forces / holes resume on unpause. A reconstruction-only refresh is still
         // allowed so polygon quality changes remain visible on the frozen particles.
         if (paused || simulationStopped) {
-            activeSim.refreshPolygonSurface?.(engine._currentEncoder);
+            refreshFluidSimulationPolygonSurface(activeSim);
         }
         if (!paused && !simulationStopped) {
             const stepDt = fluidSimulationStepDelta(simulationElapsed, dt * simulationTimeScale, simulationDuration, simulationAlphaDecay);
             if (!importedScene) {
                 activeDemo?.update(stepDt); // box: spin paddle + write paddle SDF block
             }
-            activeSim.step(engine._currentEncoder, stepDt);
+            stepFluidSimulation(activeSim, stepDt);
             advanceSimulationLifecycle(stepDt);
             if (captureMode) {
                 captureStep++;
@@ -4673,7 +5045,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             forceLastX = e.clientX;
             forceLastY = e.clientY;
             forceLastT = now;
-            const speed = (Math.hypot(dx, dy) / dtMs) * 1000;
+            const speed = (Math.sqrt(dx * dx + dy * dy) / dtMs) * 1000;
             if (speed < 1) {
                 return;
             }
@@ -4687,7 +5059,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             let px = wm[0]! * dx - wm[4]! * dy;
             let py = wm[1]! * dx - wm[5]! * dy;
             let pz = wm[2]! * dx - wm[6]! * dy;
-            const plen = Math.hypot(px, py, pz) || 1;
+            const plen = Math.sqrt(px * px + py * py + pz * pz) || 1;
             px /= plen;
             py /= plen;
             pz /= plen;
@@ -4756,6 +5128,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     qualitySel.value = quality;
     controls.setMethod("MLS-MPM");
     applyRenderMode(false); // fluid surface by default
+    initializeFluidControlsBinding();
     if (captureMode) {
         setUiHidden(true);
     }

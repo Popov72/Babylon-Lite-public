@@ -369,6 +369,44 @@ describe("xr-session lifecycle", () => {
         expect(ctx.cameras.length).toBe(0);
     });
 
+    it("marks XR scene updates as active frame recording and restores engine state", async () => {
+        installXrGlobals();
+        const engine = makeMockEngine();
+        const previousEncoder = engine._currentEncoder;
+        const previousDelta = engine._currentDelta;
+        const scene = createSceneContext(engine);
+        const update = vi.fn(() => {
+            expect(engine._currentEncoder).toBeDefined();
+            expect(engine._currentEncoder).not.toBe(previousEncoder);
+        });
+        scene._update = update;
+        const ctx = await enterXr(scene, { input: false });
+
+        currentSession.drive(16, makeFrame(makeViewerPose()));
+        expect(update).toHaveBeenCalledOnce();
+        expect(engine._currentEncoder).toBe(previousEncoder);
+        expect(engine._currentDelta).toBe(previousDelta);
+        await exitXr(ctx);
+    });
+
+    it("restores engine frame state when XR scene recording throws", async () => {
+        installXrGlobals();
+        const engine = makeMockEngine();
+        const previousEncoder = engine._currentEncoder;
+        const previousDelta = engine._currentDelta;
+        const scene = createSceneContext(engine);
+        scene._update = () => {
+            throw new Error("scene update failed");
+        };
+        const ctx = await enterXr(scene, { input: false });
+
+        expect(() => currentSession.drive(16, makeFrame(makeViewerPose()))).toThrow("scene update failed");
+        expect(submitCount).toBe(0);
+        expect(engine._currentEncoder).toBe(previousEncoder);
+        expect(engine._currentDelta).toBe(previousDelta);
+        await exitXr(ctx);
+    });
+
     it("loads the second eye when color and depth share a projection-texture subrect", async () => {
         const sharedColor = { createView: () => ({}) as GPUTextureView } as unknown as GPUTexture;
         const sharedDepth = { createView: () => ({}) as GPUTextureView } as unknown as GPUTexture;

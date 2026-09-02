@@ -2,12 +2,13 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { presetFromExportJson, type FluidExportJson } from "../../../../lab/lite/src/demos/fluid/preset-io";
+import { presetFromExportJson, type FluidExportJson } from "../../../../packages/babylon-lite/src/fluid/authoring/preset-io";
 import {
     allocateFluidInflowCapacity,
     countFluidInitialParticles,
     createFluidFlowState,
     createFluidInitialParticles,
+    FLUID_FLOW_RUNTIME_WGSL,
     fluidPerParticleRecycleProbability,
     fluidVolumeBudget,
     legacyEmitterConfigToFluidFlow,
@@ -21,7 +22,7 @@ import {
     type FluidEmitter,
     type FluidFlowConfig,
     type FluidShape,
-} from "../../../../packages/babylon-lite/src/fluid/sim-common";
+} from "../../../../packages/babylon-lite/src/fluid/core/sim-common";
 
 const transform = (position: [number, number, number]) => ({
     position,
@@ -145,6 +146,21 @@ describe("fluid flow reset seeding", () => {
             }
         }
         expect(minimumDistance).toBeCloseTo(1);
+    });
+
+    it("keeps dense lower lattice layers when capacity cannot fill an Initial volume", () => {
+        const initial = emitter("initial", "initial", [0, 0, 0]);
+        initial.shape.size = [4, 4, 4];
+        const config: FluidFlowConfig = {
+            emitters: [initial, emitter("inflow", "inflow", [10, 0, 0])],
+            sinks: [],
+        };
+
+        const particles = createFluidInitialParticles(128, config, 0.125, { min: [-3, -3, -3], max: [3, 3, 3] })!;
+        const ys = Array.from({ length: particles.activeCount }, (_, index) => particles.positions[index * 3 + 1]!);
+
+        expect(particles.activeCount).toBe(128);
+        expect(Math.max(...ys)).toBeLessThan(0);
     });
 
     it("keeps lattice particles inside rotated non-uniformly scaled emitters", () => {
@@ -448,6 +464,40 @@ describe("fluid volume budgets", () => {
         expect(prepareFluidFlowFrame(state, 0.5)).toMatchObject({ emitActive: false, emitCount: 0, emitUnlimited: false });
         expect(state.elapsedSeconds).toBe(0.5);
     });
+
+    it("waits for a sink delay and budgets only the active part of the crossing frame", () => {
+        vi.stubGlobal("GPUBufferUsage", { UNIFORM: 1, COPY_DST: 2, STORAGE: 4 });
+        const device = {
+            createBuffer: ({ size }: GPUBufferDescriptor) => ({ size, destroy: vi.fn() }),
+            queue: { writeBuffer: vi.fn() },
+        } as unknown as GPUDevice;
+        const state = createFluidFlowState(device, 20, 0.1);
+        setFluidFlowConfig(state, {
+            emitters: [],
+            sinks: [
+                {
+                    id: "sink",
+                    name: "sink",
+                    enabled: true,
+                    mode: "delete",
+                    transform: transform([0, 0, 0]),
+                    shape: { type: "box", size: [2, 2, 2] },
+                    targets: [],
+                    delayBeforeStart: 1.5,
+                    volumeRate: state.particleVolume * 10,
+                },
+            ],
+        });
+
+        const firstSinkOffset = 8 + 16 * 32;
+        expect(prepareFluidFlowFrame(state, 1)).toMatchObject({ flowActive: false, deleteActive: false });
+        expect(state.u32[firstSinkOffset + 24]).toBe(0);
+        expect(state.u32[firstSinkOffset + 26]).toBe(0);
+        expect(prepareFluidFlowFrame(state, 1)).toMatchObject({ flowActive: true, deleteActive: true });
+        expect(state.u32[firstSinkOffset + 24]).toBe(1);
+        expect(state.u32[firstSinkOffset + 26]).toBe(5);
+        expect(state.f32[firstSinkOffset + 31]).toBeCloseTo(0.5);
+    });
 });
 
 describe("legacy emitter compatibility", () => {
@@ -540,7 +590,7 @@ describe("per-particle fluid sinks", () => {
         return createFluidFlowState(device, 20, 0.1);
     };
 
-    const flow = (sink: { volumeRate?: number; perParticleRecycleRate?: number }): FluidFlowConfig => ({
+    const flow = (sink: { volumeRate?: number; perParticleRecycleRate?: number; delayBeforeStart?: number }): FluidFlowConfig => ({
         emitters: [emitter("source", "inflow", [0, 1, 0])],
         sinks: [
             {
@@ -585,5 +635,21 @@ describe("per-particle fluid sinks", () => {
 
         expect(() => setFluidFlowConfig(state, flow({ volumeRate: 1, perParticleRecycleRate: 0.7 }))).toThrow(/cannot define both/);
         expect(() => setFluidFlowConfig(state, flow({ perParticleRecycleRate: -1 }))).toThrow(/finite non-negative/);
+        expect(() => setFluidFlowConfig(state, flow({ delayBeforeStart: -1 }))).toThrow(/delayBeforeStart must be a finite non-negative/);
+    });
+});
+
+describe("shared flow recycle WGSL", () => {
+    it("keeps delete sinks one-way while recycle sinks roll back failed claims", () => {
+        const deletePath = FLUID_FLOW_RUNTIME_WGSL.slice(FLUID_FLOW_RUNTIME_WGSL.indexOf("fn fluidTryDelete"), FLUID_FLOW_RUNTIME_WGSL.indexOf("fn fluidTryRelaunch"));
+        const relaunchPath = FLUID_FLOW_RUNTIME_WGSL.slice(FLUID_FLOW_RUNTIME_WGSL.indexOf("fn fluidTryRelaunch"));
+
+        expect(FLUID_FLOW_RUNTIME_WGSL).toContain("fn fluidReleaseCounter");
+        expect(FLUID_FLOW_RUNTIME_WGSL).toContain("if(old==0u){return;}");
+        expect(FLUID_FLOW_RUNTIME_WGSL).toContain("fn fluidEmitterRouteAvailable");
+        expect(FLUID_FLOW_RUNTIME_WGSL).toContain("bitcast<f32>(sink.compat.z)*bitcast<f32>(sink.compat.w)");
+        expect(deletePath).toContain("fluidClaimSink(sink.route.w,sink.route.z)");
+        expect(relaunchPath).toContain("if(!fluidEmitterRouteAvailable(sink.route.y)||!fluidClaimSink(sink.route.w,sink.route.z)){continue;}");
+        expect(relaunchPath).toContain("if(ei>=flow.header.x){fluidReleaseSink(sink.route.w);continue;}");
     });
 });

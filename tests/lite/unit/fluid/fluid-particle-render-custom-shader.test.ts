@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("fluid particle custom shader contract", () => {
-    const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/particle-render.ts"), "utf8");
+    const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/rendering/particle-render.ts"), "utf8");
 
     it("documents stable built-in and custom uniform bindings", () => {
         expect(source).toContain("binding 0 is the 128-byte camera uniform");
@@ -22,6 +22,13 @@ describe("fluid particle custom shader contract", () => {
         expect(source).toContain("const blend = shader ? shader.blend : DEFAULT_BLEND");
         expect(source).toContain('depthCompare: shader?.depthCompare ?? "greater-equal"');
         expect(source).toContain("depthWriteEnabled: shader?.depthWriteEnabled ?? true");
+    });
+
+    it("preserves the authored sphere tint while applying motion and rim lighting", () => {
+        expect(source).toContain("min(base * 1.5, vec3<f32>(1.0))");
+        expect(source).toContain("col += i.color * (fres * 0.25);");
+        expect(source).not.toContain("base + vec3<f32>(0.5)");
+        expect(source).not.toContain("vec3<f32>(0.45, 0.65, 0.95) * (fres * 0.25)");
     });
 
     it("supports lazy runtime shader replacement and restoration", () => {

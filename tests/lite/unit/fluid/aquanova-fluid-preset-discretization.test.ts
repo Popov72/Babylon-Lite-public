@@ -2,9 +2,9 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { gridCellsForSize } from "../../../../lab/lite/src/demos/fluid/grid-settings";
-import { presetFromExportJson, type FluidExportJson } from "../../../../lab/lite/src/demos/fluid/preset-io";
-import { fluidSimulationCellSize, fluidSimulationParticleCapacity, fluidSimulationParticleRadius } from "../../../../packages/babylon-lite/src/fluid/simulation-config";
+import { gridCellsForSize } from "../../../../packages/babylon-lite/src/fluid/authoring/grid-settings";
+import { presetFromExportJson, type FluidExportJson } from "../../../../packages/babylon-lite/src/fluid/authoring/preset-io";
+import { fluidSimulationCellSize, fluidSimulationParticleCapacity, fluidSimulationParticleRadius } from "../../../../packages/babylon-lite/src/fluid/core/simulation-config";
 
 describe("Aquanova fluid preset discretization", () => {
     it("reads capsule-tank2 discretization from its JSON", () => {

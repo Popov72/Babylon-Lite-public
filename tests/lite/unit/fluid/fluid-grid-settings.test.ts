@@ -17,7 +17,7 @@ import {
     gridWorldSize,
     highestFittingGridResolution,
     scaleForGridResolution,
-} from "../../../../lab/lite/src/demos/fluid/grid-settings";
+} from "../../../../packages/babylon-lite/src/fluid/authoring/grid-settings";
 
 describe("fluid grid settings", () => {
     it("derives cubic cell size from the explicit physics scale", () => {

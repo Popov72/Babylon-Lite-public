@@ -10,16 +10,23 @@
 // param block every frame (like the box paddle) so those slots survive the core's
 // per-switch `clearSceneHoles()` (which zeroes offset 32..159).
 
-import { addToScene, loadGltf, setMeshVisible } from "babylon-lite";
-import type { FluidEmitter, FluidFlowConfig, Mesh, SceneNode } from "babylon-lite";
-import type { FluidSim, SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
-import { generateMeshSdf } from "babylon-lite/fluid/volume-sampling/index.js";
-import { createPlane, createMeshFromData } from "babylon-lite/mesh/mesh-factories.js";
-import { createShaderMaterial, setShaderTexture } from "babylon-lite/material/shader/shader-material.js";
-import type { ShaderMaterial } from "babylon-lite/material/shader/shader-material.js";
-import { createTexture2DFromPixels, updateTexture2DFromPixels } from "babylon-lite/texture/pixels-texture.js";
-import type { Texture2D } from "babylon-lite/texture/texture-2d.js";
-import { releaseTexture } from "babylon-lite/resource/gpu-pool.js";
+import {
+    addToScene,
+    createFluidWheelTorqueQuery,
+    disposeFluidWheelTorqueQuery,
+    generateMeshSdf,
+    loadGltf,
+    readFluidWheelTorqueQuery,
+    sampleFluidWheelTorqueQuery,
+    setMeshVisible,
+} from "babylon-lite";
+import type { FluidEmitter, FluidFlowConfig, FluidWheelTorqueQuery, Mesh, SceneNode, SceneSdfSpec } from "babylon-lite";
+import { createPlane, createMeshFromData } from "babylon-lite";
+import { createShaderMaterial, setShaderTexture } from "babylon-lite";
+import type { ShaderMaterial } from "babylon-lite";
+import { createTexture2DFromPixels, updateTexture2DFromPixels } from "babylon-lite";
+import type { Texture2D } from "babylon-lite";
+import { releaseTexture } from "babylon-lite";
 import type { DemoParam, FluidCtx, FluidDemo, DemoStateValue } from "../demo.js";
 import { ENV_STUDIO_URL } from "../demo.js";
 
@@ -501,7 +508,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         // a slight downward bias, so water arcs across onto the descending buckets like a flume (not a
         // steep drop). Small -Y so gravity + the arc land it on the wheel a bit below the launch height.
         const osRaw: [number, number, number] = [0, -0.15, WHEEL_DRIVE_SIDE];
-        const osLen = Math.hypot(osRaw[0], osRaw[1], osRaw[2]);
+        const osLen = Math.sqrt(osRaw[0] * osRaw[0] + osRaw[1] * osRaw[1] + osRaw[2] * osRaw[2]);
         const topEmitters: FluidEmitter[] = (
             [
                 [-1, -1],
@@ -677,7 +684,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         if (active) {
             // Rebuild the active sim's collision pipes for the new SDF. The inactive backend is
             // refreshed lazily on the next method switch (the core's applySceneSdf re-reads demo.sdf).
-            ctx.getActiveSim().setSceneSdf(sdf);
+            ctx.rebindSceneSdf();
         }
     };
 
@@ -692,10 +699,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         // 2) Regenerate the collision WGSL + rescale/re-upload the baked grid (updates sdf.sdf / grid).
         applyMode(bakedActive);
         uploadScaledGrid();
-        // 3) Force the flux compute pipeline to recompile with the rescaled catch-region literals.
-        fluxPipeline = null;
-        fluxBindGroup = null;
-        fluxBoundPos = null;
+        // 3) Rebuild the shared wheel-torque query for the rescaled catch region.
+        rebuildWheelTorqueQuery();
         builtMeshScale = meshScale; // the demo-local collision state is now built at this scale
         // 4) The sim-domain rebuild touches the SHARED core state (bounds + the shared UBO), so only do
         //    it while THIS demo is on-screen. If the demo was switched away before this debounced call
@@ -720,12 +725,11 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     let builtMeshScale = 1; // mesh scale the collision (WGSL + UBO + grid + sim bounds) was last built at
     // ── STAGE 2: torque-driven wheel spin (real fluid → rigid coupling) ──────────────────────────
     // Spin the REAL textured wheel mesh (via its "wheel" pivot node) driven by the physical TORQUE the
-    // caught water exerts on the wheel. Each frame a tiny GPU reduction sums, over the moving upper-rim
+    // caught water exerts on the wheel. Each frame the shared opaque fluid query sums, over the moving upper-rim
     // water (axle-local: perpendicular distance to the axle in the rim band, |axial offset| ≤ T+margin,
     // perp.y>0, normalized speed > SPEED_GATE), the gravity lever arm perp.z — i.e. the net torque
-    // τ_x = Σ m·g·perp.z about the +X axle — into a signed fixed-point atomic<i32>. That value is copied
-    // to a double-buffered staging buffer and read back with mapAsync (NON-blocking — never awaited in
-    // the render path; frames with no fresh value reuse the last one). τ is EMA-smoothed and integrated
+    // τ_x = Σ m·g·perp.z about the +X axle. Core-owned staging reads that value asynchronously without
+    // blocking the render path; frames with no fresh value reuse the last one. τ is EMA-smoothed and integrated
     // as a rigid body: I·dω/dt = τ − friction·ω; θ integrates ω and drives wheelNode.rotation.x
     // (axle = local +X → the disk spins in place about
     // the axle). The analytic collision wheel SDF stays rotation-symmetric, so θ is a physical no-op
@@ -748,7 +752,6 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     // axle — e.g. filled descending-side buckets) spins the wheel that way; a symmetric load nets ~0.
     // This is genuine two-way coupling — the water weight drives the wheel while the wheel SDF carries
     // the water. τ is EMA-smoothed and integrated as I·dω/dt = gain·τ − friction·ω.
-    const TORQUE_FP = 256; // fixed-point scale for the signed atomic<i32> torque accumulation
     const TORQUE_GAIN = 0.0002; // rad/s² per unit net torque (folds in m·g and the moment of inertia).
     // The wheel is BISTABLE — a moving wheel drags water through the torque band and self-sustains, but a
     // too-slow one lets the sparse 40k stream fall straight through and never catches. This gain (with the
@@ -780,152 +783,43 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     // and the BRAKE friction (not this gate) is what stops the wheel when the water is pushed away.
     const SPEED_GATE = 0.05;
     const TWO_PI = Math.PI * 2;
-    const FLUX_WG_SIZE = 256; // reduction workgroup size
-    const FLUX_STAGING = 2; // double-buffered readback so mapAsync never stalls the render path
 
     const spinEnabled = true; // the wheel spins when driven by the water torque (no toggle)
     let wheelTheta = 0; // current rotation angle about the axle (rad)
     let wheelOmega = 0; // current angular speed (rad/s; signed — water torque can spin either way)
     let smoothedTorque = 0; // EMA of the decoded net torque (de-jitters the async readback cadence)
-    let latestTorque = 0; // last successfully read-back net torque (decoded from fixed-point)
     let spinReadoutFrames = 0; // throttles the ω/count read-out DOM update
 
-    // Lazily-built GPU reduction resources — created once, never per frame.
-    let fluxPipeline: GPUComputePipeline | null = null;
-    let fluxCountBuffer: GPUBuffer | null = null; // atomic<u32> the reduction writes
-    let fluxNormBuffer: GPUBuffer | null = null; // uniform: x = active sim's debugNorm (speed→normalized)
-    let fluxBindGroup: GPUBindGroup | null = null;
-    let fluxBoundPos: GPUBuffer | null = null; // positionBuffer the bind group is wired to (rebind on change)
-    const fluxStaging: GPUBuffer[] = []; // COPY_DST→MAP_READ readback ring
-    const fluxStagingBusy: boolean[] = []; // per-staging in-flight flag (mapAsync pending)
-
-    // Reduction shader: for each particle, add 1 to the atomic when it lies inside the catch cylinder
-    // AND is moving (speed gate). The wheel catch geometry is baked into the WGSL as literals at the
-    // CURRENT mesh scale (regenerated + pipeline rebuilt on a scale change) — there is NO runtime scale
-    // math in the shader. arrayLength(&positions) == the sim's particle count (positionBuffer is
-    // exactly `count` vec4s), so the last workgroup self-guards without a count uniform. `speeds` is
-    // the sim's f32-per-particle world-speed buffer (same indexing as positions); fluxParams.x =
-    // debugNorm (1/typical-max-speed) so `speed·norm` is a resolution-independent 0..1.
-    const wgslF = (n: number): string => n.toFixed(5);
-    const fluxWgsl = (k: number): string => {
-        const fluxRadCap = (WHEEL_R + CATCH_MARGIN_R) * k;
-        const fluxRimInner = (WHEEL_R - RIM_BAND) * k;
-        const fluxAxHalf = (WHEEL_T + CATCH_MARGIN_A) * k;
-        return `@group(0) @binding(0) var<storage, read> positions: array<vec4<f32>>;
-@group(0) @binding(1) var<storage, read_write> outTorque: atomic<i32>;
-@group(0) @binding(2) var<storage, read> speeds: array<f32>;
-@group(0) @binding(3) var<uniform> fluxParams: vec4<f32>;
-@compute @workgroup_size(${FLUX_WG_SIZE})
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let i = gid.x;
-    if (i >= arrayLength(&positions)) { return; }
-    if (i >= ${OVERSHOT_FIXED}u) { return; } // ONLY the dedicated overshot stream drives the wheel, so
-                                             // the torque (and spin) is independent of the total count —
-                                             // the abundant niche water at high counts is decorative here.
-    let d = positions[i].xyz - vec3<f32>(${wgslF(WHEEL_C[0] * k)}, ${wgslF(WHEEL_C[1] * k)}, ${wgslF(WHEEL_C[2] * k)});
-    let axis = vec3<f32>(${wgslF(WHEEL_AXLE[0])}, ${wgslF(WHEEL_AXLE[1])}, ${wgslF(WHEEL_AXLE[2])});
-    let a = dot(d, axis);
-    if (abs(a) > ${wgslF(fluxAxHalf)}) { return; }
-    let perp = d - a * axis;              // offset within the disk (Y-Z) plane
-    if (perp.y <= 0.0) { return; }        // upper half only — skip the submerged lower rim / base pool
-    if (${wgslF(WHEEL_DRIVE_SIDE)} * perp.z <= 0.0) { return; } // DRIVE side only (WHEEL_DRIVE_SIDE): the
-                                          // overshot feeds this side and its weight descends here, so the
-                                          // torque is one-signed → a steady spin. Water on the OTHER side
-                                          // (niche splash carried over the top) is ignored → no competing
-                                          // counter-torque, so the two sources can't fight the direction.
-    let rad = length(perp);
-    if (rad < ${wgslF(fluxRimInner)} || rad > ${wgslF(fluxRadCap)}) { return; } // rim band (water on the buckets)
-    if (speeds[i] * fluxParams.x <= ${wgslF(SPEED_GATE)}) { return; }
-    // Gravity torque about the +X axle from this particle's weight: τ_x = perp.z (× m·g, folded into
-    // the CPU gain). perp.z is SIGNED (one-signed here thanks to the gate), so the integration sign is
-    // side-independent. Fixed-point accumulate because WGSL atomics are integer-only.
-    atomicAdd(&outTorque, i32(perp.z * ${wgslF(TORQUE_FP)}));
-}`;
+    let wheelTorqueQuery: FluidWheelTorqueQuery | null = null;
+    const rebuildWheelTorqueQuery = (): FluidWheelTorqueQuery => {
+        if (wheelTorqueQuery) {
+            disposeFluidWheelTorqueQuery(wheelTorqueQuery);
+        }
+        wheelTorqueQuery = createFluidWheelTorqueQuery(engine, {
+            center: [WHEEL_C[0] * meshScale, WHEEL_C[1] * meshScale, WHEEL_C[2] * meshScale],
+            axis: WHEEL_AXLE,
+            verticalAxis: [0, 1, 0],
+            driveAxis: [0, 0, 1],
+            driveSide: WHEEL_DRIVE_SIDE,
+            axialHalfExtent: (WHEEL_T + CATCH_MARGIN_A) * meshScale,
+            radialMin: (WHEEL_R - RIM_BAND) * meshScale,
+            radialMax: (WHEEL_R + CATCH_MARGIN_R) * meshScale,
+            speedThreshold: SPEED_GATE,
+            maximumParticles: OVERSHOT_FIXED,
+        });
+        return wheelTorqueQuery;
     };
 
-    // Scale-independent GPU buffers (count/norm/staging) are created ONCE; the pipeline is (re)built
-    // whenever it is null — nulled on a mesh-scale change so it recompiles with the rescaled WGSL.
-    const ensureFluxResources = (): void => {
-        const device = engine._device;
-        if (!fluxCountBuffer) {
-            fluxCountBuffer = device.createBuffer({
-                label: "marbleTower-wheel-flux-count",
-                size: 4,
-                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
-            });
-            fluxNormBuffer = device.createBuffer({
-                label: "marbleTower-wheel-flux-norm",
-                size: 16, // vec4<f32> — only .x used (debugNorm)
-                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-            });
-            for (let s = 0; s < FLUX_STAGING; s++) {
-                fluxStaging.push(device.createBuffer({ label: `marbleTower-wheel-flux-staging${s}`, size: 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }));
-                fluxStagingBusy.push(false);
-            }
-        }
-        if (!fluxPipeline) {
-            const module = device.createShaderModule({ code: fluxWgsl(meshScale) });
-            fluxPipeline = device.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "main" } });
-        }
-    };
-
-    // Dispatch the reduction over the active sim's positions and kick off a non-blocking readback.
-    // Skips entirely when both staging buffers are still in flight (reuses the last torque that frame).
-    const runFluxPass = (sim: FluidSim): void => {
-        ensureFluxResources();
-        const slot = fluxStagingBusy.indexOf(false);
-        if (slot < 0) {
-            return; // both readbacks pending → reuse the last count this frame (no stall)
-        }
-        const count = sim.count | 0;
-        if (count <= 0) {
-            return;
-        }
-        const device = engine._device;
-        // Rebuild the bind group only when the active sim's positionBuffer identity changes
-        // (PBF↔MLS-MPM switch, or a sim re-created by a particle-count change).
-        if (fluxBoundPos !== sim.positionBuffer) {
-            fluxBindGroup = device.createBindGroup({
-                layout: fluxPipeline!.getBindGroupLayout(0),
-                entries: [
-                    { binding: 0, resource: { buffer: sim.positionBuffer } },
-                    { binding: 1, resource: { buffer: fluxCountBuffer! } },
-                    { binding: 2, resource: { buffer: sim.debugBuffer } },
-                    { binding: 3, resource: { buffer: fluxNormBuffer! } },
-                ],
-            });
-            fluxBoundPos = sim.positionBuffer;
-            // debugNorm is per-sim (≈1/typical-max-speed); refresh the gate uniform when the sim changes.
-            device.queue.writeBuffer(fluxNormBuffer!, 0, new Float32Array([sim.debugNorm]));
-        }
-        const staging = fluxStaging[slot]!;
-        const enc = device.createCommandEncoder({ label: "marbleTower-wheel-flux" });
-        enc.clearBuffer(fluxCountBuffer!, 0, 4); // reset the atomic before this frame's reduction
-        const pass = enc.beginComputePass();
-        pass.setPipeline(fluxPipeline!);
-        pass.setBindGroup(0, fluxBindGroup!);
-        pass.dispatchWorkgroups(Math.ceil(count / FLUX_WG_SIZE));
-        pass.end();
-        enc.copyBufferToBuffer(fluxCountBuffer!, 0, staging, 0, 4);
-        device.queue.submit([enc.finish()]); // independent submit — decoupled from the core render encoder
-        fluxStagingBusy[slot] = true;
-        void staging
-            .mapAsync(GPUMapMode.READ)
-            .then(() => {
-                latestTorque = (new Int32Array(staging.getMappedRange())[0] ?? 0) / TORQUE_FP;
-                staging.unmap();
-                fluxStagingBusy[slot] = false;
-            })
-            .catch(() => {
-                fluxStagingBusy[slot] = false; // device lost / cancelled — free the slot, keep the stale torque
-            });
+    const runFluxPass = (): number => {
+        const query = wheelTorqueQuery ?? rebuildWheelTorqueQuery();
+        const torque = readFluidWheelTorqueQuery(query);
+        sampleFluidWheelTorqueQuery(query, ctx.getActiveSimulation());
+        return torque;
     };
 
     // Per-frame drive: measure the water torque (when active), smooth it, integrate ω→θ, spin the wheel.
     const updateWheelSpin = (dt: number): void => {
-        if (spinEnabled && active) {
-            runFluxPass(ctx.getActiveSim());
-        }
+        const latestTorque = spinEnabled && active ? runFluxPass() : 0;
         // EMA-smooth the async-read torque so ω doesn't jitter with the readback cadence.
         const torque = spinEnabled ? latestTorque : 0;
         smoothedTorque += (torque - smoothedTorque) * Math.min(TORQUE_EMA_RATE * dt, 1);
@@ -1244,7 +1138,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // fold + half-widths and the -θ phase convention (dt=0 here → phase = -θ; φ0 = spokePhase0).
     const wheelSdfCpu = (perpY: number, perpZ: number, axial: number, theta: number, nSpokes: number, spokeHW: number, nBuckets: number, bucketPh0: number): number => {
         const a = axial;
-        const rad = Math.hypot(perpY, perpZ);
+        const rad = Math.sqrt(perpY * perpY + perpZ * perpZ);
         const rInner = WHEEL_HUB_R;
         const rOuter = WHEEL_R;
         const T = WHEEL_T;
@@ -1257,7 +1151,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // Hub / axle capped cylinder (rotation-symmetric, static).
         const qx = rad - rInner;
         const qy = Math.abs(a - WHEEL_HUB_OFFSET) - WHEEL_HUB_HALF;
-        const hub = Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0);
+        const hubOutsideX = Math.max(qx, 0);
+        const hubOutsideY = Math.max(qy, 0);
+        const hub = Math.sqrt(hubOutsideX * hubOutsideX + hubOutsideY * hubOutsideY) + Math.min(Math.max(qx, qy), 0);
         // Disk-plane angle + shared moving-boundary phase; the debug viz uses dt=0 → phase = -θ.
         const phi = Math.atan2(perpZ, perpY);
         const spokePhase = -theta;
@@ -1271,14 +1167,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         const sa = Math.abs(a) - SPOKE_HALF_AX;
         const st = Math.abs(rad * rel) - spokeHW;
         const sr = Math.abs(rad - midR) - halfLenR;
-        const spoke = Math.hypot(Math.max(sa, 0), Math.max(st, 0), Math.max(sr, 0)) + Math.min(Math.max(sa, Math.max(st, sr)), 0);
+        const spokeOutsideA = Math.max(sa, 0);
+        const spokeOutsideT = Math.max(st, 0);
+        const spokeOutsideR = Math.max(sr, 0);
+        const spoke = Math.sqrt(spokeOutsideA * spokeOutsideA + spokeOutsideT * spokeOutsideT + spokeOutsideR * spokeOutsideR) + Math.min(Math.max(sa, Math.max(st, sr)), 0);
         // Bucket band: sole (inner floor ring) + two side shrouds + M rotating radial vanes.
         const soleRad = Math.abs(rad - bInner) - BUCKET_WALL;
         const soleAx = Math.abs(a) - bHalfA;
-        const sole = Math.hypot(Math.max(soleRad, 0), Math.max(soleAx, 0)) + Math.min(Math.max(soleRad, soleAx), 0);
+        const soleOutsideRad = Math.max(soleRad, 0);
+        const soleOutsideAx = Math.max(soleAx, 0);
+        const sole = Math.sqrt(soleOutsideRad * soleOutsideRad + soleOutsideAx * soleOutsideAx) + Math.min(Math.max(soleRad, soleAx), 0);
         const shrAx = Math.abs(Math.abs(a) - bHalfA) - BUCKET_WALL;
         const shrRad = Math.abs(rad - bMid) - bHalfR;
-        const shroud = Math.hypot(Math.max(shrRad, 0), Math.max(shrAx, 0)) + Math.min(Math.max(shrRad, shrAx), 0);
+        const shroudOutsideRad = Math.max(shrRad, 0);
+        const shroudOutsideAx = Math.max(shrAx, 0);
+        const shroud = Math.sqrt(shroudOutsideRad * shroudOutsideRad + shroudOutsideAx * shroudOutsideAx) + Math.min(Math.max(shrRad, shrAx), 0);
         const m = Math.max(nBuckets, 1);
         const bSector = TWO_PI / m;
         let brel = phi - bucketPh0 - spokePhase; // buckets use their OWN 30-fold phase
@@ -1289,7 +1192,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         const vAx = Math.abs(a) - bHalfA;
         const vT = Math.abs(rad * brel) - VANE_HALF_W;
         const vR = Math.abs(rad - vaneMidR) - vaneHalfR;
-        const vane = Math.hypot(Math.max(vAx, 0), Math.max(vT, 0), Math.max(vR, 0)) + Math.min(Math.max(vAx, Math.max(vT, vR)), 0);
+        const vaneOutsideAx = Math.max(vAx, 0);
+        const vaneOutsideT = Math.max(vT, 0);
+        const vaneOutsideR = Math.max(vR, 0);
+        const vane = Math.sqrt(vaneOutsideAx * vaneOutsideAx + vaneOutsideT * vaneOutsideT + vaneOutsideR * vaneOutsideR) + Math.min(Math.max(vAx, Math.max(vT, vR)), 0);
         return Math.min(Math.min(Math.min(sole, shroud), vane), Math.min(hub, spoke));
     };
 
@@ -1638,7 +1544,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             const z = m2 * lx + m6 * ly + m10 * lz + m14;
             const dy = y - cy;
             const dz = z - cz;
-            const rad = Math.hypot(dy, dz);
+            const rad = Math.sqrt(dy * dy + dz * dz);
             if (rad < rLo || rad > rHi) {
                 continue;
             }
@@ -1655,7 +1561,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (cnt > 0) {
             for (let n = NMIN; n <= 18; n++) {
                 // spoke fundamental (12) lives here — exclude its 24/36 harmonics
-                const mag = Math.hypot(re[n]!, im[n]!) / cnt;
+                const real = re[n]!;
+                const imaginary = im[n]!;
+                const mag = Math.sqrt(real * real + imaginary * imaginary) / cnt;
                 if (mag > bestMag) {
                     bestMag = mag;
                     bestN = n;
@@ -1673,7 +1581,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             spokePhase0 = 0;
         }
         if (cnt > 0 && bucketCount >= NMIN && bucketCount <= NMAX) {
-            const bMagN = Math.hypot(re[bucketCount]!, im[bucketCount]!) / cnt;
+            const real = re[bucketCount]!;
+            const imaginary = im[bucketCount]!;
+            const bMagN = Math.sqrt(real * real + imaginary * imaginary) / cnt;
             bucketPhase0 = bMagN >= 0.05 ? Math.atan2(im[bucketCount]!, re[bucketCount]!) / bucketCount : spokePhase0;
         } else {
             bucketPhase0 = spokePhase0;

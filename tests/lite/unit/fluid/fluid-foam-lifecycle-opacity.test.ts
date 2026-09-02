@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("fluid foam lifecycle opacity", () => {
-    const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/foam-render.ts"), "utf8");
+    const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/rendering/foam-render.ts"), "utf8");
 
     it("applies global opacity to every debug composite branch", () => {
         expect(source).toContain("fn debugComposite(rgb: vec3<f32>) -> vec4<f32>");
@@ -23,7 +23,7 @@ describe("fluid foam lifecycle opacity", () => {
 
     describe("fluid foam surface depth", () => {
         it("follows the local liquid-depth tangent plane with a soft error mask", () => {
-            const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/foam-render.ts"), "utf8");
+            const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/rendering/foam-render.ts"), "utf8");
             expect(source).toContain("@location(4) @interpolate(flat) centreUv");
             expect(source).toContain("let expectedZ = centreZ + dot(gradient, fragXY - centrePixel);");
             expect(source).toContain("let patchWeight = 1.0 - smoothstep");

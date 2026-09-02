@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { resolve } from "node:path";
 
 const LITE_ENTRY = `/@fs/${resolve(__dirname, "../../../../packages/babylon-lite/src/index.ts").replace(/\\/g, "/")}`;
-const FLIP_ENTRY = `/@fs/${resolve(__dirname, "../../../../packages/babylon-lite/src/fluid/flip-sim.ts").replace(/\\/g, "/")}`;
+const FLIP_ENTRY = `/@fs/${resolve(__dirname, "../../../../packages/babylon-lite/src/fluid/solvers/flip-sim.ts").replace(/\\/g, "/")}`;
 
 test("FLIP transfers moving SDF boundary velocity to particles", async ({ page }) => {
     await page.goto("/");
@@ -983,8 +983,10 @@ async function main() {
     const device = engine._device;
     device.pushErrorScope("validation");
     const positions = [];
-    for (let z = 1; z <= 6; z++) {
-        for (let x = 1; x <= 6; x++) {
+    // Fill the lateral edge cells so the polygon-only domain closure, rather
+    // than an empty outer cell, must supply the positive side of the SDF.
+    for (let z = 0; z <= 7; z++) {
+        for (let x = 0; x <= 7; x++) {
             positions.push(-1 + (x + 0.5) * 0.25, (3 + 0.5) * 0.25, -1 + (z + 0.5) * 0.25);
         }
     }

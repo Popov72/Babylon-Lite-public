@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { carryMethodIndependentState } from "../../../../lab/lite/src/demos/fluid/method-independent-state";
-import type { PairState } from "../../../../lab/lite/src/demos/fluid/demo";
+import { carryMethodIndependentState } from "../../../../packages/babylon-lite/src/fluid/authoring/method-independent-state";
+import type { PairState } from "../../../../packages/babylon-lite/src/fluid/authoring/authoring-state";
 
 const state = (schema: Record<string, number>): PairState => ({
     schema,

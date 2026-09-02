@@ -5,20 +5,20 @@ import { describe, expect, it } from "vitest";
 
 describe("fluid thickness debug view", () => {
     it("compresses additive HDR thickness instead of clipping values above one", () => {
-        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/fluid-surface-render.ts"), "utf8");
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/rendering/fluid-surface-render.ts"), "utf8");
         expect(source).toContain("return value / (1.0 + value);");
         expect(source.match(/thicknessViz\(/g)).toHaveLength(3);
     });
 
     it("normalizes marker thickness by physical radius and sampling density", () => {
-        const surface = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/fluid-surface-render.ts"), "utf8");
-        const flip = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/flip-sim.ts"), "utf8");
+        const surface = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/rendering/fluid-surface-render.ts"), "utf8");
+        const flip = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/solvers/flip-sim.ts"), "utf8");
         expect(surface).toContain("PARTICLE_THICKNESS_ALPHA * (radius / 0.09) * (currentSim.surfaceThicknessScale ?? 1)");
         expect(flip).toContain("surfaceThicknessScale: 8 / markersPerCell");
     });
 
     it("widens thickness splats while preserving their integrated contribution", () => {
-        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/fluid-surface-render.ts"), "utf8");
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/rendering/fluid-surface-render.ts"), "utf8");
         expect(source).toContain("const PARTICLE_THICKNESS_SPLAT_SCALE = 1.5;");
         expect(source).toContain("cam.misc.x * thicknessSplatScale");
         expect(source).toContain("cam.misc.w * thickness / (thicknessSplatScale * thicknessSplatScale)");
@@ -26,7 +26,7 @@ describe("fluid thickness debug view", () => {
     });
 
     it("does not reconstruct a lone marker as a complete reflective surface disk", () => {
-        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/fluid-surface-render.ts"), "utf8");
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/rendering/fluid-surface-render.ts"), "utf8");
         expect(source).toContain("let support = select(0.0, contribution, nearFrontSurface(realViewPos.z, i.ndc));");
         expect(source).toContain("let support = select(0.0, contribution, nearFrontSurface(hit.z, i.ndc));");
         expect(source).toContain('entryPoint: "fsDepthFiltered"');

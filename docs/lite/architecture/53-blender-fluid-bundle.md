@@ -1,6 +1,6 @@
 # Module: Blender Fluid JSON
 
-> Package paths: `scripts/blender-fluid-addon.py`, `lab/lite/src/demos/fluid/preset-io.ts`, `lab/lite/src/demos/fluid/blender-fluid-json.ts`
+> Package paths: `scripts/blender-fluid-addon.py`, `packages/babylon-lite/src/fluid/authoring/preset-io.ts`, `packages/babylon-lite/src/fluid/authoring/blender-fluid-json.ts`
 
 ## Purpose
 
@@ -10,11 +10,16 @@ The export is a live simulation description, not a baked animation. Babylon Lite
 
 ## Format
 
-Format 11 uses the final FLIP parameter schema and retains format 10's FLIP-native resolution and marker-density fields. It also retains format 6's embedded scene payload, format 7's explicit sink lifecycle behavior, format 8's optional Blender Initial Velocity fields, and format 9's stable emitter-to-GLB-node binding:
+Format 14 adds explicit solver-value semantics and retains format 10's FLIP-native resolution and marker-density fields. It also retains format 6's embedded scene payload, format 7's explicit sink lifecycle behavior, format 8's optional Blender Initial Velocity fields, format 9's stable emitter-to-GLB-node binding, and the later FLIP/foam controls:
 
 ```ts
 export interface FluidExportJson {
     formatVersion?: number;
+    simulationSemantics?: {
+        version: 1;
+        profile: "normalized-v1" | "legacy-fluid" | "legacy-aquanova";
+        pbfPhysics: "scale-adjusted" | "literal";
+    };
     meta: { demo: string; method: string };
     source?: {
         application: string;
@@ -36,6 +41,7 @@ export interface FluidExportJson {
         // Existing emitter fields...
     }>;
     sinks?: Array<{
+        delayBeforeStart?: number;
         mode: "delete" | "recycle";
         targets: string[];
         // Existing sink fields...
@@ -50,7 +56,7 @@ export interface FluidExportJson {
 }
 ```
 
-`scene.glb` is a base64 self-contained GLB containing every visible Blender presentation mesh and supported punctual light, including flow objects and effectors but excluding the liquid Domain control volume. `scene.collision` is the base64 binary SDF payload. `scene.anchorPosition` records the grid position at which those immutable payload coordinates were authored, allowing a moved imported bundle to be exported and imported again without losing alignment. Files without it use their top-level `gridPosition`. Parameter-only presets omit `scene`. Self-contained Blender exports use format 6 through 11; format 6 sinks are migrated to recycle mode. FLIP exports use `gridResolution` as divisions along the longest domain side and default `markersPerCell` to `8`.
+`scene.glb` is a base64 self-contained GLB containing every visible Blender presentation mesh and supported punctual light, including flow objects and effectors but excluding the liquid Domain control volume. `scene.collision` is the base64 binary SDF payload. `scene.anchorPosition` records the grid position at which those immutable payload coordinates were authored, allowing a moved imported bundle to be exported and imported again without losing alignment. Files without it use their top-level `gridPosition`. Parameter-only presets omit `scene`. Self-contained Blender exports accept formats 6 through 14; format 6 sinks are migrated to recycle mode. New format-14 files require explicit semantics. FLIP exports use `gridResolution` as divisions along the longest domain side and default `markersPerCell` to `8`.
 
 The embedded collision payload is little-endian:
 
@@ -160,9 +166,9 @@ Every emitter exports its Blender flow-object name as `sourceNode`. Blender flui
 
 Reset-time volume-sampled Initial emitters use a deterministic, evenly spaced lattice rather than independent random points. The lattice spacing is derived from the emitter's allocated world volume per particle, transformed through the emitter's scale and rotation, and tightened only when curved boundaries leave too few valid sites. Candidate sites outside the simulation grid are discarded before activation rather than being clamped together by the first solver step; this matches Mantaflow's clipping of Initial geometry to its Domain. These rules remove random overlaps, density clumps, and boundary-compression spikes, so Initial liquid is visible immediately and begins close to the solver's rest spacing. Gravity, collision geometry, and a free surface can still cause a small physical adjustment; exact hydrostatic equilibrium cannot be inferred from emitter geometry alone.
 
-`delayBeforeStart` remains an optional non-negative simulation-time delay for independently authored Inflows. During the delay, the Inflow receives no volume budget and cannot be selected as a recycle target. Blender exports no automatic Initial-settling delay: Initial lattice particles and Inflows both begin at simulation time zero.
+`delayBeforeStart` is an optional non-negative simulation-time delay for independently authored Inflows and Sinks. During an Inflow delay, it receives no volume budget and cannot be selected as a recycle target. During a Sink delay, it neither deletes nor recycles particles; a finite capture rate budgets only the active fraction of the frame that crosses the delay. Blender exports no automatic Initial-settling delay: Initial lattice particles, Inflows, and Outflows all begin at simulation time zero unless edited after import.
 
-The emitter editor shows the linked **Source mesh** name and retains **Delay before start** for independently delayed Inflows plus optional **Source factor** and **Normal velocity** controls behind **Source + normal**. Source velocity itself is read-only derived state and is not authored in the UI. **Velocity (XYZ)** remains independent because it is the constant launch velocity Blender authors explicitly; the derived Source velocity is the linked object's motion.
+The emitter editor shows the linked **Source mesh** name and retains **Delay before start** for independently delayed Inflows plus optional **Source factor** and **Normal velocity** controls behind **Source + normal**. The sink editor exposes the same **Delay before start** control for delete and recycle sinks. Source velocity itself is read-only derived state and is not authored in the UI. **Velocity (XYZ)** remains independent because it is the constant launch velocity Blender authors explicitly; the derived Source velocity is the linked object's motion.
 
 Blender exports use the Whiteboard PBF render profile: surface rendering, particle size `0.6`, depth blur `17`, thickness blur `2`, half-resolution rendering, thickness downscale `8`, and the narrow-range filter with delta `2` and mu `1`, together with the profile's remaining color, refraction, reflection, and anisotropy values.
 

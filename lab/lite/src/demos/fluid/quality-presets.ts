@@ -8,8 +8,7 @@
 // `loadQualityPresets()` MUST be awaited once (before the first switchPair) to populate the
 // registry; `getQualityPreset()` then reads it synchronously.
 
-import { presetFromExportJson, type FluidExportJson } from "./preset-io.js";
-import type { PairState } from "./demo.js";
+import { presetFromExportJson, type FluidExportJson, type PairState } from "babylon-lite";
 
 /** Quality tiers shown in the panel's quality dropdown (order = display order). */
 export type Quality = "low" | "middle" | "high";

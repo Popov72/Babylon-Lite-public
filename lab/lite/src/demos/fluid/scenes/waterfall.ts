@@ -28,8 +28,7 @@
 // → springs loop.
 
 import { addToScene, createDisc, createMeshFromData, createPbrMaterial, enableMirroredMeshes, loadGltf, setMeshVisible, setShadowOnly } from "babylon-lite";
-import type { FluidEmitter, FluidFlowConfig, Mesh, SceneNode } from "babylon-lite";
-import type { ForceFieldSpec, SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
+import type { FluidEmitter, FluidFlowConfig, ForceFieldSpec, Mesh, SceneNode, SceneSdfSpec } from "babylon-lite";
 import type { DemoParam, FluidCtx, FluidDemo, DemoStateValue } from "../demo.js";
 import { configureDemoDecoderBases, demoAssetUrl } from "../../demo-asset-url.js";
 import { screenRay } from "../pick.js";
@@ -428,7 +427,7 @@ function findTopShelves(): Shelf[] {
             }
             const gx = (hmData[j * HM_N + i + 1]! - hmData[j * HM_N + i - 1]!) / (2 * cellX);
             const gz = (hmData[(j + 1) * HM_N + i]! - hmData[(j - 1) * HM_N + i]!) / (2 * cellZ);
-            if (Math.hypot(gx, gz) <= SHELF_SLOPE_MAX) {
+            if (gx * gx + gz * gz <= SHELF_SLOPE_MAX * SHELF_SLOPE_MAX) {
                 flat[rj * RN + ri] = 1;
             }
         }

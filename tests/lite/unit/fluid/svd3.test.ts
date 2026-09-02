@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { svd3 } from "../../../../packages/babylon-lite/src/fluid/svd3";
+import { svd3 } from "../../../../packages/babylon-lite/src/fluid/solvers/svd3";
 
 // Row-major 3×3 helpers.
 type M9 = number[];

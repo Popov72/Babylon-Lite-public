@@ -2,8 +2,8 @@ import { expect, test } from "@playwright/test";
 import { resolve } from "node:path";
 
 const LITE_ENTRY = `/@fs/${resolve(__dirname, "../../../../packages/babylon-lite/src/index.ts").replace(/\\/g, "/")}`;
-const FLIP_ENTRY = `/@fs/${resolve(__dirname, "../../../../packages/babylon-lite/src/fluid/flip-sim.ts").replace(/\\/g, "/")}`;
-const COMMON_ENTRY = `/@fs/${resolve(__dirname, "../../../../packages/babylon-lite/src/fluid/sim-common.ts").replace(/\\/g, "/")}`;
+const FLIP_ENTRY = `/@fs/${resolve(__dirname, "../../../../packages/babylon-lite/src/fluid/solvers/flip-sim.ts").replace(/\\/g, "/")}`;
+const COMMON_ENTRY = `/@fs/${resolve(__dirname, "../../../../packages/babylon-lite/src/fluid/core/sim-common.ts").replace(/\\/g, "/")}`;
 
 test("FLIP whitewater is opt-in, generates diffuse particles, and clears on reset", async ({ page }) => {
     test.setTimeout(120_000);

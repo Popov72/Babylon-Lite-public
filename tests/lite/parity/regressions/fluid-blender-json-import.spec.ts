@@ -665,8 +665,8 @@ test("FLIP runs with an imported SDF collision grid", async ({ page }) => {
         .toBe("imported");
     await expect(canvas).toHaveAttribute("data-method", "FLIP");
     const particleBufferLimit = Number(await canvas.getAttribute("data-device-particle-buffer-limit-bytes"));
-    await expect(canvas).toHaveAttribute("data-device-particle-bytes-per-slot", "40");
-    await expect(canvas).toHaveAttribute("data-device-particle-capacity", String(Math.floor(particleBufferLimit / 40)));
+    await expect(canvas).toHaveAttribute("data-device-particle-bytes-per-slot", "16");
+    await expect(canvas).toHaveAttribute("data-device-particle-capacity", String(Math.floor(particleBufferLimit / 16)));
     await expect(canvas).toHaveAttribute("data-imported-collision-dims", "3,4,5");
     await expect(canvas).toHaveAttribute("data-grid-resolution", "56");
     await expect(canvas).toHaveAttribute("data-flip-markers-per-cell", "8");
@@ -681,7 +681,7 @@ test("FLIP runs with an imported SDF collision grid", async ({ page }) => {
     await expect(page.getByText(/^Simulation GPU memory:\s*\d/)).toBeVisible();
     await expect(page.locator('[data-fluid-cell-size="true"] + [data-fluid-particle-usage="true"]')).toBeVisible();
     const currentParticleText = page.locator('[data-fluid-particle-usage="true"] > div').nth(0);
-    const currentMemoryText = page.locator('[data-fluid-particle-usage="true"] > div').nth(2);
+    const currentMemoryText = page.getByText(/^Simulation GPU memory:\s*\d/).first();
     expect(await currentParticleText.evaluate((element) => element.textContent)).toBe("Particles:\u00a032,768\u00a0active\u00a0/\u00a032,768\u00a0capacity");
     expect(await currentMemoryText.evaluate((element) => element.textContent)).toMatch(/^Simulation GPU memory:\u00a0\d+\.\d MiB$/);
 

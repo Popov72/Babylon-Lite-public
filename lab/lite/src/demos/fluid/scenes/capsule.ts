@@ -4,9 +4,8 @@
 // lattice artefacts of a box.
 
 import { addToScene, createCsgFromMesh, createCylinder, createMeshFromCsg, createSphere, createStandardMaterial, csgUnion, setMeshVisible } from "babylon-lite";
-import type { FluidFlowConfig, Mesh } from "babylon-lite";
-import { disposeMeshGpu } from "babylon-lite/mesh/mesh-dispose.js";
-import type { SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
+import type { FluidFlowConfig, Mesh, SceneSdfSpec } from "babylon-lite";
+import { disposeMeshGpu } from "babylon-lite";
 import type { FluidCtx, FluidDemo } from "../demo.js";
 import { ENV_STUDIO_URL } from "../demo.js";
 import { pickCapsuleHole } from "../pick.js";

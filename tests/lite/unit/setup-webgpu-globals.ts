@@ -39,6 +39,11 @@ g.GPUShaderStage ??= {
     COMPUTE: 0x4,
 };
 
+g.GPUMapMode ??= {
+    READ: 0x0001,
+    WRITE: 0x0002,
+};
+
 g.GPUColorWrite ??= {
     RED: 0x1,
     GREEN: 0x2,

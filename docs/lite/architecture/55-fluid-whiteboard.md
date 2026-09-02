@@ -80,10 +80,10 @@ setFlow(null); // legacy spawn-box seeding
 
 - `docs/lite/architecture/55-fluid-whiteboard.md`
 - `lab/lite/src/demos/fluid/scenes/whiteboard.ts`
-- `lab/lite/src/demos/fluid/method-independent-state.ts`
+- `packages/babylon-lite/src/fluid/authoring/method-independent-state.ts`
 - `lab/lite/src/demos/fluid/demo.ts`
 - `lab/lite/src/demos/fluid.ts`
-- `packages/babylon-lite/src/fluid/sim-common.ts`
+- `packages/babylon-lite/src/fluid/core/sim-common.ts`
 - `tests/lite/unit/fluid/fluid-method-independent-state.test.ts`
 - `tests/lite/unit/fluid/fluid-flow-initial-particles.test.ts`
 - `tests/lite/parity/regressions/fluid-whiteboard.spec.ts`

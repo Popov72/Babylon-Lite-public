@@ -561,51 +561,70 @@ export function renderFrame(engine: EngineContext, delta: number): void {
     engine._currentEncoder = encoder;
     engine._currentDelta = delta;
 
-    // Optional GPU timing: write the frame's opening timestamp into the frame encoder. `_gpuTimerBegin`
-    // is undefined unless timing is enabled (its hooks are installed/removed by `setGpuTimingEnabled` from
-    // a dynamic-imported module), so a frame that never enabled timing pays only this short-circuit and
-    // ships none of the timer code. The begin/end pair is written *into* the encoder so the GPU executes
-    // them contiguously around this frame's passes — measuring only the frame's own GPU work.
-    engine._gpuTimerBegin?.(encoder);
+    try {
+        // Optional GPU timing: write the frame's opening timestamp into the frame encoder. `_gpuTimerBegin`
+        // is undefined unless timing is enabled (its hooks are installed/removed by `setGpuTimingEnabled` from
+        // a dynamic-imported module), so a frame that never enabled timing pays only this short-circuit and
+        // ships none of the timer code. The begin/end pair is written *into* the encoder so the GPU executes
+        // them contiguously around this frame's passes — measuring only the frame's own GPU work.
+        engine._gpuTimerBegin?.(encoder);
 
-    let drawCalls = 0;
-    for (let i = 0; i < surfaces.length; i++) {
-        const surface = surfaces[i]!;
-        // A queued screenshot (`captureScreenshot`) needs this surface's swapchain marked COPY_SRC
-        // before its frame texture is acquired — reconfiguring the context EXPIRES the current
-        // canvas texture, so it cannot run mid-frame. The hook is installed lazily by
-        // `captureScreenshot`, so non-capturing surfaces ship none of the reconfigure code and pay
-        // only this short-circuit.
-        surface._capturePreFrame?.(surface);
-        _refreshScRT(surface);
-        const ctxs = surface._renderingContexts;
-        for (let j = 0; j < ctxs.length; j++) {
-            const s = ctxs[j]!;
-            s._update();
-            drawCalls += s._drawCallsPre;
-            drawCalls += s._record();
+        let drawCalls = 0;
+        for (let i = 0; i < surfaces.length; i++) {
+            const surface = surfaces[i]!;
+            // A queued screenshot (`captureScreenshot`) needs this surface's swapchain marked COPY_SRC
+            // before its frame texture is acquired — reconfiguring the context EXPIRES the current
+            // canvas texture, so it cannot run mid-frame. The hook is installed lazily by
+            // `captureScreenshot`, so non-capturing surfaces ship none of the reconfigure code and pay
+            // only this short-circuit.
+            surface._capturePreFrame?.(surface);
+            _refreshScRT(surface);
+            const ctxs = surface._renderingContexts;
+            for (let j = 0; j < ctxs.length; j++) {
+                const s = ctxs[j]!;
+                s._update();
+                drawCalls += s._drawCallsPre;
+                drawCalls += s._record();
+            }
         }
-    }
 
-    const finalEncoder = engine._currentEncoder;
-    // Per-surface screenshot readback hook — undefined (a no-op optional call) until
-    // `captureScreenshot(surface)` lazily installs it on that surface, so surfaces that
-    // never capture keep this to a single short-circuit and ship none of the readback code.
-    // Each service records its surface's swapchain copy into this frame's encoder.
-    for (let i = 0; i < surfaces.length; i++) {
-        const surface = surfaces[i]!;
-        surface._captureService?.(surface, finalEncoder);
+        const finalEncoder = engine._currentEncoder!;
+        // Per-surface screenshot readback hook — undefined (a no-op optional call) until
+        // `captureScreenshot(surface)` lazily installs it on that surface, so surfaces that
+        // never capture keep this to a single short-circuit and ship none of the readback code.
+        // Each service records its surface's swapchain copy into this frame's encoder.
+        for (let i = 0; i < surfaces.length; i++) {
+            const surface = surfaces[i]!;
+            surface._captureService?.(surface, finalEncoder);
+        }
+        // Closing timestamp goes in just before the frame encoder is finished, so it bookends exactly the
+        // frame's recorded GPU work (a no-op short-circuit when timing is disabled).
+        engine._gpuTimerEnd?.(finalEncoder);
+        engine._cbs[0] = finalEncoder.finish();
+        engine._device.queue.submit(engine._cbs);
+        flushGpuResourceRetirements(engine);
+        engine.drawCallCount = drawCalls;
+        // Resolve + read back the timestamp pair asynchronously (its own submit, after the frame's) and
+        // publish the latest completed sample to `gpuFrameTimeMs`. Non-blocking — never stalls this frame.
+        engine._gpuTimerResolve?.();
+    } finally {
+        engine._currentEncoder = undefined!;
     }
-    // Closing timestamp goes in just before the frame encoder is finished, so it bookends exactly the
-    // frame's recorded GPU work (a no-op short-circuit when timing is disabled).
-    engine._gpuTimerEnd?.(finalEncoder);
-    engine._cbs[0] = finalEncoder.finish();
-    engine._device.queue.submit(engine._cbs);
-    flushGpuResourceRetirements(engine);
-    engine.drawCallCount = drawCalls;
-    // Resolve + read back the timestamp pair asynchronously (its own submit, after the frame's) and
-    // publish the latest completed sample to `gpuFrameTimeMs`. Non-blocking — never stalls this frame.
-    engine._gpuTimerResolve?.();
+}
+
+/**
+ * Record and immediately submit an atomic GPU operation outside frame recording.
+ * Callers must not retain the encoder.
+ *
+ * @internal
+ */
+export function submitGpuOperation(engine: EngineContext, label: string, operation: (encoder: GPUCommandEncoder) => void): void {
+    if (engine._currentEncoder) {
+        throw new Error(`[engine] cannot submit "${label}" while a frame is being recorded.`);
+    }
+    const encoder = engine._device.createCommandEncoder({ label });
+    operation(encoder);
+    engine._device.queue.submit([encoder.finish()]);
 }
 
 /** Whether GPU frame-time measurement is available on this engine's device — i.e. the adapter offered

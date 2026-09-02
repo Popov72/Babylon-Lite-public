@@ -3,8 +3,8 @@ import { resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { parseBlenderFluidCollision, parseBlenderFluidJson, scenePayloadFromBlenderFluidJson } from "../../../../lab/lite/src/demos/fluid/blender-fluid-json";
-import type { FluidExportJson } from "../../../../lab/lite/src/demos/fluid/preset-io";
+import { parseBlenderFluidCollision, parseBlenderFluidJson, scenePayloadFromBlenderFluidJson } from "../../../../packages/babylon-lite/src/fluid/authoring/blender-fluid-json";
+import type { FluidExportJson } from "../../../../packages/babylon-lite/src/fluid/authoring/preset-io";
 
 function collisionBytes(): Uint8Array {
     const bytes = new Uint8Array(64 + 8 * 4);
@@ -34,6 +34,11 @@ function glbBytes(): Uint8Array {
 }
 
 describe("Blender FLIP Fluids exporter", () => {
+    it("does not allocate mutable Sets at module import time", () => {
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/authoring/blender-fluid-json.ts"), "utf8");
+        expect(source.slice(0, source.indexOf("function "))).not.toContain("new Set(");
+    });
+
     it("exports the format-13 quality-comparison settings", () => {
         const source = readFileSync(resolve(process.cwd(), "scripts/blender-fluid-addon.py"), "utf8");
         expect(source).toContain('"version": (3, 2, 0)');
@@ -67,6 +72,38 @@ describe("Blender FLIP Fluids exporter", () => {
         json.formatVersion = 13;
 
         expect(parseBlenderFluidJson(JSON.stringify(json)).preset.formatVersion).toBe(13);
+    });
+
+    it("accepts explicit format-14 semantics and rejects a missing semantics record", () => {
+        const json = JSON.parse(selfContainedJson(validPreset())) as FluidExportJson;
+        json.formatVersion = 14;
+        json.simulationSemantics = { version: 1, profile: "normalized-v1", pbfPhysics: "scale-adjusted" };
+        expect(parseBlenderFluidJson(JSON.stringify(json)).preset.simulationSemantics).toEqual(json.simulationSemantics);
+
+        delete json.simulationSemantics;
+        expect(() => parseBlenderFluidJson(JSON.stringify(json))).toThrow(/simulationSemantics/);
+    });
+
+    it("accepts PB-MPM liquid viscosity up to 1.0", () => {
+        const preset = validPreset();
+        preset.meta.method = "PB-MPM";
+        preset.physics = {
+            gravity: 9.8,
+            iterations: 5,
+            liquidRelaxation: 1.5,
+            liquidViscosity: 1,
+            elasticityRatio: 0.3,
+            elasticRelaxation: 0.3,
+            frictionAngle: 35,
+            plasticity: 0.8,
+            restitution: 0,
+            substeps: 3,
+            maxSubDtMs: 8.4,
+        };
+
+        expect(parseBlenderFluidJson(selfContainedJson(preset)).preset.physics.liquidViscosity).toBe(1);
+        preset.physics.liquidViscosity = 1.001;
+        expect(() => parseBlenderFluidJson(selfContainedJson(preset))).toThrow(/liquidViscosity/);
     });
 });
 
@@ -240,16 +277,19 @@ describe("Blender fluid JSON", () => {
         preset.emitters![0]!.sourceVelocityFactor = 0.75;
         preset.emitters![0]!.delayBeforeStart = 5;
         preset.sinks![0]!.mode = "recycle";
+        preset.sinks![0]!.delayBeforeStart = 3;
         preset.scene = {
             encoding: "base64",
             glb: Buffer.from(glbBytes()).toString("base64"),
             collision: Buffer.from(collisionBytes()).toString("base64"),
         };
 
-        const emitter = parseBlenderFluidJson(JSON.stringify(preset)).preset.emitters![0]!;
+        const parsed = parseBlenderFluidJson(JSON.stringify(preset)).preset;
+        const emitter = parsed.emitters![0]!;
         expect(emitter.sourceNode).toBe("Animated Inflow");
         expect(emitter.sourceVelocityFactor).toBe(0.75);
         expect(emitter.delayBeforeStart).toBe(5);
+        expect(parsed.sinks![0]!.delayBeforeStart).toBe(3);
     });
 
     it("parses FLIP physics and preserves the selected method", () => {

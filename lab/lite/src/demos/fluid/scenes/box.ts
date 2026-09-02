@@ -8,6 +8,7 @@ import {
     addToScene,
     applyPhysicsBodyForce,
     createBox,
+    createFloatingBodySystem,
     createHavokWorld,
     createPhysicsBody,
     createPhysicsShape,
@@ -15,12 +16,14 @@ import {
     createTransformNode,
     getPhysicsBodyAngularVelocity,
     getPhysicsBodyLinearVelocity,
+    generateMeshSdf,
     loadGltf,
     onPhysicsAfterStep,
     PhysicsMotionType,
     PhysicsPrestepType,
     PhysicsShapeType,
     releasePhysicsShape,
+    updateFluidFloatingBodySystem,
     removePhysicsBody,
     setMeshVisible,
     setPhysicsBodyAngularVelocity,
@@ -34,10 +37,7 @@ import {
     setPhysicsTimestepMs,
     setPhysicsVelocityLimits,
 } from "babylon-lite";
-import type { FluidFlowConfig, Mesh, PhysicsBody, PhysicsShape, SceneNode } from "babylon-lite";
-import type { SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
-import { createFloatingBodySystem } from "babylon-lite/fluid/floating-body.js";
-import { generateMeshSdf } from "babylon-lite/fluid/volume-sampling/index.js";
+import type { FluidFlowConfig, Mesh, PhysicsBody, PhysicsShape, SceneNode, SceneSdfSpec } from "babylon-lite";
 import type { FluidCtx, FluidDemo, DemoStateValue } from "../demo.js";
 import { ENV_STUDIO_URL } from "../demo.js";
 import { demoAssetUrl } from "../../demo-asset-url.js";
@@ -73,7 +73,7 @@ export async function createBoxDemo(ctx: FluidCtx): Promise<FluidDemo> {
     const { engine } = ctx;
 
     // ── Floating rigid bodies (generic mesh → SDF → two-way fluid coupling) ──────────
-    // Delegated to the reusable createFloatingBodySystem (packages/.../fluid/floating-body.ts): ANY mesh
+    // Delegated to the reusable createFloatingBodySystem (packages/.../fluid/core/floating-body.ts): ANY mesh
     // baked into a LOCAL-space signed-distance grid (generateMeshSdf) is unioned into the fluid's
     // sceneSdf as a MOVING boundary that pushes the water; here Havok consumes the GPU reduction as
     // buoyancy/drag forces for a rubber DUCK loaded async from glTF (registered once it loads).
@@ -307,7 +307,7 @@ export async function createBoxDemo(ctx: FluidCtx): Promise<FluidDemo> {
             }
             const ad = Math.max(0, 1 - ANGULAR_DAMP * dt);
             setPhysicsBodyAngularVelocity(physicsWorld, duck.body, { x: wx * ad, y: wy * ad, z: wz * ad });
-            const speed = Math.hypot(v.x, v.y, v.z);
+            const speed = Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
             if (speed > MAX_SPEED) {
                 const s = MAX_SPEED / speed;
                 setPhysicsBodyLinearVelocity(physicsWorld, duck.body, { x: v.x * s, y: v.y * s, z: v.z * s });
@@ -590,7 +590,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     // then this demo converts that measurement into Havok forces. Havok steps after the core's
     // onBeforeRender callback; onPhysicsAfterStep above copies the resulting pose back to the SDF.
     const updateBody = (dt: number): void => {
-        bodySystem.update(dt, ctx.getActiveSim());
+        updateFluidFloatingBodySystem(bodySystem, dt, ctx.getActiveSimulation());
         applyDuckForces(dt);
         if (++raftReadoutFrames >= 10) {
             raftReadoutFrames = 0;

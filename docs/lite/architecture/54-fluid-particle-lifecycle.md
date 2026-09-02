@@ -81,17 +81,29 @@ capacity derives a default from enabled initial/inflow emitters. FLIP additional
 capacity can contain all initial-emitter particles. This is the single capacity rule for every
 host.
 
+PBF, MLS-MPM, and PB-MPM receive the same radius-derived particle volume used by shared capacity
+planning. Their reset-time emitter density and emitter/sink volume-rate budgets therefore agree
+with the controls preview. PB-MPM additionally uses that value for its liquid rest-volume
+projection. Physics particle size consequently changes represented liquid volume consistently
+across the non-FLIP backends. When an exact volume emitter requires more particles than the selected
+capacity, reset keeps the requested lattice spacing and takes complete lower layers instead of
+thinning particles uniformly across the entire emitter.
+
 `mode` defaults to `delete` for newly-authored runtime graphs. Format-6 and older JSON imports infer `recycle` to preserve their historical targeted-relaunch behavior. Format-7 and newer exports write the mode explicitly. `targets` is used only by recycle sinks.
 
 `volumeRate` limits captured world volume per second. `perParticleRecycleRate` is retained for file compatibility; it controls the per-particle capture probability for either mode and remains mutually exclusive with `volumeRate`.
+
+Emitters and sinks may independently specify `delayBeforeStart` in simulation-time seconds. A delayed sink is excluded from delete and recycle matching until its delay is reached. The crossing frame uses only its post-delay duration for finite world-volume budgets and per-particle capture probability.
 
 Advanced initial velocity is opt-in per emitter. `velocity` and `sourceVelocity * sourceVelocityFactor` are combined on the CPU before upload. `normalVelocity` reuses the otherwise-unused fourth shape-parameter float, so the GPU emitter record remains 128 bytes and the flow buffer does not grow. The launch shader computes an analytical shape normal only when `normalVelocity` is nonzero. Emitters that omit the optional fields retain the existing launch path and memory footprint.
 
 The fluid controls panel is user-resizable in both axes within the viewport. Its shared General section owns method selection and the PB-MPM Material selector, so every host using the shared panel exposes the same Liquid, Elastic, Sand, and Viscoelastic choices when PB-MPM is active. Compact emitter/sink numeric editors use locale-independent decimal text entry and commit on change, accepting either `.` or `,` while retaining their previous value when parsing or range validation fails.
 
-The Fluid and AquanovaFluidSim demos share the same lab-side emitter/sink editor. Its per-object wireframe and transform-gizmo controls are part of the default shared UI contract; hosts must provide the visualization adapter, and may omit the rows only through the explicit `hideVisualControls` option. AquanovaFluidSim exposes two explicit modes: Mesh liquefaction samples a clicked Aquanova ship mesh into a dedicated solver, while Fluid starts a solver from the authored flow graph. The mode selector hides controls that do not apply to the active workflow. Both modes use the domain configured by Grid position and Grid size in the shared Physics section. Fluid mode treats Grid position as an absolute world-space center; Mesh liquefaction treats it as an offset from each liquefied mesh's world-space AABB center. Emitter and sink positions remain grid-local. The optional bounds wireframe and position/scale gizmos edit that same domain. Both modes apply the current solver, render, foam, and analytical collision settings. Each start selects authored ship collision primitives intersecting a configurable world-space neighborhood sphere; mesh starts exclude the liquefied placement itself. In Fluid mode the Demo action and `R` share a stop/start state machine: the first action stops a running solver, and the next starts a new solver from the current controls. FLIP grid resolution, marker density, capacity, and initial-flow changes remain pending until that next start; the shared particle-usage rows show the current allocation and projected post-restart particle and GPU-memory usage, while an unallocated solver is reported as Not running rather than Calculating. Shift+RMB drag injects the shared cursor-ray force without rotating the camera; its mouse-speed multiplier and world-space influence radius are authored in the Demo section and persisted in `demoParams`.
+The Fluid and AquanovaFluidSim demos share the same lab-side emitter/sink editor. Its per-object wireframe and transform-gizmo controls are part of the default shared UI contract; hosts must provide the visualization adapter, and may omit the rows only through the explicit `hideVisualControls` option. AquanovaFluidSim exposes two explicit modes: Mesh liquefaction samples a clicked Aquanova ship mesh into a dedicated solver, while Fluid starts a solver from the authored flow graph. The mode selector hides controls that do not apply to the active workflow. Both modes use the domain configured by Grid position and Grid size in the shared Physics section. Fluid mode treats Grid position as an absolute world-space center; Mesh liquefaction treats it as an offset from each liquefied mesh's world-space AABB center. Emitter and sink positions remain grid-local. The optional bounds wireframe and position/scale gizmos edit that same domain. Both modes apply the current solver, render, foam, and analytical collision settings. Each start selects authored ship collision primitives intersecting a configurable world-space neighborhood sphere; mesh starts exclude the liquefied placement itself. In Fluid mode the Demo action and `R` share a stop/start state machine: the first action stops a running solver, and the next starts a new solver from the current controls. Construction-time method, grid, capacity, paging, material, physics, and foam edits prepare every live replacement through the shared facade before committing any of them. Allocation or configuration failure cancels the full candidate batch, preserving the running simulations, render bindings, and committed control snapshot; successful commits keep stable simulation handles and retire old GPU resources after submission. The shared particle-usage rows show current and projected particle and GPU-memory usage, while an unallocated solver is reported as Not running rather than Calculating. Shift+RMB drag injects the shared cursor-ray force without rotating the camera; its mouse-speed multiplier and world-space influence radius are authored in the Demo section and persisted in `demoParams`.
 
-AquanovaFluidSim reads environment grading and material reflection settings from `/aquanova/ship_manifest.json`. Its simulation selector reads the manifest's `fluidSim` list and loads presets from `/aquanova/fluidSim`. Selecting or importing a different preset first stops and resets the running simulation, then applies the new authoring state. Presets store the demo's FreeCamera pose in a dedicated `freeCamera` object containing `position` and `target`; the legacy `camera` object remains reserved for ArcRotate alpha/beta/radius framing. During local lab development, the Vite authoring endpoint creates, updates, and deletes those preset files while keeping the manifest list synchronized; static deployments expose loading and export only, and report that persistence requires the development server.
+AquanovaFluidSim reads environment grading and material reflection settings from `/aquanova/ship_manifest.json`. Its simulation selector reads the manifest's `fluidSim` list and loads presets from `/aquanova/fluidSim`. Selecting or importing a different preset retains a shared `FluidPresetSession`, prepares live solver replacements before committing the new state, and preserves recursive forward fields and lifecycle values on export. Production Aquanova imports the same session state and delegates solver normalization to the same facade options path. Presets store the demo's FreeCamera pose in a dedicated `freeCamera` object containing `position` and `target`; the legacy `camera` object remains reserved for ArcRotate alpha/beta/radius framing. During local lab development, the Vite authoring endpoint creates, updates, and deletes those preset files while keeping the manifest list synchronized; static deployments expose loading and export only, and report that persistence requires the development server.
+
+Production combines live simulations with `FluidSimulationCollection` render layers for surfaces and foam. Its gameplay/electricity stream uses manual collection refresh: the facade records current source aggregation into the frame encoder before spatial-count and electricity queries, so query offsets and particle data always describe the same frame without exposing WebGPU handles to host policy.
 
 The Demo section's Aquanova rendering checkbox reloads the authoring demo into the ship's production lighting path. The mode builds the authored clustered and chunk-scoped lights before scene registration and assigns each PBR ship mesh one immutable intersecting box-projected local cubemap. Per-fragment cubemap blending and portal visibility rendering are intentionally absent: the camera-selected dominant probe only supplies the fluid surface reflection, while the ordinary scene task submits the entire visible ship every frame so fluid performance is measured against a stable real-world rendering workload. In either render mode, Shift+LMB on a ship mesh toggles a combined world-translation/local-rotation gizmo for that exact primitive; ordinary LMB remains reserved for liquefaction in Mesh liquefaction mode.
 
@@ -186,14 +198,14 @@ Simulation and emission remain fully GPU-driven. A small double-buffered asynchr
 
 ## File Manifest
 
-- `packages/babylon-lite/src/fluid/sim-common.ts`
-- `packages/babylon-lite/src/fluid/pbf-sim.ts`
-- `packages/babylon-lite/src/fluid/flip-sim.ts`
-- `packages/babylon-lite/src/fluid/mls-mpm-sim.ts`
-- `packages/babylon-lite/src/fluid/pbmpm-sim.ts`
-- `lab/lite/src/demos/fluid/blender-fluid-json.ts`
-- `lab/lite/src/demos/fluid/flow-editor.ts`
-- `lab/lite/src/demos/fluid/preset-io.ts`
+- `packages/babylon-lite/src/fluid/core/sim-common.ts`
+- `packages/babylon-lite/src/fluid/solvers/pbf-sim.ts`
+- `packages/babylon-lite/src/fluid/solvers/flip-sim.ts`
+- `packages/babylon-lite/src/fluid/solvers/mls-mpm-sim.ts`
+- `packages/babylon-lite/src/fluid/solvers/pbmpm-sim.ts`
+- `packages/babylon-lite/src/fluid/authoring/blender-fluid-json.ts`
+- `packages/babylon-lite/src/fluid/controls/flow-editor.ts`
+- `packages/babylon-lite/src/fluid/authoring/preset-io.ts`
 - `lab/lite/src/demos/fluid.ts`
 - `lab/lite/src/demos/aquanova-fluid-sim.ts`
 - `lab/lite/src/demos/aquanova/collision-field.ts`

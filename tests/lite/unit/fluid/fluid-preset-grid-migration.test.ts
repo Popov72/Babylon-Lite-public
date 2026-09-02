@@ -2,8 +2,8 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import type { PairState } from "../../../../lab/lite/src/demos/fluid/demo";
-import { exportJsonFromPairState, presetFromExportJson, type FluidExportJson } from "../../../../lab/lite/src/demos/fluid/preset-io";
+import type { PairState } from "../../../../packages/babylon-lite/src/fluid/authoring/authoring-state";
+import { exportJsonFromPairState, presetFromExportJson, type FluidExportJson } from "../../../../packages/babylon-lite/src/fluid/authoring/preset-io";
 
 const pairState = (): PairState => ({
     schema: {},
@@ -68,7 +68,7 @@ describe("fluid preset grid migration", () => {
         const exported = exportJsonFromPairState("box", "MLS-MPM", state);
         const imported = presetFromExportJson(exported);
 
-        expect(exported.formatVersion).toBe(13);
+        expect(exported.formatVersion).toBe(14);
         expect(exported.gridPosition).toEqual(state.grid?.position);
         expect(exported.gridSize).toEqual(state.grid?.size);
         expect(exported.simulationDuration).toBe(12);
