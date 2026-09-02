@@ -96,7 +96,7 @@ function resolveBeamFrame(aim: WeaponLaserAim, distance: number, muzzleWorldMatr
     const deltaX = targetX - startX;
     const deltaY = targetY - startY;
     const deltaZ = targetZ - startZ;
-    const length = Math.hypot(deltaX, deltaY, deltaZ);
+    const length = Math.sqrt(deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ);
     if (length < 1e-6) return null;
 
     const dirX = deltaX / length;
@@ -107,7 +107,7 @@ function resolveBeamFrame(aim: WeaponLaserAim, distance: number, muzzleWorldMatr
     let sideX = helperY * dirZ;
     let sideY = -helperX * dirZ;
     let sideZ = helperX * dirY - helperY * dirX;
-    const sideLength = Math.hypot(sideX, sideY, sideZ);
+    const sideLength = Math.sqrt(sideX * sideX + sideY * sideY + sideZ * sideZ);
     sideX /= sideLength;
     sideY /= sideLength;
     sideZ /= sideLength;

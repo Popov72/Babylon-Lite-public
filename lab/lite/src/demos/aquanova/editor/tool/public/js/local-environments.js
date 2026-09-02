@@ -26,6 +26,7 @@
 // probe is scene-referred radiance, and the runtime exposes it itself.
 
 import { state, whileBusy, setBusyMessage, withDeadline, CONFIG_DEFAULTS } from "./editor.js";
+import { withHoverCleared } from "./interact.js";
 import { meshesInProbeVolume, renderListFor, setCaptureViewpoint, withRuntimeCapture, authoredMaterialOf } from "./runtime.js";
 
 /**
@@ -97,6 +98,57 @@ const CUBE_FACES = [
   { forward: [0, 0, 1], up: [0, 1, 0] },
   { forward: [0, 0, -1], up: [0, 1, 0] },
 ];
+
+const CAPTURE_CLIP_SLOTS = ["clipPlane", "clipPlane2", "clipPlane3", "clipPlane4", "clipPlane5", "clipPlane6"];
+
+/**
+ * The six outward-facing planes bounding what a probe may photograph.
+ *
+ * Box probes use their authored projection box. A spherical probe has no plane
+ * faces, so its radius defines the equivalent cubemap-aligned bounding cube.
+ * Babylon discards the positive side of each plane, leaving their intersection.
+ */
+export function captureClipPlanes(probe) {
+  if (probe?.clipCapture === false) return [];
+  const sphere = probe?.shape === "sphere";
+  const position = sphere ? probe?.spherePosition : probe?.boxPosition;
+  const size = sphere
+    ? [probe.sphereRadius * 2, probe.sphereRadius * 2, probe.sphereRadius * 2]
+    : probe?.boxSize;
+  const centre = BABYLON.Vector3.FromArray(position);
+  const half = BABYLON.Vector3.FromArray(size).scale(0.5);
+  const axes = [
+    new BABYLON.Vector3(1, 0, 0),
+    new BABYLON.Vector3(0, 1, 0),
+    new BABYLON.Vector3(0, 0, 1),
+  ];
+  const planes = [];
+  for (let axis = 0; axis < axes.length; axis++) {
+    const normal = axes[axis];
+    const distance = half.asArray()[axis];
+    planes.push(BABYLON.Plane.FromPositionAndNormal(centre.add(normal.scale(distance)), normal));
+    planes.push(BABYLON.Plane.FromPositionAndNormal(centre.subtract(normal.scale(distance)), normal.negate()));
+  }
+  return planes;
+}
+
+/**
+ * Replace any scene clipping for the six face renders, and restore it exactly
+ * afterwards. An opted-out probe receives no clipping, including no unrelated
+ * editor clip plane left on the scene.
+ */
+function installCaptureClipPlanes(scene, probe) {
+  const previous = CAPTURE_CLIP_SLOTS.map((slot) => scene[slot]);
+  const planes = captureClipPlanes(probe);
+  CAPTURE_CLIP_SLOTS.forEach((slot, index) => {
+    scene[slot] = planes[index] || null;
+  });
+  return () => {
+    CAPTURE_CLIP_SLOTS.forEach((slot, index) => {
+      scene[slot] = previous[index];
+    });
+  };
+}
 
 /**
  * A camera whose view is stated outright instead of inferred from a target.
@@ -208,6 +260,8 @@ function probeDigestSource(probe, meshes) {
     `at:${probe.capturePosition.map(round).join(",")}`,
     `angle:${round(probe.angle || 0)}`,
     `res:${probeResolution()}`,
+    "capture:volume-clip-v1",
+    `clip:${probe.clipCapture === false ? 0 : 1}`,
   ];
 
   const rows = [];
@@ -323,22 +377,27 @@ async function captureProbe(probe, meshes) {
     setCaptureViewpoint(at);
 
     const faces = [];
-    for (const face of CUBE_FACES) {
-      camera.lookAlong(
-        new BABYLON.Vector3(face.forward[0], face.forward[1], face.forward[2]),
-        new BABYLON.Vector3(face.up[0], face.up[1], face.up[2]),
-      );
-      await waitForRenderList(target.renderList);
-      scene.incrementRenderId();
-      target.render();
-      // Read the half floats as they are: converting to 32-bit only to hand
-      // them straight back to a half-float cube would round the values twice.
-      // The rows come back bottom first - a frame buffer is read from its
-      // origin, and that origin is the bottom left - so the upload below is
-      // told to invert them, which is what puts the camera's up on the first
-      // row of the face, where the convention wants it.
-      faces.push(await withDeadline(target.readPixels(0, 0, null, true, true), CAPTURE_TIMEOUT_MS,
-        `${probe.id}: reading back a cubemap face`));
+    const restoreClipPlanes = installCaptureClipPlanes(scene, probe);
+    try {
+      for (const face of CUBE_FACES) {
+        camera.lookAlong(
+          new BABYLON.Vector3(face.forward[0], face.forward[1], face.forward[2]),
+          new BABYLON.Vector3(face.up[0], face.up[1], face.up[2]),
+        );
+        await waitForRenderList(target.renderList);
+        scene.incrementRenderId();
+        target.render();
+        // Read the half floats as they are: converting to 32-bit only to hand
+        // them straight back to a half-float cube would round the values twice.
+        // The rows come back bottom first - a frame buffer is read from its
+        // origin, and that origin is the bottom left - so the upload below is
+        // told to invert them, which is what puts the camera's up on the first
+        // row of the face, where the convention wants it.
+        faces.push(await withDeadline(target.readPixels(0, 0, null, true, true), CAPTURE_TIMEOUT_MS,
+          `${probe.id}: reading back a cubemap face`));
+      }
+    } finally {
+      restoreClipPlanes();
     }
 
     cube = new BABYLON.RawCubeTexture(
@@ -428,7 +487,7 @@ async function upload(id, hash, bytes) {
  * render nobody asked for.
  */
 export async function generateLocalEnvironments(onProgress = () => {}, { force = false, only = null } = {}) {
-  return await whileBusy("checking environment probes…", async () => await withRuntimeCapture(async () => {
+  return await whileBusy("checking environment probes…", async () => await withHoverCleared(async () => await withRuntimeCapture(async () => {
     const probes = [];
     for (const probe of state.environmentProbes.values()) {
       const meshes = meshesInProbeVolume(probe);
@@ -480,5 +539,5 @@ export async function generateLocalEnvironments(onProgress = () => {}, { force =
     }
     onProgress(queue.length, queue.length, null);
     return { converted: queue.length, bytes };
-  }));
+  })));
 }

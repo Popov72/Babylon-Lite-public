@@ -11,7 +11,7 @@ import {
     type FluidSimulationRegistration,
     type FluidSimulationState,
 } from "../../../../lab/lite/src/demos/aquanova/behaviors/fluid-simulation-runtime";
-import { flipParticleCountForVolume } from "../../../../lab/lite/src/demos/fluid/grid-settings";
+import { flipParticleCountForVolume } from "../../../../packages/babylon-lite/src/fluid/authoring/grid-settings";
 
 const setting = {
     formatVersion: 12,

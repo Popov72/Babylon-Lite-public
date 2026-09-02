@@ -39,7 +39,7 @@ interface LightVisual {
 
 /** Quaternion rotating +Y onto `d`. */
 function quatFromYTo(d: readonly [number, number, number]): [number, number, number, number] {
-    const len = Math.hypot(d[0], d[1], d[2]);
+    const len = Math.sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
     if (len < 1e-9) return [0, 0, 0, 1];
     const x = d[0] / len;
     const y = d[1] / len;
@@ -59,7 +59,7 @@ function perpendicularBasis(direction: readonly [number, number, number]): [[num
     const ux = direction[1] * helper[2] - direction[2] * helper[1];
     const uy = direction[2] * helper[0] - direction[0] * helper[2];
     const uz = direction[0] * helper[1] - direction[1] * helper[0];
-    const uLen = Math.hypot(ux, uy, uz) || 1;
+    const uLen = Math.sqrt(ux * ux + uy * uy + uz * uz) || 1;
     const u: [number, number, number] = [ux / uLen, uy / uLen, uz / uLen];
     return [u, [direction[1] * u[2] - direction[2] * u[1], direction[2] * u[0] - direction[0] * u[2], direction[0] * u[1] - direction[1] * u[0]]];
 }
@@ -92,7 +92,7 @@ export function createLightOverlay({ engine, scene, canvas, lights, roomAt }: Li
             const dx = b[0] - a[0];
             const dy = b[1] - a[1];
             const dz = b[2] - a[2];
-            const length = Math.max(Math.hypot(dx, dy, dz), 1e-4);
+            const length = Math.max(Math.sqrt(dx * dx + dy * dy + dz * dz), 1e-4);
             edge.position.set((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5, (a[2] + b[2]) * 0.5);
             edge.scaling.set(1, length, 1);
             const q = quatFromYTo([dx, dy, dz]);

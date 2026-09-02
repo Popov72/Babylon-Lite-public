@@ -521,6 +521,7 @@
       <div class="editor">
         <div class="row"><label>ID</label><input type="text" id="probe-id" maxlength="128"></div>
         <div class="row"><label>Shape</label><select id="probe-shape"><option value="box">Box</option><option value="sphere">Sphere</option></select></div>
+        <div class="row"><label title="Clip captured geometry at all six faces of the probe volume. Uncheck only when this cubemap must deliberately see beyond its authored room.">Clip at faces</label><input type="checkbox" id="probe-clip" checked></div>
         <div class="row"><label title="Keep this probe's boxes on screen while another one is selected, drawn in dimmer colours.">Always visible</label><input type="checkbox" id="probe-show"></div>
         <div class="row"><label title="Draw this probe's captured cubemap on its box instead of a wireframe.">Env faces</label><input type="checkbox" id="probe-env"></div>
         <h3 id="probe-head-box" class="probe-head"><span id="probe-head-box-label">Probe box</span>

@@ -110,9 +110,15 @@ function matrixParts(world: ArrayLike<number>): { A: Mat3; t: [number, number, n
 }
 
 function mat3FromQuat([x, y, z, w]: readonly [number, number, number, number]): Mat3 {
-    const xx = x * x, yy = y * y, zz = z * z;
-    const xy = x * y, xz = x * z, yz = y * z;
-    const wx = w * x, wy = w * y, wz = w * z;
+    const xx = x * x,
+        yy = y * y,
+        zz = z * z;
+    const xy = x * y,
+        xz = x * z,
+        yz = y * z;
+    const wx = w * x,
+        wy = w * y,
+        wz = w * z;
     // Column-major: column i is the image of basis vector i.
     return [1 - 2 * (yy + zz), 2 * (xy + wz), 2 * (xz - wy), 2 * (xy - wz), 1 - 2 * (xx + zz), 2 * (yz + wx), 2 * (xz + wy), 2 * (yz - wx), 1 - 2 * (xx + yy)];
 }
@@ -159,7 +165,7 @@ function quatFromMat3(m: Mat3): [number, number, number, number] {
 
 /** Column `i` of a 3×3, as a vector. */
 const col = (m: Mat3, i: number): [number, number, number] => [m[i * 3]!, m[i * 3 + 1]!, m[i * 3 + 2]!];
-const norm = (v: readonly [number, number, number]): number => Math.hypot(v[0], v[1], v[2]);
+const norm = (v: readonly [number, number, number]): number => Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
 
 /**
  * Resolve one module's collision primitives into Lite world space for a given placement.
@@ -205,8 +211,7 @@ export function worldShapesForMatrix(world: ArrayLike<number>, shapes: ShipColli
             // The loader's root mirror (and any negative placement scale) makes the frame
             // left-handed, which is not a rotation. Flipping one axis restores right-handedness and
             // leaves the box itself unchanged — a box is symmetric about each of its own axes.
-            const det =
-                R[0]! * (R[4]! * R[8]! - R[5]! * R[7]!) - R[3]! * (R[1]! * R[8]! - R[2]! * R[7]!) + R[6]! * (R[1]! * R[5]! - R[2]! * R[4]!);
+            const det = R[0]! * (R[4]! * R[8]! - R[5]! * R[7]!) - R[3]! * (R[1]! * R[8]! - R[2]! * R[7]!) + R[6]! * (R[1]! * R[5]! - R[2]! * R[4]!);
             if (det < 0) {
                 R[0] = -R[0]!;
                 R[1] = -R[1]!;

@@ -114,11 +114,17 @@ export function fluidPrimitiveWireframeLines(primitive: FluidPrimitive): Vec3[][
     }
 
     const b = primitive.b ?? primitive.a;
-    const halfAxisLength = Math.max(Math.hypot(b[0] - primitive.a[0], b[1] - primitive.a[1], b[2] - primitive.a[2]) * 0.5, 5e-4);
+    const axisX = b[0] - primitive.a[0];
+    const axisY = b[1] - primitive.a[1];
+    const axisZ = b[2] - primitive.a[2];
+    const halfAxisLength = Math.max(Math.sqrt(axisX * axisX + axisY * axisY + axisZ * axisZ) * 0.5, 5e-4);
     const lines = [ring(radius, (x, z) => point(x, halfAxisLength, z)), ring(radius, (x, z) => point(x, -halfAxisLength, z))];
     if (primitive.kind === "hollowCylinder") {
         const innerRadius = Math.max(Math.min(primitive.innerRadius ?? 0, radius), 1e-3);
-        lines.push(ring(innerRadius, (x, z) => point(x, halfAxisLength, z)), ring(innerRadius, (x, z) => point(x, -halfAxisLength, z)));
+        lines.push(
+            ring(innerRadius, (x, z) => point(x, halfAxisLength, z)),
+            ring(innerRadius, (x, z) => point(x, -halfAxisLength, z))
+        );
         for (let rib = 0; rib < 8; rib++) {
             const angle = (rib / 8) * Math.PI * 2;
             for (const r of [radius, innerRadius]) {
@@ -163,7 +169,7 @@ export function visibleInjectedPrimitives(primitives: readonly FluidPrimitive[],
 
 /** Quaternion rotating +Y (the axis every capsule/cylinder is built along) onto `d`. */
 function quatFromYTo(d: readonly [number, number, number]): [number, number, number, number] {
-    const len = Math.hypot(d[0], d[1], d[2]);
+    const len = Math.sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
     if (len < 1e-9) return [0, 0, 0, 1];
     const [x, y, z] = [d[0] / len, d[1] / len, d[2] / len];
     if (y > 0.999999) return [0, 0, 0, 1];
@@ -218,7 +224,10 @@ export function createColliderOverlay(opts: ColliderOverlayOptions): ColliderOve
         } else if (shape.kind === "cylinder" || shape.kind === "capsule") {
             const a = shape.pointA ?? shape.centre;
             const b = shape.pointB ?? shape.centre;
-            const h = Math.max(Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]), 1e-3);
+            const dx = b[0] - a[0];
+            const dy = b[1] - a[1];
+            const dz = b[2] - a[2];
+            const h = Math.max(Math.sqrt(dx * dx + dy * dy + dz * dz), 1e-3);
             const r = Math.max(shape.radius ?? 0.1, 1e-3);
             m = shape.kind === "capsule" ? createCapsule(engine, { radius: r, height: h + 2 * r }) : createCylinder(engine, { height: h, diameter: r * 2 });
         } else {
@@ -265,7 +274,10 @@ export function createColliderOverlay(opts: ColliderOverlayOptions): ColliderOve
         if (p.kind === "sphere") return `s:${p.radius?.toFixed(3)}`;
         const a = p.a,
             b = p.b ?? p.a;
-        return `${p.kind}:${p.radius?.toFixed(3)}:${p.innerRadius?.toFixed(3) ?? ""}:${Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]).toFixed(3)}`;
+        const dx = b[0] - a[0];
+        const dy = b[1] - a[1];
+        const dz = b[2] - a[2];
+        return `${p.kind}:${p.radius?.toFixed(3)}:${p.innerRadius?.toFixed(3) ?? ""}:${Math.sqrt(dx * dx + dy * dy + dz * dz).toFixed(3)}`;
     };
     const buildInjMesh = (p: FluidPrimitive, subtraction: boolean): Mesh => {
         const m = createLineSystem(engine, {

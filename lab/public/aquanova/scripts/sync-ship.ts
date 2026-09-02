@@ -81,6 +81,9 @@ interface RuntimeLocalEnvironmentIndex {
 }
 
 const DEFAULT_BLEND_DISTANCE = 1.5;
+const WINDOWS_REPLACE_TIMEOUT_MS = 30_000;
+const WINDOWS_REPLACE_INITIAL_DELAY_MS = 50;
+const WINDOWS_REPLACE_MAX_DELAY_MS = 1_000;
 
 interface ShipManifest {
     environmentProbes?: Array<{
@@ -191,6 +194,40 @@ function mb(bytes: number): string {
     return `${(bytes / 1048576).toFixed(2)} MB`;
 }
 
+function isWindowsSharingViolation(error: unknown): boolean {
+    if (process.platform !== "win32" || !error || typeof error !== "object" || !("code" in error)) {
+        return false;
+    }
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === "EACCES" || code === "EBUSY" || code === "EPERM";
+}
+
+const delay = (milliseconds: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+async function renameWhenDestinationIsAvailable(src: string, dst: string): Promise<void> {
+    const started = Date.now();
+    let retryDelay = WINDOWS_REPLACE_INITIAL_DELAY_MS;
+    for (;;) {
+        try {
+            await rename(src, dst);
+            return;
+        } catch (error) {
+            if (!isWindowsSharingViolation(error)) {
+                throw error;
+            }
+            const elapsed = Date.now() - started;
+            if (elapsed >= WINDOWS_REPLACE_TIMEOUT_MS) {
+                throw new Error(
+                    `could not replace ${path.basename(dst)} after ${WINDOWS_REPLACE_TIMEOUT_MS / 1_000}s because another process still has it open; close any Aquanova demo tab that is loading the ship and retry`,
+                    { cause: error }
+                );
+            }
+            await delay(Math.min(retryDelay, WINDOWS_REPLACE_TIMEOUT_MS - elapsed));
+            retryDelay = Math.min(retryDelay * 2, WINDOWS_REPLACE_MAX_DELAY_MS);
+        }
+    }
+}
+
 /** Replace a published file only after a complete same-directory copy exists. */
 async function replaceFileAtomically(src: string, dst: string): Promise<void> {
     const source = await stat(src);
@@ -201,7 +238,7 @@ async function replaceFileAtomically(src: string, dst: string): Promise<void> {
         if (copied.size !== source.size) {
             throw Error(`incomplete copy of ${path.basename(src)}: expected ${source.size} bytes, got ${copied.size}`);
         }
-        await rename(temp, dst);
+        await renameWhenDestinationIsAvailable(temp, dst);
     } finally {
         await rm(temp, { force: true });
     }

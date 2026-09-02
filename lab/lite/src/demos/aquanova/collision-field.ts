@@ -126,7 +126,7 @@ export const primBufferBytes = (capacity: number): number => (PRIM_HEADER + capa
 
 /** Build a finite cylinder centred on a pistol impact and aligned with the shot. */
 export function shotHolePrimitive(center: readonly [number, number, number], direction: readonly [number, number, number], halfLength: number, radius: number): FluidPrimitive {
-    const length = Math.hypot(direction[0], direction[1], direction[2]);
+    const length = Math.sqrt(direction[0] * direction[0] + direction[1] * direction[1] + direction[2] * direction[2]);
     if (
         !center.every(Number.isFinite) ||
         !Number.isFinite(length) ||
@@ -204,13 +204,16 @@ export function hollowCylinderPrimitiveForMatrix(
     ];
     const a = point(start[0], start[1], start[2]);
     const b = point(start[0], start[1] + height, start[2]);
-    const axisLength = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+    const axisX = b[0] - a[0];
+    const axisY = b[1] - a[1];
+    const axisZ = b[2] - a[2];
+    const axisLength = Math.sqrt(axisX * axisX + axisY * axisY + axisZ * axisZ);
     const x: [number, number, number] = [world[0]!, world[1]!, world[2]!];
     const y: [number, number, number] = [world[4]!, world[5]!, world[6]!];
     const z: [number, number, number] = [world[8]!, world[9]!, world[10]!];
-    const xScale = Math.hypot(...x);
-    const yScale = Math.hypot(...y);
-    const zScale = Math.hypot(...z);
+    const xScale = Math.sqrt(x[0] * x[0] + x[1] * x[1] + x[2] * x[2]);
+    const yScale = Math.sqrt(y[0] * y[0] + y[1] * y[1] + y[2] * y[2]);
+    const zScale = Math.sqrt(z[0] * z[0] + z[1] * z[1] + z[2] * z[2]);
     if (axisLength <= 1e-8 || xScale <= 1e-8 || yScale <= 1e-8 || zScale <= 1e-8) {
         throw new Error("[aquanova] setCollisionShape.fluidSimShape resolves to a degenerate cylinder");
     }
@@ -283,7 +286,10 @@ export function primitiveSdf(p: FluidPrimitive, pt: readonly [number, number, nu
     const v = p.velocity ?? [0, 0, 0];
     const a: [number, number, number] = [p.a[0] + v[0] * dt, p.a[1] + v[1] * dt, p.a[2] + v[2] * dt];
     if (p.kind === "sphere") {
-        return Math.hypot(pt[0] - a[0], pt[1] - a[1], pt[2] - a[2]) - (p.radius ?? 0);
+        const dx = pt[0] - a[0];
+        const dy = pt[1] - a[1];
+        const dz = pt[2] - a[2];
+        return Math.sqrt(dx * dx + dy * dy + dz * dz) - (p.radius ?? 0);
     }
     if (p.kind === "box") {
         const h = p.b ?? [0, 0, 0];
@@ -291,7 +297,10 @@ export function primitiveSdf(p: FluidPrimitive, pt: readonly [number, number, nu
         const ex = Math.abs(l[0]) - h[0],
             ey = Math.abs(l[1]) - h[1],
             ez = Math.abs(l[2]) - h[2];
-        const outside = Math.hypot(Math.max(ex, 0), Math.max(ey, 0), Math.max(ez, 0));
+        const outsideX = Math.max(ex, 0);
+        const outsideY = Math.max(ey, 0);
+        const outsideZ = Math.max(ez, 0);
+        const outside = Math.sqrt(outsideX * outsideX + outsideY * outsideY + outsideZ * outsideZ);
         return outside + Math.min(Math.max(ex, Math.max(ey, ez)), 0);
     }
     const bb = p.b ?? [0, 0, 0];
@@ -307,25 +316,33 @@ export function primitiveSdf(p: FluidPrimitive, pt: readonly [number, number, nu
     const paba = pax * bax + pay * bay + paz * baz;
     if (p.kind === "capsule") {
         const t = baba > 1e-12 ? Math.max(0, Math.min(1, paba / baba)) : 0;
-        return Math.hypot(pax - bax * t, pay - bay * t, paz - baz * t) - r;
+        const dx = pax - bax * t;
+        const dy = pay - bay * t;
+        const dz = paz - baz * t;
+        return Math.sqrt(dx * dx + dy * dy + dz * dz) - r;
     }
     if (p.kind === "hollowCylinder") {
         const axisLength = Math.sqrt(baba);
         const along = paba / baba;
-        const radial = Math.hypot(pax - bax * along, pay - bay * along, paz - baz * along);
+        const radialX = pax - bax * along;
+        const radialY = pay - bay * along;
+        const radialZ = paz - baz * along;
+        const radial = Math.sqrt(radialX * radialX + radialY * radialY + radialZ * radialZ);
         const inner = p.innerRadius ?? 0;
         const middle = (inner + r) * 0.5;
         const halfThickness = (r - inner) * 0.5;
         const radialBand = Math.abs(radial - middle) - halfThickness;
         const axialBand = Math.abs(along - 0.5) * axisLength - axisLength * 0.5;
-        return Math.hypot(Math.max(radialBand, 0), Math.max(axialBand, 0)) + Math.min(Math.max(radialBand, axialBand), 0);
+        const outsideRadial = Math.max(radialBand, 0);
+        const outsideAxial = Math.max(axialBand, 0);
+        return Math.sqrt(outsideRadial * outsideRadial + outsideAxial * outsideAxial) + Math.min(Math.max(radialBand, axialBand), 0);
     }
     // Capped solid cylinder (Inigo Quilez): flat ends, unlike the capsule's rounded caps.
-    if (baba < 1e-12) return Math.hypot(pax, pay, paz) - r;
+    if (baba < 1e-12) return Math.sqrt(pax * pax + pay * pay + paz * paz) - r;
     const px = pax * baba - bax * paba,
         py = pay * baba - bay * paba,
         pz = paz * baba - baz * paba;
-    const x = Math.hypot(px, py, pz) - r * baba;
+    const x = Math.sqrt(px * px + py * py + pz * pz) - r * baba;
     const y = Math.abs(paba - baba * 0.5) - baba * 0.5;
     const x2 = x * x;
     const y2 = y * y * baba;

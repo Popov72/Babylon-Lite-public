@@ -6,10 +6,20 @@
 // read in one demo and ignored in the other is exactly how the two drift apart.
 // A parsed fluid-simulation setting (a liquefactor/fluid export JSON): the solver method plus the raw,
 // method-specific physics record and, for PB-MPM, the material enum. Consumed by buildFluidSim below.
-import { fluidRenderHexColor } from "babylon-lite/fluid/fluid-render-profile.js";
-import type { FluidRenderProfileSettings } from "babylon-lite/fluid/fluid-render-profile.js";
+import {
+    fluidRenderHexColor,
+    exportJsonFromPairState,
+    importFluidPresetSession,
+    type FluidExportJson,
+    type FluidPresetSession,
+    type FluidRenderProfileSettings,
+    type PairState,
+} from "babylon-lite";
 
 export interface FluidSimSetting {
+    /** Lossless shared preset state used by both production and authoring. */
+    session: FluidPresetSession;
+    preset: PairState;
     method: string; // "MLS-MPM" | "PB-MPM"
     physics: Record<string, number>;
     material?: number;
@@ -18,7 +28,7 @@ export interface FluidSimSetting {
     /** The file's `render` block (water colour, absorption, blur, surface filter…). Water colour is
      *  retained per simulation. Other controls share the fast path unless independent rendering is enabled. */
     render?: FluidRenderSetting;
-    /** The file's `foam` block. Parsed and kept for a future foam pass; nothing consumes it yet. */
+    /** The file's `foam` block, retained for QA alongside the normalized shared preset state. */
     foam?: FluidFoamSetting;
     /** The file's `impulse` block — the eruption burst applied when the melt completes. */
     impulse?: FluidImpulseSetting;
@@ -45,9 +55,7 @@ export interface FluidImpulseSetting {
 /** The subset of a setting file's `render` block the surface pass understands, matching the controls
  *  Liquefactor exposes. Anything absent leaves the current value alone. */
 export type FluidRenderSetting = FluidRenderProfileSettings;
-/** A setting file's `foam` block, parsed and carried on the setting so it is available the moment a
- *  foam pass is wired up. Nothing renders foam in this demo yet, so these values are currently only
- *  reported through the `fluidSetting()` QA hook — they are NOT silently dropped at load. */
+/** A setting file's serialized foam block, retained for the production QA hook. */
 export interface FluidFoamSetting {
     enableFoam?: boolean;
     trappedAirRate?: number;
@@ -73,7 +81,20 @@ export interface FluidFoamSetting {
 export function hexToRgb(hex: string | undefined): [number, number, number] | null {
     return fluidRenderHexColor(hex);
 }
-export async function fetchFluidSetting(name: string): Promise<FluidSimSetting | undefined> {
+export async function fetchFluidSetting(
+    name: string,
+    defaults: PairState = {
+        schema: {},
+        demoParams: {},
+        color: "#16a3c3",
+        half: false,
+        thicknessDownscale: 1,
+        absorption: 0.4,
+        size: 0.7,
+        physScale: 1,
+        count: 0,
+    }
+): Promise<FluidSimSetting | undefined> {
     if (!name || /\.json$/i.test(name)) {
         throw new Error(`[aquanova] fluidSim name "${name}" must omit the .json extension`);
     }
@@ -84,11 +105,7 @@ export async function fetchFluidSetting(name: string): Promise<FluidSimSetting |
             console.warn(`[aquanova] fluidSim "${name}": HTTP ${res.status} — falling back to the default water`);
             return undefined;
         }
-        const j = (await res.json()) as {
-            meta?: { method?: string };
-            physics?: Record<string, number>;
-            material?: number;
-            demoParams?: { useMeshColors?: number; particleRadius?: number };
+        const j = (await res.json()) as FluidExportJson & {
             render?: FluidRenderSetting;
             foam?: FluidFoamSetting;
             impulse?: FluidImpulseSetting;
@@ -99,12 +116,24 @@ export async function fetchFluidSetting(name: string): Promise<FluidSimSetting |
             console.warn(`[aquanova] fluidSim "${name}": missing meta.method or physics — falling back to the default water`);
             return undefined;
         }
+        const baseline = exportJsonFromPairState("aquanova", j.meta.method, defaults);
+        const normalizedJson: FluidExportJson = {
+            ...baseline,
+            ...j,
+            meta: { ...baseline.meta, ...j.meta },
+            demoParams: { ...baseline.demoParams, ...j.demoParams },
+            render: { ...baseline.render, ...j.render },
+        };
+        const session = importFluidPresetSession(normalizedJson, defaults);
+        const preset = session.state;
         return {
+            session,
+            preset,
             method: j.meta.method,
-            physics: j.physics,
-            material: j.material,
-            useMeshColors: !!j.demoParams?.useMeshColors,
-            particleRadius: j.demoParams?.particleRadius,
+            physics: preset.schema,
+            material: preset.material,
+            useMeshColors: !!preset.demoParams.useMeshColors,
+            particleRadius: preset.demoParams.particleRadius,
             render: j.render,
             foam: j.foam,
             impulse: j.impulse,

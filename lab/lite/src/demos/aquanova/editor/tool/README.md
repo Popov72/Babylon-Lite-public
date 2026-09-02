@@ -3945,6 +3945,7 @@ Probes are authored in **Probes…** in the toolbar. Each one is:
 | **shape** | box or sphere; the same shape is used for finite parallax projection and influence |
 | **projection volume** | box centre/full size, or sphere centre/radius, in editor space |
 | **capture point** | where the six faces are rendered from — usually eye height, not the box centre |
+| **clip at faces** | whether geometry beyond the projection volume is cut from the capture; on by default |
 | **influence centre / size / inner size** | the volume the _runtime_ blends this probe over — see [The influence volumes](#the-influence-volumes) |
 
 Every probe is captured at the **same face size**, which is a ship-wide setting
@@ -3982,7 +3983,7 @@ the default for old manifests. Sphere probes store explicit
 `influenceSphereRadius`, and `influenceInnerSphereRadius` fields; radii are
 never inferred from one component of a box size.
 
-**ID**, **Always visible** and **Env faces** sit above all
+**ID**, **Clip at faces**, **Always visible** and **Env faces** sit above all
 three, because they belong to the probe rather than to any one of its boxes. The line under the last
 section reports the box, the capture point, the cubemap size the ship is
 captured at, and whether this probe has a generated asset yet.
@@ -4145,6 +4146,15 @@ The filter lives in `meshesInProbeBox`, which is deliberately the **one** list
 both the render list and the digest are built from. Excluding a crate in the
 render alone would leave it in the digest, and nudging it would then mark every
 probe in its room stale for a capture that could not possibly look different.
+
+That list is deliberately coarse: an element whose bounds touch the projection
+volume is offered to the render as a whole. **Clip at faces** supplies the exact
+boundary. Six outward-facing Babylon clip planes cut every fragment beyond the
+projection box, on every cubemap face, so the wall in the next corridor cannot
+leak into an end face merely because one compound element straddles the room
+boundary. A spherical probe uses the six faces of its radius-sized bounding
+cube. Uncheck the option only for a probe intentionally authored to see beyond
+its own volume. Missing fields in older manifests mean clipping is on.
 
 ### Taking the capture
 
@@ -4419,6 +4429,11 @@ All four of those are scene-wide state, so a frame drawn in the middle of a
 capture is a picture of no state the editor is meant to have: the ship from the
 capture point, untone-mapped, with its reflections stripped.
 
+The orange hover outline is removed before that state is entered and restored
+afterwards. The busy lock prevents pointer movement from establishing another
+hover in between, so an outline under a resting mouse cannot be photographed
+into all six faces.
+
 The render loop cannot simply be stopped, though: Babylon compiles shaders only
 while it renders, and every face waits on exactly that. So the capture takes the
 **busy lock** instead — the same overlay a load uses, which makes the toolbar,
@@ -4450,7 +4465,8 @@ Every capture declares the **whole** authored probe list to the server first,
 each with a digest, and gets back the ones that still owe a render. The digest
 covers everything the six renders can see and nothing else:
 
-- the probe's own box and capture point, and the ship's cubemap size;
+- the probe's own box and capture point, its clipping choice, the capture
+  algorithm version, and the ship's cubemap size;
 - the name, **authored** material and world matrix of every mesh inside the box,
   sorted — Babylon's mesh order follows creation, so an undo that rebuilds the
   same ship in a different order would otherwise read as a change. "Inside the

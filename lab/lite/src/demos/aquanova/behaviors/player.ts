@@ -39,7 +39,7 @@ export function playerSupportedMovementVelocity(
     horizontalZ: number,
     surfaceNormal: Readonly<{ x: number; y: number; z: number }>
 ): { x: number; y: number; z: number } {
-    const length = Math.hypot(surfaceNormal.x, surfaceNormal.y, surfaceNormal.z);
+    const length = Math.sqrt(surfaceNormal.x * surfaceNormal.x + surfaceNormal.y * surfaceNormal.y + surfaceNormal.z * surfaceNormal.z);
     const normal = length > 1e-6 ? { x: surfaceNormal.x / length, y: surfaceNormal.y / length, z: surfaceNormal.z / length } : { x: 0, y: 1, z: 0 };
     const normalVelocity = horizontalX * normal.x + horizontalZ * normal.z + GROUND_ADHESION_SPEED;
     return {
@@ -327,11 +327,11 @@ export class PlayerBehavior implements Behavior<"player"> {
         const dx = target.x - position.x;
         const dy = target.y - position.y;
         const dz = target.z - position.z;
-        const horizontal = Math.hypot(dx, dz);
+        const horizontal = Math.sqrt(dx * dx + dz * dz);
         if (horizontal > 1e-6 || Math.abs(dy) > 1e-6) {
             this.yaw = this.yawTarget = Math.atan2(dx, dz);
             this.pitch = this.pitchTarget = Math.max(-1.45, Math.min(1.45, Math.atan2(dy, horizontal)));
-            this.targetDistance = Math.hypot(horizontal, dy);
+            this.targetDistance = Math.sqrt(horizontal * horizontal + dy * dy);
         }
         this.context.camera.target.set(target.x, target.y, target.z);
     }
@@ -581,7 +581,7 @@ export class PlayerBehavior implements Behavior<"player"> {
             this.resetFootsteps();
             return;
         }
-        const distance = Math.hypot(resolvedX, resolvedZ);
+        const distance = Math.sqrt(resolvedX * resolvedX + resolvedZ * resolvedZ);
         if (distance <= 1e-5) {
             return;
         }

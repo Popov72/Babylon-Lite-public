@@ -37,7 +37,7 @@ const EDGE_PAIRS = [
 ] as const;
 
 function quatFromYTo(direction: readonly [number, number, number]): [number, number, number, number] {
-    const length = Math.hypot(direction[0], direction[1], direction[2]);
+    const length = Math.sqrt(direction[0] * direction[0] + direction[1] * direction[1] + direction[2] * direction[2]);
     if (length < 1e-9) return [0, 0, 0, 1];
     const x = direction[0] / length;
     const y = direction[1] / length;
@@ -86,7 +86,7 @@ function addEdge(
     const dy = b[1] - a[1];
     const dz = b[2] - a[2];
     edge.position.set((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5, (a[2] + b[2]) * 0.5);
-    edge.scaling.set(1, Math.max(Math.hypot(dx, dy, dz), 1e-4), 1);
+    edge.scaling.set(1, Math.max(Math.sqrt(dx * dx + dy * dy + dz * dz), 1e-4), 1);
     const q = quatFromYTo([dx, dy, dz]);
     edge.rotationQuaternion.set(q[0], q[1], q[2], q[3]);
     edge.material = material;

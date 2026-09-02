@@ -51,7 +51,7 @@ function directionFrom(matrix: ArrayLike<number>): [number, number, number] {
     const x = matrix[8] ?? 0;
     const y = matrix[9] ?? 0;
     const z = matrix[10] ?? 1;
-    const inverseLength = 1 / (Math.hypot(x, y, z) || 1);
+    const inverseLength = 1 / (Math.sqrt(x * x + y * y + z * z) || 1);
     return [x * inverseLength, y * inverseLength, z * inverseLength];
 }
 
@@ -107,7 +107,10 @@ export function createPistolProjectileRuntime(engine: EngineContext, scene: Scen
             const end: [number, number, number] = hitsMesh
                 ? [point[0], point[1], point[2]]
                 : [start[0] + direction[0] * range, start[1] + direction[1] * range, start[2] + direction[2] * range];
-            const travelDistance = Math.hypot(end[0] - start[0], end[1] - start[1], end[2] - start[2]);
+            const travelX = end[0] - start[0];
+            const travelY = end[1] - start[1];
+            const travelZ = end[2] - start[2];
+            const travelDistance = Math.sqrt(travelX * travelX + travelY * travelY + travelZ * travelZ);
             const projectile = projectiles[nextProjectile]!;
             nextProjectile = (nextProjectile + 1) % projectiles.length;
             projectile.active = true;
@@ -178,6 +181,6 @@ export function createPistolProjectileRuntime(engine: EngineContext, scene: Scen
 }
 
 function normalize(x: number, y: number, z: number): [number, number, number] {
-    const inverseLength = 1 / (Math.hypot(x, y, z) || 1);
+    const inverseLength = 1 / (Math.sqrt(x * x + y * y + z * z) || 1);
     return [x * inverseLength, y * inverseLength, z * inverseLength];
 }

@@ -8,7 +8,7 @@
     2
    ],
    "resolution": 512,
-   "bytes": 1343164,
+   "bytes": 1292652,
    "boxPosition": [
     2.1080118962737684,
     2.5,
@@ -44,19 +44,19 @@
     -8.170461957037828
    ],
    "resolution": 512,
-   "bytes": 1437545,
+   "bytes": 1321545,
    "boxPosition": [
-    10.313207630119352,
+    10.0589,
     2.499047666788101,
     -8.170461957037828
    ],
    "boxSize": [
-    4.7035,
+    4.8401,
     5.011,
-    17
+    18
    ],
    "influenceBoxPosition": [
-    10.313207630119352,
+    10.0589,
     2.499047666788101,
     -8.170461957037828
    ],
@@ -80,7 +80,7 @@
     0.03219
    ],
    "resolution": 512,
-   "bytes": 1402757,
+   "bytes": 1307198,
    "boxPosition": [
     -7.95142,
     2.5,
@@ -116,7 +116,7 @@
     -18.05311936597713
    ],
    "resolution": 512,
-   "bytes": 93900,
+   "bytes": 127925,
    "boxPosition": [
     14.079641277139773,
     2.297625784585776,
@@ -152,7 +152,7 @@
     -7.1
    ],
    "resolution": 512,
-   "bytes": 121548,
+   "bytes": 109704,
    "boxPosition": [
     4.6,
     1.5,
@@ -188,7 +188,7 @@
     -7.1
    ],
    "resolution": 512,
-   "bytes": 97808,
+   "bytes": 87864,
    "boxPosition": [
     4.6,
     1.5,
@@ -224,7 +224,7 @@
     -9.969499588012695
    ],
    "resolution": 512,
-   "bytes": 708947,
+   "bytes": 631831,
    "boxPosition": [
     1.8089687753009538,
     1.4978633255374065,
@@ -260,21 +260,33 @@
     1.6380013525485992
    ],
    "resolution": 512,
-   "bytes": 1042114,
-   "shape": "sphere",
-   "spherePosition": [
+   "bytes": 925450,
+   "boxPosition": [
     9.476712316274643,
     2.49647854315117,
     1.6380013525485992
    ],
-   "sphereRadius": 3,
-   "influenceSpherePosition": [
+   "boxSize": [
+    8,
+    8,
+    8
+   ],
+   "influenceBoxPosition": [
     9.476712316274643,
     2.49647854315117,
     1.6380013525485992
    ],
-   "influenceSphereRadius": 5,
-   "influenceInnerSphereRadius": 1
+   "influenceBoxSize": [
+    10,
+    10,
+    10
+   ],
+   "influenceInnerBoxSize": [
+    2,
+    2,
+    2
+   ],
+   "angle": 0
   }
  }
 }

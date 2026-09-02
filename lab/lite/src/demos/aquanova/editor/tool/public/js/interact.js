@@ -1350,6 +1350,20 @@ function setHover(id) {
 
 export function hoveredId() { return hoverId; }
 
+/**
+ * Remove the orange hover outline while an offscreen render owns the scene,
+ * then put the same hover back when the editor returns.
+ */
+export async function withHoverCleared(fn) {
+  const previous = hoverId;
+  setHover(null);
+  try {
+    return await fn();
+  } finally {
+    setHover(previous);
+  }
+}
+
 /** Re-pick under a cursor that has not moved - after a right-drag. */
 function refreshHover() {
   if (drag || ghost || isRmbDown()) return;

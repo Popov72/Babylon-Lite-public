@@ -83,7 +83,10 @@ export function boxProbeNdf(probe: BoxProbeInfluence, point: ProbeBlendVec3): nu
 }
 
 export function sphereProbeNdf(probe: SphereProbeInfluence, point: ProbeBlendVec3): number {
-    const distance = Math.hypot(point[0] - probe.centre[0], point[1] - probe.centre[1], point[2] - probe.centre[2]);
+    const dx = point[0] - probe.centre[0];
+    const dy = point[1] - probe.centre[1];
+    const dz = point[2] - probe.centre[2];
+    const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
     const span = probe.outerRadius - probe.innerRadius;
     return span > EPSILON ? (distance - probe.innerRadius) / span : distance <= probe.outerRadius ? 0 : Number.POSITIVE_INFINITY;
 }
@@ -110,8 +113,11 @@ export function selectContainingProbe<T extends ProbeRegion>(probes: readonly T[
         let contains: boolean;
         let probeVolume: number;
         if (probe.shape === "sphere") {
-            contains =
-                Math.hypot(point[0] - probe.projectionCentre[0], point[1] - probe.projectionCentre[1], point[2] - probe.projectionCentre[2]) <= probe.projectionRadius + EPSILON;
+            const dx = point[0] - probe.projectionCentre[0];
+            const dy = point[1] - probe.projectionCentre[1];
+            const dz = point[2] - probe.projectionCentre[2];
+            const radius = probe.projectionRadius + EPSILON;
+            contains = dx * dx + dy * dy + dz * dz <= radius * radius;
             probeVolume = (4 / 3) * Math.PI * probe.projectionRadius ** 3;
         } else {
             const local = probeLocalOffset(point, probe.projectionCentre, probe.angleRadians);
@@ -144,7 +150,10 @@ function projectionVolume(probe: ProbeRegion): number {
 
 function projectionDistanceSquared(probe: ProbeRegion, point: ProbeBlendVec3): number {
     if (probe.shape === "sphere") {
-        const distance = Math.hypot(point[0] - probe.projectionCentre[0], point[1] - probe.projectionCentre[1], point[2] - probe.projectionCentre[2]);
+        const dx = point[0] - probe.projectionCentre[0];
+        const dy = point[1] - probe.projectionCentre[1];
+        const dz = point[2] - probe.projectionCentre[2];
+        const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
         return Math.max(0, distance - probe.projectionRadius) ** 2;
     }
     const local = probeLocalOffset(point, probe.projectionCentre, probe.angleRadians);

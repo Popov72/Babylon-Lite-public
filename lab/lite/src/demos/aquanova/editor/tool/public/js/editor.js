@@ -2792,6 +2792,9 @@ function cloneEnvironmentProbe(probe) {
           influenceInnerBoxSize: [...probe.influenceInnerBoxSize],
         }),
     capturePosition: [...probe.capturePosition],
+    // Authored capture policy. Missing means clipped so manifests written
+    // before the option existed adopt the room-bounded behaviour.
+    clipCapture: probe.clipCapture !== false,
     // View state, not ship data - see setEnvironmentProbeView. Carried here all
     // the same, because serialize() writes probes through this function and an
     // undo rebuilds the whole map: leaving them out would make every Ctrl+Z put
@@ -2873,6 +2876,10 @@ export function setEnvironmentProbe(id, probe, previousId = id, { history = true
   const next = {
         id: key,
         ...volume,
+    clipCapture:
+      typeof probe?.clipCapture === "boolean"
+        ? probe.clipCapture
+        : standing?.clipCapture !== false,
     alwaysVisible: !!(probe?.alwaysVisible ?? standing?.alwaysVisible),
     envFaces: !!(probe?.envFaces ?? standing?.envFaces),
     visibleParts: probeVisibleParts(probe?.visibleParts, standing?.visibleParts),
@@ -4463,6 +4470,7 @@ async function restoreFrom(data) {
         capturePosition: Array.isArray(probe.capturePosition)
                     ? [-Number(probe.capturePosition[0]), Number(probe.capturePosition[1]), Number(probe.capturePosition[2])]
                     : null,
+                clipCapture: probe.clipCapture !== false,
                 // Not a probe field any more - see legacyProbeResolution, which is the
                 // only thing that still reads it.
         resolution: probe.resolution,

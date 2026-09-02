@@ -200,7 +200,7 @@ export function liquefactorSwayPose(elapsedSeconds: number, blend = 1): Liquefac
 }
 
 function normalize(x: number, y: number, z: number): [number, number, number] {
-    const inv = 1 / (Math.hypot(x, y, z) || 1);
+    const inv = 1 / (Math.sqrt(x * x + y * y + z * z) || 1);
     return [x * inv, y * inv, z * inv];
 }
 

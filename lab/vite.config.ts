@@ -899,10 +899,12 @@ export default defineConfig({
             //   • bundle build / API docs  → hundreds of files
             //   • perf-baseline (perfreg)  → bundle-baseline/ + bundle-baseline-scene*.html
             //   • perf manifests           → single-file writes that force a reload
+            //   • Aquanova ship publish    → atomically replaced by the editor's Start demo action
             ignored: [
                 "**/public/bundle/**",
                 "**/public/gl/bundle/**",
                 "**/public/bundle-baseline/**",
+                "**/public/aquanova/ship.glb",
                 "**/public/api-docs/**",
                 "**/public/lite/api-docs/**",
                 "**/public/gl/api-docs/**",

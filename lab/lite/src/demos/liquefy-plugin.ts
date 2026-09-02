@@ -73,7 +73,10 @@ export function liquefyFrontDistance(x: number, y: number, z: number, hit: reado
     const n0 = noise(x * noiseFreq, y * noiseFreq, z * noiseFreq);
     const n1 = noise(x * noiseFreq * 2.03 + 11.7, y * noiseFreq * 2.03 + 3.1, z * noiseFreq * 2.03 + 7.9);
     const perturbation = (n0 * 0.65 + n1 * 0.35 - 0.5) * 2 * noiseAmp;
-    return Math.hypot(x - hit[0], y - hit[1], z - hit[2]) + perturbation;
+    const dx = x - hit[0];
+    const dy = y - hit[1];
+    const dz = z - hit[2];
+    return Math.sqrt(dx * dx + dy * dy + dz * dz) + perturbation;
 }
 
 /** Create a liquefy clip plugin bound to a mutable state getter.

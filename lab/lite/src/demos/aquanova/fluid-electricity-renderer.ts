@@ -1,5 +1,5 @@
-import { createBloomPostProcessTask, createRenderTarget, getProjectionMatrix, getViewMatrix, getViewProjectionMatrix } from "babylon-lite";
-import type { BloomPostProcessTask, Camera, EngineContext, RenderTarget, SceneContext, Task } from "babylon-lite";
+import { createBloomPostProcessTask, createRenderTarget, fluidParticleStreamForSceneIntegration, getProjectionMatrix, getViewMatrix, getViewProjectionMatrix } from "babylon-lite";
+import type { BloomPostProcessTask, Camera, EngineContext, FluidParticleStream, RenderTarget, SceneContext, Task } from "babylon-lite";
 import { buildRenderTarget, disposeRenderTarget } from "babylon-lite/engine/render-target.js";
 import { ELECTRICITY_PARTICLE_MASK_RADIUS_SCALE, electricityPropagationRadius, type FluidElectricityFrameDomain } from "./fluid-runtime.js";
 
@@ -245,8 +245,7 @@ export interface FluidElectricityRendererOptions {
     readonly target: RenderTarget;
     readonly sceneDepth: RenderTarget;
     readonly camera: Camera;
-    readonly positionBuffer: GPUBuffer;
-    readonly alphaBuffer: GPUBuffer;
+    readonly particleStream: FluidParticleStream;
     readonly surfaceDepthView: () => GPUTextureView | null;
 }
 
@@ -261,6 +260,7 @@ export interface FluidElectricityRenderer extends Task {
 
 export function createFluidElectricityRenderer(engine: EngineContext, scene: SceneContext, options: FluidElectricityRendererOptions): FluidElectricityRenderer {
     const device = engine._device;
+    const particleStream = fluidParticleStreamForSceneIntegration(options.particleStream);
     let domains: readonly FluidElectricityFrameDomain[] = [];
     let improved = false;
     let animationEnabled = true;
@@ -399,8 +399,8 @@ export function createFluidElectricityRenderer(engine: EngineContext, scene: Sce
             label: "aq-fluid-electricity-mask",
             layout: maskLayout,
             entries: [
-                { binding: 0, resource: { buffer: options.positionBuffer } },
-                { binding: 1, resource: { buffer: options.alphaBuffer } },
+                { binding: 0, resource: { buffer: particleStream.positionBuffer } },
+                { binding: 1, resource: { buffer: particleStream.alphaBuffer ?? particleStream.positionBuffer } },
                 { binding: 2, resource: { buffer: domainUniform, size: 192 } },
             ],
         });

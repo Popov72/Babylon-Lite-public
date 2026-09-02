@@ -302,6 +302,9 @@ export function buildManifest() {
     const common = {
       id,
       capturePosition: toGltf(probe.capturePosition),
+      // Clipping is the default, so only the exceptional probe that needs to
+      // see into a neighbouring volume pays a field in the manifest.
+      ...(probe.clipCapture === false ? { clipCapture: false } : {}),
     };
     return probe.shape === "sphere"
       ? {
@@ -440,6 +443,7 @@ export function buildManifest() {
                 "space",
         "environmentProbes[].boxSize",
         "environmentProbes[].sphereRadius",
+        "environmentProbes[].clipCapture",
         "environmentProbes[].influenceBoxSize",
         "environmentProbes[].influenceInnerBoxSize",
         "environmentProbes[].influenceSphereRadius",

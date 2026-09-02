@@ -134,7 +134,7 @@ JSON; emitter and sink positions remain grid-local and are translated with that
 new center. FLIP presets store `gridResolution`; non-FLIP presets derive their
 cell size from the solver method, `physicsParticleSize`, simulation type, and
 authored particle radius. Both demos use the package-level functions in
-`packages/babylon-lite/src/fluid/simulation-config.ts`, so the same JSON produces
+`packages/babylon-lite/src/fluid/core/simulation-config.ts`, so the same JSON produces
 the same solver discretization and particle capacity.
 `particleCount` sizes particle buffers but does not size the cubic solver grid.
 `electrifiable` defaults to `false`; only an explicitly

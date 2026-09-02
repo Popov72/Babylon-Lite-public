@@ -44,7 +44,7 @@ interface ExteriorView {
 const SIZE = 384;
 
 function normalize([x, y, z]: Vec3): Vec3 {
-    const inv = 1 / Math.hypot(x, y, z);
+    const inv = 1 / Math.sqrt(x * x + y * y + z * z);
     return [x * inv, y * inv, z * inv];
 }
 
@@ -137,7 +137,7 @@ function idColor(id: number): [number, number, number] {
 export function createExteriorMeshClassifier(options: ExteriorMeshClassifierOptions): ExteriorMeshClassifier {
     const { engine, scene, meshes, bounds, chunks, portals } = options;
     const centre = bounds.centre;
-    const radius = Math.hypot(bounds.half[0], bounds.half[1], bounds.half[2]);
+    const radius = Math.sqrt(bounds.half[0] * bounds.half[0] + bounds.half[1] * bounds.half[1] + bounds.half[2] * bounds.half[2]);
     const halfExtent = radius * 1.05;
     const distance = radius * 2.5;
     const runtimePortals = buildRuntimePortals(portals, chunks);

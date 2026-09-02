@@ -128,7 +128,7 @@ function planeDistance(plane: Plane, point: Vec3): number {
 }
 
 function makePlane(x: number, y: number, z: number, d: number): Plane | null {
-    const length = Math.hypot(x, y, z);
+    const length = Math.sqrt(x * x + y * y + z * z);
     return length > 1e-9 ? { x: x / length, y: y / length, z: z / length, d: d / length } : null;
 }
 

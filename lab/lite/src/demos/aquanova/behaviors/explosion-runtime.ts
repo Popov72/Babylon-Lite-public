@@ -247,12 +247,12 @@ function normalizedEjectionDirection(centre: readonly [number, number, number], 
     let x = centre[0] - origin[0];
     let y = centre[1] - origin[1] + 0.35;
     let z = centre[2] - origin[2];
-    let length = Math.hypot(x, y, z);
+    let length = Math.sqrt(x * x + y * y + z * z);
     if (length <= 1e-5) {
         x = random() * 2 - 1;
         y = random() + 0.35;
         z = random() * 2 - 1;
-        length = Math.hypot(x, y, z) || 1;
+        length = Math.sqrt(x * x + y * y + z * z) || 1;
     }
     return [x / length, y / length, z / length];
 }
@@ -414,7 +414,10 @@ export class AquanovaExplosionRuntime implements ExplosionRuntime {
         for (const { root } of prepared.roots) {
             addToScene(this.options.scene, root);
         }
-        const distance = Math.hypot(targetBounds.centre[0] - origin[0], targetBounds.centre[1] - origin[1], targetBounds.centre[2] - origin[2]);
+        const dx = targetBounds.centre[0] - origin[0];
+        const dy = targetBounds.centre[1] - origin[1];
+        const dz = targetBounds.centre[2] - origin[2];
+        const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
         const falloff = 1 - 0.65 * Math.min(1, distance / config.radius);
         const random = seededRandom(hashString(`${target.entityName}:ejection`));
         const mass = Math.max(0.1, (target.mass > 0 ? target.mass : DEFAULT_STATIC_TARGET_MASS) / prepared.roots.length);
@@ -503,7 +506,10 @@ export class AquanovaExplosionRuntime implements ExplosionRuntime {
         }
         const linear = getPhysicsBodyLinearVelocity(this.options.world, aggregate.body);
         const angular = getPhysicsBodyAngularVelocity(this.options.world, aggregate.body);
-        if (Math.hypot(linear.x, linear.y, linear.z) > REST_LINEAR_SPEED || Math.hypot(angular.x, angular.y, angular.z) > REST_ANGULAR_SPEED) {
+        if (
+            linear.x * linear.x + linear.y * linear.y + linear.z * linear.z > REST_LINEAR_SPEED * REST_LINEAR_SPEED ||
+            angular.x * angular.x + angular.y * angular.y + angular.z * angular.z > REST_ANGULAR_SPEED * REST_ANGULAR_SPEED
+        ) {
             piece.restSeconds = 0;
             return;
         }

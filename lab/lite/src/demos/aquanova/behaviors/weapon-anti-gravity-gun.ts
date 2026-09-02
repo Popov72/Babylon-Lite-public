@@ -37,7 +37,7 @@ export function antiGravityCollisionSlideDisplacement(
     let blocked = false;
 
     for (let iteration = 0; iteration < COLLISION_SLIDE_ITERATIONS; iteration++) {
-        if (Math.hypot(...remaining) <= 1e-8) {
+        if (remaining[0] * remaining[0] + remaining[1] * remaining[1] + remaining[2] * remaining[2] <= 1e-16) {
             break;
         }
         const hit = cast(movement, remaining);
@@ -49,7 +49,7 @@ export function antiGravityCollisionSlideDisplacement(
             break;
         }
         blocked = true;
-        const normalLength = Math.hypot(hit.hitNormal.x, hit.hitNormal.y, hit.hitNormal.z);
+        const normalLength = Math.sqrt(hit.hitNormal.x * hit.hitNormal.x + hit.hitNormal.y * hit.hitNormal.y + hit.hitNormal.z * hit.hitNormal.z);
         if (normalLength <= 1e-8) {
             break;
         }

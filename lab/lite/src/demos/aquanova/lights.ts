@@ -124,7 +124,7 @@ function directionOf(w: ArrayLike<number>): [number, number, number] {
     const x = -w[4]!;
     const y = -w[5]!;
     const z = -w[6]!;
-    const len = Math.hypot(x, y, z) || 1;
+    const len = Math.sqrt(x * x + y * y + z * z) || 1;
     return [x / len, y / len, z / len];
 }
 

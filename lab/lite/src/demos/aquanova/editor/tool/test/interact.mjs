@@ -890,6 +890,7 @@ const probes = await page.evaluate(async () => {
   // derived from the box it does have. The box itself depends on the camera,
   // so the check is the relationship rather than the numbers.
   const created = ed.environmentProbeOf(id);
+    const defaultClipping = created.clipCapture === true && $("probe-clip").checked;
     const derivedInfluence =
         created.influenceBoxPosition.join() === created.boxPosition.join() &&
         created.influenceBoxSize.every((n, axis) => n === created.boxSize[axis] + 3) &&
@@ -916,6 +917,8 @@ const probes = await page.evaluate(async () => {
         "probe-inner-size-z": "8",
     };
     for (const [field, value] of Object.entries(values)) type(field, value);
+  $("probe-clip").click();
+    const clippingDisabled = ed.environmentProbeOf(id).clipCapture === false && !$("probe-clip").checked;
   await settle(id);
   await runtime.showEnvironmentProbes(id);
 
@@ -989,6 +992,17 @@ const probes = await page.evaluate(async () => {
   const axes = ed.toggleAxes(renamedId, "world");
 
   const authored = ed.environmentProbeOf(renamedId);
+  const localEnvironments = await import("/js/local-environments.js");
+  const clippedPlanes = localEnvironments.captureClipPlanes({ ...authored, clipCapture: true });
+  const unclippedPlanes = localEnvironments.captureClipPlanes({ ...authored, clipCapture: false });
+  const clipCentre = BABYLON.Vector3.FromArray(authored.boxPosition);
+  const beyondX = clipCentre.add(new BABYLON.Vector3(authored.boxSize[0], 0, 0));
+  const clipGeometry = {
+    planes: clippedPlanes.length,
+    centre: Math.max(...clippedPlanes.map((plane) => plane.normal.dot(clipCentre) + plane.d)),
+    beyond: Math.max(...clippedPlanes.map((plane) => plane.normal.dot(beyondX) + plane.d)),
+    optedOut: unclippedPlanes.length,
+  };
   const inManifest = mf.buildManifest().environmentProbes.find((probe) => probe.id === renamedId);
   const snapshot = JSON.parse(JSON.stringify(ed.serialize()));
   await ed.deserialize(snapshot);
@@ -1062,6 +1076,9 @@ const probes = await page.evaluate(async () => {
         axes,
         captureButtons,
         derivedInfluence,
+        defaultClipping,
+        clippingDisabled,
+        clipGeometry,
         innerRefused,
         innerFieldRestored,
         influenceDragged,
@@ -1096,6 +1113,16 @@ check(
     JSON.stringify(probes.transformed)
 );
 check("a new probe derives its influence volumes from the box it was given", probes.derivedInfluence === true, JSON.stringify(probes.derivedInfluence));
+check(
+    "probe captures clip at all six faces by default and can opt out",
+    probes.defaultClipping === true &&
+        probes.clippingDisabled === true &&
+        probes.clipGeometry?.planes === 6 &&
+        probes.clipGeometry.centre <= 0 &&
+        probes.clipGeometry.beyond > 0 &&
+        probes.clipGeometry.optedOut === 0,
+    JSON.stringify(probes.clipGeometry)
+);
 check(
     "the influence volumes are authored, drawn, and selectable in their own right",
     probes.live.outer?.join() === "12,9,16" &&
@@ -1156,6 +1183,7 @@ check(
         probes.inManifest?.boxSize?.join() === "10,6,14" &&
         probes.inManifest?.influenceBoxSize?.join() === "14,10,18" &&
         probes.inManifest?.influenceInnerBoxSize?.join() === "6,2,10" &&
+        probes.inManifest?.clipCapture === false &&
         probes.inManifest?.angle === 0,
     JSON.stringify(probes.inManifest)
 );
@@ -1481,6 +1509,7 @@ check(
         [
             "ID",
             "Shape",
+            "Clip at faces",
             "Always visible",
             "Env faces",
             "H3:Probe box",
@@ -4783,7 +4812,8 @@ await page.waitForTimeout(300);
 // stubbed here: the real script writes into lab/public/aquanova, which a test
 // run must no more touch than it touches a real export folder. What is checked
 // is everything on this side of the wire - which flag the request carries, that
-// the tab is opened only on success, and that the failure is readable.
+// the named tab is blanked before publishing and navigated only on success, and
+// that a failure is readable.
 await page.evaluate(() => {
     window.__demo = { posts: [], opened: [], reply: { ok: true, code: 0, optimized: false, output: "copied 3 files\n", url: "http://localhost:5174/lite/demo-aquanova.html" } };
     window.__realFetch = window.fetch;
@@ -4796,8 +4826,13 @@ await page.evaluate(() => {
     };
     window.__realOpen = window.open;
     window.open = (u, name) => {
-        window.__demo.opened.push([u, name]);
-        return {};
+        const opened = { url: u, name, navigated: null };
+        window.__demo.opened.push(opened);
+        return {
+            set location(value) {
+                opened.navigated = value;
+            },
+        };
     };
 });
 
@@ -4823,8 +4858,9 @@ check(
         demoOff.posts[0].method === "POST" &&
         demoOff.posts[0].body.optimize === false &&
         demoOff.opened.length === 1 &&
-        demoOff.opened[0][0] === "http://localhost:5174/lite/demo-aquanova.html" &&
-        demoOff.opened[0][1] === "aquanova-demo" &&
+        demoOff.opened[0].url === "about:blank" &&
+        demoOff.opened[0].name === "aquanova-demo" &&
+        demoOff.opened[0].navigated === "http://localhost:5174/lite/demo-aquanova.html" &&
         demoOff.box === false &&
         demoOff.setting === false &&
         demoOff.default === false,
@@ -4853,19 +4889,24 @@ check(
     JSON.stringify(demoOn)
 );
 
-// A script that failed must not be followed by a tab: an opened demo is a
-// claim that what it loads is the ship you just published.
+// A script that failed leaves the pre-opened tab blank: navigating it to the
+// demo would claim that it loads the ship that failed to publish.
 const demoFailed = await page.evaluate(async () => {
     window.__demo.posts.length = 0;
     window.__demo.opened.length = 0;
     window.__demo.reply = { ok: false, code: 1, output: "Error: toktx not found\n", url: "http://localhost:5174/lite/demo-aquanova.html" };
     document.getElementById("btn-demo").click();
     await new Promise((r) => setTimeout(r, 500));
-    return { opened: window.__demo.opened.length, status: document.getElementById("status-text").textContent };
+    return { opened: window.__demo.opened.slice(), status: document.getElementById("status-text").textContent };
 });
 check(
-    "a failed publish opens nothing and says so, pointing at the script's output",
-    demoFailed.opened === 0 && /demo NOT started/.test(demoFailed.status) && /exited with code 1/.test(demoFailed.status) && /console/.test(demoFailed.status),
+    "a failed publish leaves the demo tab blank and says so, pointing at the script's output",
+    demoFailed.opened.length === 1 &&
+        demoFailed.opened[0].url === "about:blank" &&
+        demoFailed.opened[0].navigated === null &&
+        /demo NOT started/.test(demoFailed.status) &&
+        /exited with code 1/.test(demoFailed.status) &&
+        /console/.test(demoFailed.status),
     JSON.stringify(demoFailed)
 );
 
@@ -4876,11 +4917,15 @@ const demoNoScript = await page.evaluate(async () => {
     window.__demo.reply = { ok: false, error: "node_modules/tsx not found — run pnpm install in the repository" };
     document.getElementById("btn-demo").click();
     await new Promise((r) => setTimeout(r, 500));
-    return { opened: window.__demo.opened.length, status: document.getElementById("status-text").textContent };
+    return { opened: window.__demo.opened.slice(), status: document.getElementById("status-text").textContent };
 });
 check(
     "and a server that cannot run it at all quotes its own reason",
-    demoNoScript.opened === 0 && /tsx not found/.test(demoNoScript.status) && !/exited with code/.test(demoNoScript.status),
+    demoNoScript.opened.length === 1 &&
+        demoNoScript.opened[0].url === "about:blank" &&
+        demoNoScript.opened[0].navigated === null &&
+        /tsx not found/.test(demoNoScript.status) &&
+        !/exited with code/.test(demoNoScript.status),
     JSON.stringify(demoNoScript)
 );
 
@@ -7982,6 +8027,28 @@ let hov = await page.evaluate(async () => {
 check("hover picks the element", hov.id === target.id, `${hov.id} | pointer ${JSON.stringify(hov.dbgPointer)} pick=${hov.dbgPick} ghost=${hov.dbgGhost}`);
 check("outline uses per-instance edges", hov.edged === hov.total && hov.edged > 0, `${hov.edged}/${hov.total} instances edged`);
 check("no HighlightLayer in the scene", hov.effectLayers === 0, `${hov.effectLayers} effect layer(s)`);
+const captureHover = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const interact = await import("/js/interact.js");
+  const entry = [...ed.state.placements.values()][0];
+  const edged = () => entry.node.getChildMeshes().filter((mesh) => !!mesh.edgesRenderer).length;
+  const before = { hovered: interact.hoveredId(), edged: edged() };
+  let during;
+  await interact.withHoverCleared(async () => {
+    during = { hovered: interact.hoveredId(), edged: edged() };
+  });
+  return { before, during, after: { hovered: interact.hoveredId(), edged: edged() } };
+});
+check(
+    "offscreen capture clears and restores the hover outline",
+    captureHover.before.hovered === target.id &&
+        captureHover.before.edged > 0 &&
+        captureHover.during.hovered === null &&
+        captureHover.during.edged === 0 &&
+        captureHover.after.hovered === target.id &&
+        captureHover.after.edged === captureHover.before.edged,
+    JSON.stringify(captureHover)
+);
 // Hover no longer redirects an edit, so with nothing selected there is nothing
 // to act on - pointing at a wall must not make it the thing R turns.
 const hoverIsCurrent = await page.evaluate(async () => {

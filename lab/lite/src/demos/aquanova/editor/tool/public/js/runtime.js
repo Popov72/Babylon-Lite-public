@@ -1522,10 +1522,10 @@ hooks.environmentProbeEntry = (id) => {
 /**
  * Every mesh whose element overlaps a probe box.
  *
- * This is the render list a capture uses, and it is deliberately the ELEMENT's
- * bounds that decide - the same rule that picks which probe a mesh wears - so a
- * wall is either wholly in the room's capture or wholly out of it. Half a wall
- * appearing in a reflection is worse than the wall being missing.
+ * This is the coarse render list a capture uses, and it is deliberately the
+ * ELEMENT's bounds that decide - the same rule that picks which probe a mesh
+ * wears. The capture then clips fragments at the probe faces, so an element
+ * straddling the boundary cannot expose the neighbouring room.
  *
  * A room is captured from inside, so the geometry that matters is the geometry
  * around the camera. Anything beyond the box is another room's business and is

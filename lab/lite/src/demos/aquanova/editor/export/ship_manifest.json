@@ -1,7 +1,7 @@
 {
   "generator": "SciFiShip layout tool",
   "schema": 3,
-  "savedAt": "2026-08-30T13:28:19.375Z",
+  "savedAt": "2026-08-31T20:40:27.960Z",
   "units": "metres",
   "up": "Y (glTF)",
   "space": {
@@ -47,6 +47,7 @@
       "space",
       "environmentProbes[].boxSize",
       "environmentProbes[].sphereRadius",
+      "environmentProbes[].clipCapture",
       "environmentProbes[].influenceBoxSize",
       "environmentProbes[].influenceInnerBoxSize",
       "environmentProbes[].influenceSphereRadius",
@@ -226,18 +227,18 @@
         -8.170461957037828
       ],
       "boxPosition": [
-        10.313207630119352,
+        10.0589,
         2.499047666788101,
         -8.170461957037828
       ],
       "boxSize": [
-        4.7035,
+        4.8401,
         5.011,
-        17
+        18
       ],
       "angle": 0,
       "influenceBoxPosition": [
-        10.313207630119352,
+        10.0589,
         2.499047666788101,
         -8.170461957037828
       ],
@@ -429,20 +430,32 @@
         2.49647854315117,
         1.6380013525485992
       ],
-      "shape": "sphere",
-      "spherePosition": [
+      "boxPosition": [
         9.476712316274643,
         2.49647854315117,
         1.6380013525485992
       ],
-      "sphereRadius": 3,
-      "influenceSpherePosition": [
+      "boxSize": [
+        8,
+        8,
+        8
+      ],
+      "angle": 0,
+      "influenceBoxPosition": [
         9.476712316274643,
         2.49647854315117,
         1.6380013525485992
       ],
-      "influenceSphereRadius": 5,
-      "influenceInnerSphereRadius": 1
+      "influenceBoxSize": [
+        10,
+        10,
+        10
+      ],
+      "influenceInnerBoxSize": [
+        2,
+        2,
+        2
+      ]
     }
   ],
   "instances": [
@@ -14967,19 +14980,19 @@
   },
   "view": {
     "position": [
-      -10.035,
-      2.522,
-      -8.793
+      8.667,
+      9.198,
+      4.297
     ],
     "rotation": [
-      0.072,
-      3.079,
+      0.392,
+      4.287,
       0
     ],
     "target": [
-      -9.406,
-      1.804,
-      -18.747
+      0.249,
+      5.377,
+      0.484
     ]
   },
   "environment": {
@@ -15001,6 +15014,24 @@
     "runBehaviors": true,
     "shipOptimize": false,
     "probes": {
+      "CH01_Corridor2": {
+        "alwaysVisible": false,
+        "envFaces": true,
+        "visibleParts": {
+          "box": true,
+          "influence": false,
+          "inner": false
+        }
+      },
+      "CH00_Storage": {
+        "alwaysVisible": false,
+        "envFaces": true,
+        "visibleParts": {
+          "box": true,
+          "influence": true,
+          "inner": true
+        }
+      },
       "CH01_Escape1": {
         "alwaysVisible": false,
         "envFaces": false,
@@ -15020,15 +15051,6 @@
         }
       },
       "CH01_Escape3": {
-        "alwaysVisible": false,
-        "envFaces": false,
-        "visibleParts": {
-          "box": true,
-          "influence": false,
-          "inner": false
-        }
-      },
-      "CH01_CorridorTurn": {
         "alwaysVisible": false,
         "envFaces": false,
         "visibleParts": {

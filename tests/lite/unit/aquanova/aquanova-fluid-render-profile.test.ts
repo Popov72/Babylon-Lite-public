@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { fluidRenderProfileKey } from "../../../../packages/babylon-lite/src/fluid/fluid-render-profile";
+import { fluidRenderProfileKey } from "../../../../packages/babylon-lite/src/fluid/rendering/fluid-render-profile";
 
 describe("Aquanova independent fluid render profiles", () => {
     it("groups simulations with the same render and particle parameters", () => {

@@ -23,7 +23,7 @@ async function setRangeByInfo(page: Page, titlePrefix: string, value: number): P
     );
 }
 
-test("Aquanova reports the authored placement position for dynamic entities", async ({ page }) => {
+test("Aquanova reports the live placement position for dynamic entities", async ({ page }) => {
     test.setTimeout(180_000);
     await page.goto("/lite/demo-aquanova-fluid-sim.html");
 
@@ -33,35 +33,53 @@ test("Aquanova reports the authored placement position for dynamic entities", as
             page.evaluate(() => {
                 const qa = (
                     window as unknown as {
-                        __aquanovaFluidSim: { selectMeshGizmo(entityName: string): boolean };
+                        __aquanovaFluidSim: {
+                            setPaused(paused: boolean): void;
+                            selectMeshGizmo(entityName: string): boolean;
+                        };
                     }
                 ).__aquanovaFluidSim;
+                qa.setPaused(true);
                 return qa.selectMeshGizmo("capsule");
             })
         )
         .toBe(true);
     await expect
         .poll(() =>
-            page.evaluate(() =>
-                (
+            page.evaluate(() => {
+                const qa = (
                     window as unknown as {
-                        __aquanovaFluidSim: { meshGizmoPosition(): [number, number, number] | null };
+                        __aquanovaFluidSim: {
+                            meshGizmoPosition(): [number, number, number] | null;
+                            meshGizmoPositionText(): string | null;
+                        };
                     }
-                ).__aquanovaFluidSim.meshGizmoPosition()
-            )
+                ).__aquanovaFluidSim;
+                const position = qa.meshGizmoPosition();
+                if (!position?.every(Number.isFinite)) return null;
+                return {
+                    position,
+                    text: qa.meshGizmoPositionText(),
+                    formatted: position.map((value) => value.toFixed(2)).join(", "),
+                };
+            })
         )
-        .toEqual([-10, 0, -16.007999420166016]);
-    await expect
-        .poll(() =>
-            page.evaluate(() =>
-                (
-                    window as unknown as {
-                        __aquanovaFluidSim: { meshGizmoPositionText(): string | null };
-                    }
-                ).__aquanovaFluidSim.meshGizmoPositionText()
-            )
-        )
-        .toContain("-10.00, 0.00, -16.01");
+        .toMatchObject({
+            position: [-10, 0, expect.any(Number)],
+            text: expect.any(String),
+        });
+    const placement = await page.evaluate(() => {
+        const qa = (
+            window as unknown as {
+                __aquanovaFluidSim: {
+                    meshGizmoPosition(): [number, number, number];
+                    meshGizmoPositionText(): string;
+                };
+            }
+        ).__aquanovaFluidSim;
+        return { position: qa.meshGizmoPosition(), text: qa.meshGizmoPositionText() };
+    });
+    expect(placement.text).toContain(placement.position.map((value) => value.toFixed(2)).join(", "));
 });
 
 test("Aquanova highlights authoring action buttons when clicked", async ({ page }) => {
@@ -339,6 +357,7 @@ test("Aquanova applies the shared FLIP polygon-surface control", async ({ page }
             qa.startManual();
         }
     });
+
     await expect.poll(() => page.evaluate(() => (window as unknown as { __aquanovaFluidSim: { manualRunning(): boolean } }).__aquanovaFluidSim.manualRunning())).toBe(true);
     await expect
         .poll(() => page.evaluate(() => (window as unknown as { __aquanovaFluidSim: { manualStepCount(): number } }).__aquanovaFluidSim.manualStepCount()))
@@ -357,10 +376,68 @@ test("Aquanova applies the shared FLIP polygon-surface control", async ({ page }
         input.dispatchEvent(new Event("change", { bubbles: true }));
     });
     await expect(canvas).toHaveAttribute("data-polygon-reconstruction-multiplier", "2");
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __aquanovaFluidSim: { polygonSurfaceCount(): number } }).__aquanovaFluidSim.polygonSurfaceCount())).toBe(1);
     await expect.poll(async () => Number(await canvas.getAttribute("data-polygon-triangle-count")), { timeout: 30_000 }).toBeGreaterThan(0);
     await expect(page.locator('[data-fluid-polygon-triangle-count="true"]')).toHaveText(/^Triangles:\u00a0[\d,]+$/);
     const debug = page.locator('select[data-fluid-debug="true"]');
     await debug.selectOption("polygonWireframe");
     await expect(debug).toHaveValue("polygonWireframe");
     await debug.selectOption("none");
+});
+
+test("Aquanova production renders FLIP polygon surfaces and polygon-depth foam", async ({ page }) => {
+    test.setTimeout(180_000);
+    await page.route("**/aquanova/fluidSim/capsule-tank.json", async (route) => {
+        const response = await route.fetch();
+        const preset = (await response.json()) as {
+            physics: Record<string, number>;
+            gridResolution: number;
+            markersPerCell: number;
+            particleCount: number;
+        };
+        preset.physics.polygonSurface = 1;
+        preset.physics.polygonReconstructionMultiplier = 1;
+        preset.physics.pressureIterations = 2;
+        preset.physics.maxSubsteps = 1;
+        preset.gridResolution = 32;
+        preset.markersPerCell = 2;
+        preset.particleCount = 2_048;
+        await route.fulfill({ response, json: preset });
+    });
+    await page.goto("/lite/demo-aquanova.html");
+    await expect.poll(() => page.evaluate(() => Boolean((window as unknown as { __aquanova?: unknown }).__aquanova)), { timeout: 120_000 }).toBe(true);
+    await expect
+        .poll(() =>
+            page.evaluate(() =>
+                (
+                    window as unknown as {
+                        __aquanova: { fluidSimulationPreparations(): Array<{ setting: string }> };
+                    }
+                ).__aquanova
+                    .fluidSimulationPreparations()
+                    .some((entry) => entry.setting === "capsule-tank")
+            )
+        )
+        .toBe(true);
+    await page.evaluate(() =>
+        (
+            window as unknown as {
+                __aquanova: { emitEntityEvent(name: string, event: string): void };
+            }
+        ).__aquanova.emitEntityEvent("endCorridorTrigger", "triggerActivated")
+    );
+    await expect
+        .poll(
+            () =>
+                page.evaluate(() =>
+                    (
+                        window as unknown as {
+                            __aquanova: { fluidPolygonRendering(): { active: boolean; surfaces: number; triangles: number } };
+                        }
+                    ).__aquanova.fluidPolygonRendering()
+                ),
+            { timeout: 120_000 }
+        )
+        .toMatchObject({ active: true, surfaces: 1 });
+    await expect.poll(() => page.evaluate(() => Number(document.querySelector("canvas")?.dataset.fluidPolygonActive === "true"))).toBe(1);
 });

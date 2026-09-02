@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fetchFluidSetting } from "../../../../lab/lite/src/demos/aquanova/fluid-setting";
+import { exportFluidPresetSession } from "../../../../packages/babylon-lite/src";
 
 describe("Aquanova fluid settings", () => {
     afterEach(() => {
@@ -12,13 +13,23 @@ describe("Aquanova fluid settings", () => {
             json: async () => ({
                 meta: { method: "MLS-MPM" },
                 physics: { gravity: -9.8 },
+                simulationDuration: 12,
+                alphaDecay: 3,
+                futureProduction: { retained: true },
             }),
         });
         vi.stubGlobal("fetch", fetchMock);
 
-        await expect(fetchFluidSetting("liquid-slow")).resolves.toMatchObject({
+        const setting = await fetchFluidSetting("liquid-slow");
+        expect(setting).toMatchObject({
             method: "MLS-MPM",
             physics: { gravity: -9.8 },
+        });
+        const exported = exportFluidPresetSession(setting!.session, { demo: "aquanova", method: setting!.method });
+        expect(exported).toMatchObject({
+            simulationDuration: 12,
+            alphaDecay: 3,
+            futureProduction: { retained: true },
         });
         expect(fetchMock).toHaveBeenCalledWith("/aquanova/fluidSim/liquid-slow.json");
     });

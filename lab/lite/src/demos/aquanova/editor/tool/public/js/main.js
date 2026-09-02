@@ -1829,6 +1829,8 @@ async function refreshProbeWindow(pick = probeSelected) {
     });
   $("probe-show").checked = !!probe?.alwaysVisible;
   $("probe-env").checked = !!probe?.envFaces;
+  $("probe-clip").checked = probe?.clipCapture !== false;
+  $("probe-clip").disabled = !probe;
   $("probe-show").disabled = !probe;
   $("probe-env").disabled = !probe;
   $("probe-shape").disabled = !probe;
@@ -1862,6 +1864,7 @@ async function refreshProbeWindow(pick = probeSelected) {
         (shape === "sphere" ? `sphere radius ${Number(probe.sphereRadius).toFixed(2)} m` : `box ${probe.boxSize.map((n) => Number(n).toFixed(2)).join(" × ")} m`) +
         ` · camera ${probe.capturePosition.map((n) => Number(n).toFixed(2)).join(", ")}` +
         ` · ${state.config.probeResolution}px cubemap` +
+        ` · ${probe.clipCapture === false ? "unclipped capture" : "clipped at faces"}` +
         ` · ${info.generated?.env ? "generated asset available" : "not generated yet"}`;
   await showEnvironmentProbes(probe.id);
 }
@@ -1978,6 +1981,14 @@ $("probe-id").addEventListener("focus", () => {
 $("probe-id").addEventListener("change", () => commitProbe({ rename: true }));
 $("probe-id").addEventListener("blur", () => {
   void refreshProbeWindow(probeSelected);
+});
+
+$("probe-clip").addEventListener("change", (event) => {
+  if (!probeSelected) return;
+  const probe = environmentProbeOf(probeSelected);
+  if (!probe) return;
+  if (!setEnvironmentProbe(probeSelected, { ...probe, clipCapture: event.target.checked })) return;
+  setStatus(`${probeSelected}: capture ${event.target.checked ? "clipped at probe faces" : "allowed beyond probe faces"}`);
 });
 
 /**
@@ -3092,14 +3103,20 @@ async function doLoad() {
  * would make the button do two very different things. A dirty scene is said out
  * loud instead, before the wait rather than after it.
  *
- * The tab is opened only on success, and reused by name, so repeated publishes
- * refresh one demo tab instead of collecting them. A failure leaves the whole
- * script transcript in the console, which is the only place a half-finished
- * publish can be read from.
+ * The named demo tab is blanked before publishing. On Windows, an earlier demo
+ * can still be streaming the large GLB through Vite, which prevents the atomic
+ * replacement until that request is aborted. A failure leaves the tab blank and
+ * the whole script transcript in the console, which is the only place a
+ * half-finished publish can be read from.
  */
 async function doStartDemo() {
   const dirty = isDirty();
   try {
+    // This runs synchronously in the click handler, before the first await, so
+    // browsers permit the tab. Reusing and blanking the named tab also releases
+    // any previous ship.glb response before sync-ship atomically replaces it.
+    const tab = window.open("about:blank", "aquanova-demo");
+    await new Promise((resolve) => setTimeout(resolve, 100));
     // The label is the whole feedback for the length of the run: the busy
     // overlay is over the status bar, and this is a wait measured in seconds at
     // best. So it says which ship is being published, not just that one is.
@@ -3119,14 +3136,14 @@ async function doStartDemo() {
       setStatus(`demo NOT started — ${why}${result.output ? " (the script's output is in the console)" : ""}`);
       return;
     }
-    // Named, so this is the same tab every time.
-    const tab = window.open(result.url, "aquanova-demo");
     const how = result.optimized ? "optimized" : "unoptimized";
     if (!tab) setStatus(`ship published (${how}) — the browser blocked the tab, open ${result.url} yourself`);
-        else
+        else {
+            tab.location = result.url;
             setStatus(
                 dirty ? `ship published (${how}) and demo opened — showing the SAVED ship, not your unsaved changes` : `ship published (${how}) — demo opened at ${result.url}`
             );
+        }
   } catch (e) {
     console.error(e);
     setStatus("demo NOT started: " + e.message);

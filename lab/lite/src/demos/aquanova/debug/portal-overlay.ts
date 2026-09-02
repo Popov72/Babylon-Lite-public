@@ -43,7 +43,7 @@ function frustumLines(camera: FreeCamera, traversal: PortalTraversal): Vec3[][] 
         const dx = corner[0] - cameraPoint[0];
         const dy = corner[1] - cameraPoint[1];
         const dz = corner[2] - cameraPoint[2];
-        const distance = Math.hypot(dx, dy, dz) || 1;
+        const distance = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
         const length = Math.max(distance + 0.1, farDistance);
         return [cameraPoint[0] + (dx / distance) * length, cameraPoint[1] + (dy / distance) * length, cameraPoint[2] + (dz / distance) * length];
     });
