@@ -142,6 +142,7 @@ export type { AttachControlOptions, ArcRotateCameraLimits } from "./camera/arc-r
 export { interpolateArcRotateCamera } from "./camera/arc-rotate-interpolate.js";
 export type { ArcRotateInterpolationGoal, ArcRotateInterpolationOptions } from "./camera/arc-rotate-interpolate.js";
 export { createFreeCamera } from "./camera/free-camera.js";
+export { createBankedFreeCamera } from "./camera/banked-free-camera.js";
 export { attachFreeControl } from "./camera/free-camera-controls.js";
 export { enableOrthographicCamera, disableOrthographicCamera } from "./camera/orthographic.js";
 export type { OrthographicBounds, OrthographicBoundsOptions } from "./camera/orthographic.js";
@@ -454,6 +455,7 @@ export { createCsmRefitGate } from "./shadow/csm-refit-gate.js";
 export { enableMorphTargetShadows } from "./shadow/enable-morph-target-shadows.js";
 export { enableSkeletonShadows } from "./shadow/enable-skeleton-shadows.js";
 export { setShadowTaskCasterMeshes, setShadowCasterMaxCascade } from "./frame-graph/shadow-inputs.js";
+export { setShadowCasterMaterial } from "./material/set-shadow-caster-material.js";
 
 // ─── Animation ───────────────────────────────────────────────────────
 export { createAnimationController } from "./skeleton/skeleton-updater.js";
@@ -608,6 +610,7 @@ export { getEffectiveAspectRatio } from "./camera/camera.js";
 export { resolveCameraViewport } from "./camera/viewport.js";
 export type { PixelViewport } from "./camera/viewport.js";
 export type { FreeCamera } from "./camera/free-camera.js";
+export type { BankedFreeCamera } from "./camera/banked-free-camera.js";
 export type { Mesh, MeshGPU } from "./mesh/mesh.js";
 export { disposeMeshGpu } from "./mesh/mesh-dispose.js";
 export { createSkeleton } from "./skeleton/create-skeleton.js";
@@ -1307,6 +1310,7 @@ export {
     setPhysicsBodyMotionType,
     setPhysicsBodyTransform,
     removePhysicsBody,
+    releasePhysicsConstraint,
     releasePhysicsShape,
     disposePhysics,
     PhysicsShapeType,
@@ -1347,6 +1351,7 @@ export {
     CharacterCollisionObservable,
 } from "./physics/character-controller.js";
 export type { PhysicsCharacterControllerOptions, CharacterSurfaceInfo, CharacterCollisionEvent } from "./physics/character-controller.js";
+export { calculatePhysicsCharacterMovementToRef } from "./physics/character-controller-to-ref.js";
 
 // ─── Navigation (Recast V2) ──────────────────────────────────────────
 export {
