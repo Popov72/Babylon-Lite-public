@@ -24,13 +24,13 @@ import {
     createEngine,
     createSceneContext,
     enableFlowGraphPointerPicking,
+    loadDdsEnvironment,
     loadGltf,
     onBeforeRender,
     registerScene,
     setCameraLimits,
     startEngine,
 } from "babylon-lite";
-import { loadDdsEnvironment } from "babylon-lite/loader-env/load-dds-env";
 import { configureDemoDecoderBases, demoAssetUrl } from "./demo-asset-url.js";
 import { installFetchProgress } from "./loading-progress.js";
 

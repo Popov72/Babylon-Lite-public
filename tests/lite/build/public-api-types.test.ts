@@ -1,6 +1,8 @@
 import { spawnSync } from "child_process";
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { resolve } from "path";
+import { pathToFileURL } from "url";
+import * as ts from "typescript";
 import { beforeAll, describe, expect, it } from "vitest";
 
 const ROOT = resolve(__dirname, "../../..");
@@ -9,6 +11,13 @@ const BUILD_DIR = resolve(PACKAGE_DIR, "build");
 const DTS_PATH = resolve(BUILD_DIR, "index.d.ts");
 const SOURCE_PACKAGE_JSON_PATH = resolve(PACKAGE_DIR, "package.json");
 const PACKAGE_JSON_PATH = resolve(BUILD_DIR, "package.json");
+
+function typescriptFilesUnder(directory: string): string[] {
+    return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+        const path = resolve(directory, entry.name);
+        return entry.isDirectory() ? typescriptFilesUnder(path) : entry.isFile() && entry.name.endsWith(".ts") ? [path] : [];
+    });
+}
 
 // Invoke binaries directly via their JS entry points and the current node
 // executable, so the test does not depend on PATH (which may not contain
@@ -35,6 +44,27 @@ beforeAll(() => {
 }, 300_000);
 
 describe("build/index.d.ts", () => {
+    it("does not export raw fluid backends or low-level GPU helpers at runtime", async () => {
+        const api = (await import(`${pathToFileURL(resolve(BUILD_DIR, "lib/index.js")).href}?raw-fluid-export-check`)) as Record<string, unknown>;
+        for (const name of [
+            "createPbfSim",
+            "createFlipSim",
+            "createMlsMpmSim",
+            "createPbMpmSim",
+            "transferFlipSimState",
+            "createParticleRenderTask",
+            "createFluidSurfaceTask",
+            "createFluidPolygonSurfaceTask",
+            "createFluidRenderCompositor",
+            "createFoamRenderTask",
+            "createFluidProfiler",
+            "GpuReadbackPool",
+            "fluidSimulationBackendForSceneIntegration",
+        ]) {
+            expect(api, `${name} must not be a root runtime export`).not.toHaveProperty(name);
+        }
+    });
+
     it("type-checks cleanly with no references to internal-only types", () => {
         expect(existsSync(DTS_PATH)).toBe(true);
 
@@ -152,6 +182,442 @@ describe("build/index.d.ts", () => {
         expect(dts).toContain('type PhysicsRotationAxis = "x" | "y" | "z"');
         expect(dts).toMatch(/lockPhysicsBodyRotationAxes\(world: PhysicsWorld, body: PhysicsBody, axes: readonly PhysicsRotationAxis\[\]\): void/);
         expect(dts).toMatch(/unlockPhysicsBodyRotationAxes\(world: PhysicsWorld, body: PhysicsBody, axes: readonly PhysicsRotationAxis\[\]\): void/);
+    });
+
+    it("exposes only GPU-safe public fluid declarations and hides low-level solvers", () => {
+        const dts = readFileSync(DTS_PATH, "utf-8");
+        expect(dts).toContain("createFluidSimulation");
+        expect(dts).toContain("interface FluidSimulation");
+        expect(dts).toContain("stepFluidSimulation");
+        expect(dts).toContain("sampleMeshVolume");
+        expect(dts).toContain("generateMeshSdf");
+
+        const source = ts.createSourceFile(DTS_PATH, dts, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+        const declarations = source.statements.filter((statement) => {
+            if (
+                ts.isInterfaceDeclaration(statement) ||
+                ts.isTypeAliasDeclaration(statement) ||
+                ts.isFunctionDeclaration(statement) ||
+                ts.isClassDeclaration(statement) ||
+                ts.isEnumDeclaration(statement)
+            ) {
+                return !!statement.name && /fluid/i.test(statement.name.text);
+            }
+            if (ts.isVariableStatement(statement)) {
+                return statement.declarationList.declarations.some((declaration) => ts.isIdentifier(declaration.name) && /fluid/i.test(declaration.name.text));
+            }
+            return false;
+        });
+
+        expect(declarations.length).toBeGreaterThan(0);
+        for (const declaration of declarations) {
+            const text = declaration.getText(source);
+            for (const gpu of ["GPUBuffer", "GPUTexture", "GPUTextureView", "GPUSampler", "GPUDevice", "GPUCommandEncoder", "GPUQuerySet"]) {
+                expect(text, `public fluid declaration leaks ${gpu}:\n${text}`).not.toContain(gpu);
+            }
+        }
+        for (const internalName of [
+            "FluidSim",
+            "FluidSimBaseOptions",
+            "FluidPolygonSurface",
+            "FluidProfiler",
+            "ForceFieldSpec",
+            "SceneSdfSpec",
+            "createPbfSim",
+            "createFlipSim",
+            "createMlsMpmSim",
+            "createPbMpmSim",
+            "createFloatingBodySystem",
+            "createFluidSurfaceTask",
+            "createFluidPolygonSurfaceTask",
+            "createParticleRenderTask",
+            "GpuReadbackPool",
+            "GpuReadbackPoolOptions",
+            "GpuReadbackSlot",
+            "GpuReadbackState",
+            "adoptFluidParticleChannel",
+            "fluidParticleStreamForSceneIntegration",
+            "fluidSimulationBackendForSceneIntegration",
+            "fluidSimulationProfilerForSceneIntegration",
+            "fluidSimulationRenderLayerDepthForSceneIntegration",
+            "stepFluidSimulationForSceneIntegration",
+        ]) {
+            expect(dts, `${internalName} must be internal`).not.toMatch(new RegExp(`\\b(?:class|interface|function|type) ${internalName}\\b`));
+        }
+    });
+
+    it("keeps public fluid runtime handles as pure state", () => {
+        const dts = readFileSync(DTS_PATH, "utf-8");
+        const source = ts.createSourceFile(DTS_PATH, dts, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+        const names = new Set(["FluidTimestepScheduler", "FluidControlsTransaction", "FluidFlowEditor", "FluidGpuHandle", "FluidControlsHandle", "FluidControlsBinding"]);
+        const interfaces = source.statements.filter((statement): statement is ts.InterfaceDeclaration => ts.isInterfaceDeclaration(statement) && names.has(statement.name.text));
+
+        expect(interfaces.map((declaration) => declaration.name.text).sort()).toEqual([...names].sort());
+        for (const declaration of interfaces) {
+            for (const member of declaration.members) {
+                expect(ts.isMethodSignature(member), `${declaration.name.text} exposes a method`).toBe(false);
+                if (ts.isPropertySignature(member) && member.type) {
+                    expect(ts.isFunctionTypeNode(member.type), `${declaration.name.text}.${member.name.getText(source)} exposes attached behavior`).toBe(false);
+                }
+            }
+        }
+    });
+
+    it("keeps lab demo imports on the single public package entry", () => {
+        const labSource = resolve(ROOT, "lab/lite/src");
+        const demoSource = resolve(labSource, "demos");
+        expect(existsSync(resolve(labSource, "demos/aquanova/gpu-readback.ts"))).toBe(false);
+        const aquanovaRuntime = readFileSync(resolve(labSource, "demos/aquanova/fluid-runtime.ts"), "utf-8");
+        expect(aquanovaRuntime).toContain("createFluidParticleSpatialQuery");
+        expect(aquanovaRuntime).not.toContain("GpuReadbackPool");
+        expect(aquanovaRuntime).not.toMatch(/\bGPU(?:Buffer|Device|CommandEncoder|QuerySet)\b/);
+        for (const file of typescriptFilesUnder(demoSource)) {
+            const source = readFileSync(file, "utf-8");
+            expect(source, file).not.toMatch(/(?:from\s+|import\()["']babylon-lite\//);
+            expect(source, file).not.toMatch(/(?:from\s+|import\()\s*["'][^"']*packages[\\/]babylon-lite[\\/]src(?:[\\/]|["'])/);
+        }
+        for (const file of typescriptFilesUnder(labSource)) {
+            const source = readFileSync(file, "utf-8");
+            expect(source, `${file} duplicates the shared readback pool`).not.toMatch(/\bclass\s+GpuReadbackPool\b/);
+        }
+    });
+
+    it("compiles a minimal root-import-only fluid runtime consumer", () => {
+        const probePath = resolve(BUILD_DIR, "public-fluid-runtime.probe.ts");
+        try {
+            writeFileSync(
+                probePath,
+                `import {
+    applyFluidControls,
+    attachFluidSimulationRenderLayer,
+    beginFluidSimulationProfilerFrame,
+    bindFluidControls,
+    commitFluidReconfiguration,
+    configureFluidSimulationRenderLayer,
+    configureFluidSimulationRenderCompositor,
+    createFluidForceField,
+    createFluidSceneSdf,
+    createFluidSimulation,
+    createFluidSimulationCollection,
+    createFluidSimulationCollectionParticleStream,
+    createFluidSimulationProfiler,
+    createFluidSimulationRenderCompositor,
+    disposeFluidSimulation,
+    disposeFluidSimulationRenderCompositor,
+    endFluidSimulationProfilerFrame,
+    prepareFluidReconfiguration,
+    prepareFluidReconfigurationUpdate,
+    refreshFluidSimulationCollectionParticleStream,
+    setFluidSimulationCollectionSources,
+    readFluidSimulationPressureDiagnostics,
+    readFluidSimulationProfiler,
+    stepFluidSimulation,
+    type Camera,
+    type EngineContext,
+    type FluidControlsBinding,
+    type FluidControlsHandle,
+    type FluidControlValues,
+    type RenderTarget,
+    type SceneContext,
+} from "./index.js";
+
+declare const engine: EngineContext;
+declare const scene: SceneContext;
+declare const camera: Camera;
+declare const depth: RenderTarget;
+declare const output: RenderTarget;
+declare const controlsHandle: FluidControlsHandle;
+declare const controlValues: FluidControlValues;
+
+const options = {
+    method: "PBF" as const,
+    particleCount: 1_000,
+    bounds: { min: [-1, 0, -1] as const, max: [1, 2, 1] as const },
+    physicsScale: 2,
+    physics: { restDensity: 341, relaxation: 50 },
+};
+const sceneSdf = createFluidSceneSdf(engine, {
+    struct: "struct SceneSdfParams { bounds: vec4<f32>, };",
+    sdf: "fn sceneSdf(p: vec3<f32>, dt: f32) -> f32 { return p.y + dt; }",
+    params: new Float32Array(4),
+});
+const forceField = createFluidForceField(engine, {
+    struct: "struct ForceFieldParams { force: vec4<f32>, };",
+    wgsl: "fn externalForce(p: vec3<f32>, v: vec3<f32>, dt: f32) -> vec3<f32> { return v * dt; }",
+    params: new Float32Array(4),
+});
+const profiler = createFluidSimulationProfiler(engine);
+const simulation = createFluidSimulation(engine, { ...options, sceneSdf, forceField, profiler });
+stepFluidSimulation(simulation, 1 / 60);
+const prepared = prepareFluidReconfiguration(simulation, { ...options, particleCount: 2_000, sceneSdf, forceField, profiler });
+commitFluidReconfiguration(prepared);
+const updated = prepareFluidReconfigurationUpdate(simulation, { particleCount: 1_750 }, true);
+commitFluidReconfiguration(updated);
+const collection = createFluidSimulationCollection(engine);
+setFluidSimulationCollectionSources(collection, [{ simulation }]);
+const collectionStream = createFluidSimulationCollectionParticleStream(collection, scene, 2_000, { update: "manual" });
+refreshFluidSimulationCollectionParticleStream(collectionStream);
+const controls: FluidControlsBinding = bindFluidControls({
+    controls: controlsHandle,
+    target: simulation,
+    deviceLimits: {
+        maxStorageBufferBindingSize: 256 * 1024 * 1024,
+        maxBufferSize: 512 * 1024 * 1024,
+        maxTextureDimension2D: 8192,
+    },
+    resolveTarget: (target) => ({
+        simulation: target,
+        options: { ...options, sceneSdf, forceField, profiler },
+    }),
+});
+applyFluidControls(controls, controlValues);
+const layer = attachFluidSimulationRenderLayer(simulation, {
+    scene,
+    camera,
+    mode: "polygon",
+    depthTarget: depth,
+    backgroundTarget: output,
+    outputTarget: output,
+    profile: { polygonShader: "ocean", absorption: 1.5 },
+});
+configureFluidSimulationRenderLayer(layer, { enabled: true, opacity: 0.75, profile: { waterColor: "#4488aa" } });
+const compositor = createFluidSimulationRenderCompositor(engine, { scene, baseColorTarget: output });
+configureFluidSimulationRenderCompositor(compositor, [layer]);
+beginFluidSimulationProfilerFrame(profiler);
+endFluidSimulationProfilerFrame(profiler);
+readFluidSimulationProfiler(profiler);
+readFluidSimulationPressureDiagnostics(simulation);
+disposeFluidSimulationRenderCompositor(compositor);
+disposeFluidSimulation(simulation);
+// @ts-expect-error raw solver state is intentionally unavailable
+simulation.positionBuffer;
+`
+            );
+            const result = spawnSync(
+                NODE,
+                [
+                    TSC_JS,
+                    "--ignoreConfig",
+                    "--noEmit",
+                    "--strict",
+                    "--target",
+                    "es2022",
+                    "--module",
+                    "esnext",
+                    "--moduleResolution",
+                    "bundler",
+                    "--lib",
+                    "es2022,dom,dom.iterable",
+                    "--types",
+                    "webxr",
+                    probePath,
+                ],
+                { cwd: PACKAGE_DIR, encoding: "utf-8" }
+            );
+            expect(result.status, `${result.stdout ?? ""}${result.stderr ?? ""}`).toBe(0);
+        } finally {
+            rmSync(probePath, { force: true });
+        }
+    });
+
+    it("expresses all three fluid host contracts without backend or raw GPU types", () => {
+        const probePath = resolve(BUILD_DIR, "public-fluid-host-contract.probe.ts");
+        const probe = `import {
+    attachFluidSimulationCollectionRenderLayer,
+    commitFluidReconfiguration,
+    configureFluidSimulationRenderLayer,
+    configureFluidSimulationRenderCompositor,
+    createFluidParticleChannel,
+    createFluidParticleSpatialQuery,
+    createFluidRenderEnvironment,
+    createFluidSimulationCollection,
+    createFluidSimulationRenderCompositor,
+    disposeFluidSimulation,
+    fillFluidParticleChannel,
+    getFluidSimulationCollectionDiagnostics,
+    getFluidSimulationDiagnostics,
+    importFluidPresetSession,
+    planFluidInitialState,
+    prepareFluidReconfiguration,
+    readFluidParticleSpatialQuery,
+    readFluidParticleChannel,
+    readFluidSimulationPositions,
+    refreshFluidSimulationCollectionPolygonSurfaces,
+    resetFluidSimulation,
+    sampleFluidParticleSpatialQuery,
+    setFluidSimulationCollectionFlow,
+    setFluidSimulationCollectionFoam,
+    setFluidSimulationCollectionForceField,
+    setFluidSimulationCollectionMaterial,
+    setFluidSimulationCollectionParameter,
+    setFluidSimulationCollectionProfiler,
+    setFluidSimulationCollectionSceneSdf,
+    setFluidSimulationCollectionSources,
+    setFluidSimulationFlow,
+    setFluidSimulationFoam,
+    setFluidSimulationMaterial,
+    setFluidSimulationParameter,
+    stepFluidSimulation,
+    stepFluidSimulationCollection,
+    updateFluidSimulationEmitter,
+    writeFluidSimulationPositions,
+    type Camera,
+    type EngineContext,
+    type FluidExportJson,
+    type FluidForceField,
+    type FluidFlowConfig,
+    type FluidRenderEnvironmentSource,
+    type FluidPresetSession,
+    type FluidSceneSdf,
+    type FluidSimulation,
+    type FluidSimulationOptions,
+    type FluidSimulationProfiler,
+    type PairState,
+    type RenderTarget,
+    type SceneContext,
+} from "./index.js";
+
+declare const engine: EngineContext;
+declare const scene: SceneContext;
+declare const camera: Camera;
+declare const depth: RenderTarget;
+declare const color: RenderTarget;
+declare const simulations: FluidSimulation[];
+declare const flow: FluidFlowConfig;
+declare const sdf: FluidSceneSdf;
+declare const force: FluidForceField;
+declare const profiler: FluidSimulationProfiler;
+declare const nextOptions: FluidSimulationOptions;
+declare const preset: FluidExportJson;
+declare const defaults: PairState;
+declare const localProbeEnvironment: FluidRenderEnvironmentSource;
+
+function driveWhiteboard(simulation: FluidSimulation): void {
+    setFluidSimulationFlow(simulation, flow);
+    updateFluidSimulationEmitter(simulation, flow.emitters[0]!);
+    setFluidSimulationFoam(simulation, {});
+    setFluidSimulationParameter(simulation, "gravity", -9.81);
+    setFluidSimulationMaterial(simulation, 0);
+    resetFluidSimulation(simulation);
+    stepFluidSimulation(simulation, 1 / 60);
+    refreshFluidSimulationCollectionPolygonSurfaces(createFluidSimulationCollection(engine, [simulation]));
+    const prepared = prepareFluidReconfiguration(simulation, nextOptions, true);
+    commitFluidReconfiguration(prepared);
+    getFluidSimulationDiagnostics(simulation);
+}
+
+function driveLiquefactor(): void {
+    const collection = createFluidSimulationCollection(engine, simulations);
+    const alpha = createFluidParticleChannel(engine, { capacity: 600_000, components: 1 });
+    const rgba = createFluidParticleChannel(engine, { capacity: 600_000, components: 4 });
+    fillFluidParticleChannel(alpha, 1);
+    void readFluidParticleChannel(rgba, { particleCount: 4 });
+    setFluidSimulationCollectionSources(
+        collection,
+        simulations.map((simulation) => ({ simulation, alpha, color: rgba, opacity: 1 }))
+    );
+    const surface = attachFluidSimulationCollectionRenderLayer(collection, {
+        scene,
+        camera,
+        mode: "surface",
+        depthTarget: depth,
+        backgroundTarget: color,
+        outputTarget: color,
+        particleCapacity: 600_000,
+    });
+    const polygon = attachFluidSimulationCollectionRenderLayer(collection, {
+        scene,
+        camera,
+        mode: "polygon",
+        depthTarget: depth,
+        backgroundTarget: color,
+        outputTarget: color,
+    });
+    attachFluidSimulationCollectionRenderLayer(collection, {
+        scene,
+        camera,
+        mode: "foam",
+        depthTarget: depth,
+        colorTarget: color,
+        surfaceLayer: polygon,
+    });
+    const compositor = createFluidSimulationRenderCompositor(engine, { scene, baseColorTarget: color, baseLayer: surface });
+    configureFluidSimulationRenderCompositor(compositor, [polygon], surface);
+    setFluidSimulationCollectionFoam(collection, {});
+    setFluidSimulationCollectionParameter(collection, "gravity", -9.81);
+    setFluidSimulationCollectionMaterial(collection, 0);
+    setFluidSimulationCollectionSceneSdf(collection, sdf);
+    setFluidSimulationCollectionForceField(collection, force);
+    setFluidSimulationCollectionProfiler(collection, profiler);
+    stepFluidSimulationCollection(collection, 1 / 60);
+    getFluidSimulationCollectionDiagnostics(collection);
+}
+
+function driveAquanova(): void {
+    const collection = createFluidSimulationCollection(engine, simulations);
+    setFluidSimulationCollectionFlow(collection, flow, true);
+    const layer = attachFluidSimulationCollectionRenderLayer(collection, {
+        scene,
+        camera,
+        mode: "surface",
+        depthTarget: depth,
+        backgroundTarget: color,
+        outputTarget: color,
+        particleCapacity: 600_000,
+    });
+    const stream = layer.particleStream!;
+    configureFluidSimulationRenderLayer(layer, { environment: createFluidRenderEnvironment(localProbeEnvironment) });
+    configureFluidSimulationRenderLayer(layer, {
+        environmentRotationY: Math.PI,
+        surfaceMode: "ellipsoidDebug",
+        particleVelocityBrighten: 0,
+    });
+    const query = createFluidParticleSpatialQuery(engine, { maximumQueries: 1024 });
+    sampleFluidParticleSpatialQuery(query, stream, [{
+        key: "electricity-receiver",
+        offset: 0,
+        count: stream.count,
+        bounds: { min: [-1, -1, -1], max: [1, 1, 1] },
+        sphere: { origin: [0, 0, 0], radius: 4 },
+    }]);
+    readFluidParticleSpatialQuery(query);
+    writeFluidSimulationPositions(simulations[0]!, new Float32Array(4));
+    void readFluidSimulationPositions(simulations[0]!, { particleCount: 1 });
+    disposeFluidSimulation(simulations[0]!);
+}
+
+const initial = planFluidInitialState({ particleCapacity: 1000, particleVolume: 0.001, flow });
+const session: FluidPresetSession = importFluidPresetSession(preset, defaults);
+void [driveWhiteboard, driveLiquefactor, driveAquanova, initial, session];
+`;
+        try {
+            expect(probe).not.toMatch(/\bFluidSim\b|\bGPU(?:Buffer|Texture|TextureView|Sampler|Device|CommandEncoder|QuerySet)\b/);
+            writeFileSync(probePath, probe);
+            const result = spawnSync(
+                NODE,
+                [
+                    TSC_JS,
+                    "--ignoreConfig",
+                    "--noEmit",
+                    "--strict",
+                    "--target",
+                    "es2022",
+                    "--module",
+                    "esnext",
+                    "--moduleResolution",
+                    "bundler",
+                    "--lib",
+                    "es2022,dom,dom.iterable",
+                    "--types",
+                    "webxr",
+                    probePath,
+                ],
+                { cwd: PACKAGE_DIR, encoding: "utf-8" }
+            );
+            expect(result.status, `${result.stdout ?? ""}${result.stderr ?? ""}`).toBe(0);
+        } finally {
+            rmSync(probePath, { force: true });
+        }
     });
 
     it("rejects invalid emitter fields while preserving extended provider options", () => {

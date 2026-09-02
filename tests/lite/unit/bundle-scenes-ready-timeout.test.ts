@@ -23,4 +23,22 @@ describe("bundle scene readiness timeout", () => {
 
         expect(waitForFunction).toHaveBeenCalledWith(expect.any(Function), undefined, { timeout: 150_000 });
     });
+
+    it("rejects zero-payload measurements instead of returning a 0 KB manifest entry", async () => {
+        const page = {
+            on: vi.fn(),
+            route: vi.fn(async () => undefined),
+            goto: vi.fn(async () => undefined),
+            waitForFunction: vi.fn(async () => undefined),
+            evaluate: vi.fn(async () => undefined),
+            close: vi.fn(async () => undefined),
+        };
+        const browser = {
+            newPage: vi.fn(async () => page),
+        };
+
+        await expect(measurePage(browser, 4173, "demo-aquanova-fluid-sim", "lite/demo-aquanova-fluid-sim.html", "/bundle/demos/", true)).rejects.toThrow(
+            /invalid bundle measurement/
+        );
+    });
 });

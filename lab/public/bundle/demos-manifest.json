@@ -1,74 +1,82 @@
 {
   "offscreen": {
-    "rawKB": 220.3,
-    "gzipKB": 91.6
+    "rawKB": 223.4,
+    "gzipKB": 94
   },
   "torus-states": {
-    "rawKB": 27.2,
-    "gzipKB": 9.8
+    "rawKB": 27.5,
+    "gzipKB": 9.9
   },
   "doom": {
-    "rawKB": 127.4,
-    "gzipKB": 42.8
+    "rawKB": 150.8,
+    "gzipKB": 52.9
   },
   "quake": {
-    "rawKB": 129.8,
-    "gzipKB": 47
+    "rawKB": 137.5,
+    "gzipKB": 50.6
   },
   "minecraft": {
-    "rawKB": 108.2,
-    "gzipKB": 38.9
+    "rawKB": 120.1,
+    "gzipKB": 43.7
   },
   "freeciv": {
-    "rawKB": 67.3,
-    "gzipKB": 25.4
+    "rawKB": 69.4,
+    "gzipKB": 26.6
   },
   "tetris": {
-    "rawKB": 73.9,
-    "gzipKB": 27.4
+    "rawKB": 125.4,
+    "gzipKB": 48.6
   },
   "break-meshes": {
-    "rawKB": 183.2,
-    "gzipKB": 70.1
+    "rawKB": 182.2,
+    "gzipKB": 70.4
   },
   "mosquito-amber": {
-    "rawKB": 109,
-    "gzipKB": 43.6
+    "rawKB": 110.8,
+    "gzipKB": 45
   },
   "littlest-tokyo": {
-    "rawKB": 62.9,
-    "gzipKB": 25.6
+    "rawKB": 117.9,
+    "gzipKB": 49.6
   },
   "bath-day": {
-    "rawKB": 182.8,
-    "gzipKB": 63.8
+    "rawKB": 187.2,
+    "gzipKB": 66.3
   },
   "platformer": {
-    "rawKB": 84.3,
-    "gzipKB": 30.1
+    "rawKB": 88,
+    "gzipKB": 31.7
   },
   "calculator": {
     "rawKB": 131.6,
     "gzipKB": 55.4
   },
   "sandblox": {
-    "rawKB": 113.2,
-    "gzipKB": 40.9
+    "rawKB": 149.7,
+    "gzipKB": 55.4
   },
   "racer": {
-    "rawKB": 200.6,
-    "gzipKB": 77
+    "rawKB": 202,
+    "gzipKB": 78
   },
   "screen-space-effects": {
-    "rawKB": 126.3,
-    "gzipKB": 44.4
+    "rawKB": 125.3,
+    "gzipKB": 44.2
   },
   "aquanova": {
-    "rawKB": 704.3,
-    "gzipKB": 241.4
+    "rawKB": 1231.2,
+    "gzipKB": 373.3
   },
   "fluid": {
-    "rawKB": 769,
-    "gzipKB": 243.4
+    "rawKB": 1107.3,
+    "gzipKB": 323.6
+  },
+  "aquanova-fluid-sim": {
+    "rawKB": 1122.8,
+    "gzipKB": 333.8
+  },
+  "npe-sprite2d": {
+    "rawKB": 34,
+    "gzipKB": 21.6
   }
 }
