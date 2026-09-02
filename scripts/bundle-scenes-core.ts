@@ -15,7 +15,14 @@ import { createHash } from "crypto";
 import { resolve, dirname, join, extname } from "path";
 import { rmSync, readdirSync, readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, statSync } from "fs";
 import { minify as terserMinify, type ECMA, type SourceMapOptions } from "terser";
-import { bytesToRoundedKB, IGNORED_BUNDLE_MODULE_PATTERN, isVendorRuntimeChunkFile, summarizeRuntimeBundle, type RuntimeJsPayload } from "./bundle-size-accounting";
+import {
+    bytesToRoundedKB,
+    IGNORED_BUNDLE_MODULE_PATTERN,
+    isVendorRuntimeChunkFile,
+    summarizeRuntimeBundle,
+    type RuntimeBundleSummary,
+    type RuntimeJsPayload,
+} from "./bundle-size-accounting";
 import { wgslMinifyPlugin } from "./wgsl-minify-plugin";
 
 /**
@@ -1901,6 +1908,36 @@ async function installAssetCacheRoute(page: any, port: number): Promise<void> {
     });
 }
 
+function assertValidRuntimeMeasurement(scene: string, summary: RuntimeBundleSummary, chunkFiles: readonly string[]): void {
+    const problems: string[] = [];
+
+    const checkBytes = (label: string, value: number, { allowZero = false } = {}): void => {
+        if (!Number.isFinite(value)) {
+            problems.push(`${label} was ${String(value)}`);
+            return;
+        }
+        if (value < 0) {
+            problems.push(`${label} was negative (${value})`);
+            return;
+        }
+        if (!allowZero && value === 0) {
+            problems.push(`${label} was 0`);
+        }
+    };
+
+    if (chunkFiles.length === 0) {
+        problems.push("no bundle chunk files were observed");
+    }
+    checkBytes("fetched JS bytes", summary.fetchedRawBytes);
+    checkBytes("measured raw bytes", summary.rawBytes);
+    checkBytes("measured gzip bytes", summary.gzipBytes);
+    checkBytes("ignored raw bytes", summary.ignoredRawBytes, { allowZero: true });
+
+    if (problems.length > 0) {
+        throw new Error(`measurePage: scene "${scene}" produced an invalid bundle measurement (${problems.join("; ")}).`);
+    }
+}
+
 export async function measurePage(
     browser: any,
     port: number,
@@ -1915,80 +1952,82 @@ export async function measurePage(
     const chunkFiles: string[] = [];
     const responseReads: Promise<void>[] = [];
     const responseReadErrors: unknown[] = [];
-
-    page.on("response", (resp: any) => {
-        const url = resp.url();
-        if (url.includes(bundlePath) && url.endsWith(".js") && resp.ok()) {
-            const read = (async () => {
-                const idx = url.indexOf(bundlePath);
-                const fileName = url.slice(idx + bundlePath.length).split("?")[0];
-                const body = await resp.body();
-                jsPayloads.push({ file: fileName, body });
-                chunkFiles.push(fileName);
-            })().catch((err: unknown) => {
-                responseReadErrors.push(err);
-            });
-            responseReads.push(read);
-        }
-    });
-
-    await installAssetCacheRoute(page, port);
-    await page.goto(`http://localhost:${port}/${htmlFile}`);
-    // Resolve as soon as the scene finishes (dataset.ready) OR reports a fatal
-    // error (dataset.error), so a fast-failing scene doesn't burn the full timeout.
-    let notReadyReason: string | undefined;
     try {
-        await page.waitForFunction(
-            () => {
-                const c = document.querySelector("canvas");
-                return c?.dataset.ready === "true" || c?.dataset.error != null;
-            },
-            undefined,
-            { timeout: readyTimeoutMs }
-        );
-        notReadyReason = await page.evaluate(() => {
-            const c = document.querySelector("canvas");
-            if (c?.dataset.ready === "true") return undefined;
-            return c?.dataset.error ?? "canvas reported neither ready nor error";
+        page.on("response", (resp: any) => {
+            const url = resp.url();
+            if (url.includes(bundlePath) && url.endsWith(".js") && resp.ok()) {
+                const read = (async () => {
+                    const idx = url.indexOf(bundlePath);
+                    const fileName = url.slice(idx + bundlePath.length).split("?")[0];
+                    const body = await resp.body();
+                    jsPayloads.push({ file: fileName, body });
+                    chunkFiles.push(fileName);
+                })().catch((err: unknown) => {
+                    responseReadErrors.push(err);
+                });
+                responseReads.push(read);
+            }
         });
-    } catch (err) {
-        // Only treat a genuine Playwright timeout as "not ready"; any other error
-        // (page crash, execution context destroyed, navigation failure, …) is a
-        // real failure that must propagate instead of masquerading as a timeout.
-        if (!(err instanceof Error) || err.name !== "TimeoutError") {
-            await page.close();
-            throw err;
+
+        await installAssetCacheRoute(page, port);
+        await page.goto(`http://localhost:${port}/${htmlFile}`);
+        // Resolve as soon as the scene finishes (dataset.ready) OR reports a fatal
+        // error (dataset.error), so a fast-failing scene doesn't burn the full timeout.
+        let notReadyReason: string | undefined;
+        try {
+            await page.waitForFunction(
+                () => {
+                    const c = document.querySelector("canvas");
+                    return c?.dataset.ready === "true" || c?.dataset.error != null;
+                },
+                undefined,
+                { timeout: readyTimeoutMs }
+            );
+            notReadyReason = await page.evaluate(() => {
+                const c = document.querySelector("canvas");
+                if (c?.dataset.ready === "true") return undefined;
+                return c?.dataset.error ?? "canvas reported neither ready nor error";
+            });
+        } catch (err) {
+            // Only treat a genuine Playwright timeout as "not ready"; any other error
+            // (page crash, execution context destroyed, navigation failure, …) is a
+            // real failure that must propagate instead of masquerading as a timeout.
+            if (!(err instanceof Error) || err.name !== "TimeoutError") {
+                throw err;
+            }
+            // waitForFunction timed out: the scene set neither ready nor error.
+            notReadyReason = `timed out after ${Math.round(readyTimeoutMs / 1000)}s waiting for canvas ready/error signal`;
         }
-        // waitForFunction timed out: the scene set neither ready nor error.
-        notReadyReason = `timed out after ${Math.round(readyTimeoutMs / 1000)}s waiting for canvas ready/error signal`;
-    }
 
-    // For Lite scenes (requireReady), a scene that never rendered would under-count
-    // its bundle: the render pipeline's lazily-imported chunks (pbr-renderable,
-    // ibl-fragment, generate-mipmaps, …) only load once the scene renders, so a
-    // failed remote-asset fetch would silently produce a truncated size. Reject the
-    // measurement so the caller can retry / fail loudly instead of recording a bogus
-    // decrease. BJS pages (requireReady=false) may legitimately never reach ready
-    // without a real GPU, so they keep the lenient "measure whatever loaded" behavior.
-    if (requireReady && notReadyReason !== undefined) {
+        // For Lite scenes (requireReady), a scene that never rendered would under-count
+        // its bundle: the render pipeline's lazily-imported chunks (pbr-renderable,
+        // ibl-fragment, generate-mipmaps, …) only load once the scene renders, so a
+        // failed remote-asset fetch would silently produce a truncated size. Reject the
+        // measurement so the caller can retry / fail loudly instead of recording a bogus
+        // decrease. BJS pages (requireReady=false) may legitimately never reach ready
+        // without a real GPU, so they keep the lenient "measure whatever loaded" behavior.
+        if (requireReady && notReadyReason !== undefined) {
+            throw new Error(`measurePage: scene "${scene}" did not become ready (${notReadyReason}); refusing to record a truncated bundle.`);
+        }
+
+        await Promise.all(responseReads);
+        if (responseReadErrors.length > 0) {
+            throw responseReadErrors[0];
+        }
+        const summary = summarizeRuntimeBundle(jsPayloads, bundleInfoDir, scene);
+        const chunks = Array.from(new Set(chunkFiles)).sort();
+        assertValidRuntimeMeasurement(scene, summary, chunks);
+        const ignoredRawKB = bytesToRoundedKB(summary.ignoredRawBytes);
+        const rawBytes = summary.rawBytes;
+
+        return {
+            rawKB: bytesToRoundedKB(rawBytes),
+            rawBytes,
+            gzipKB: bytesToRoundedKB(summary.gzipBytes),
+            ignoredRawKB,
+            chunks,
+        };
+    } finally {
         await page.close();
-        throw new Error(`measurePage: scene "${scene}" did not become ready (${notReadyReason}); refusing to record a truncated bundle.`);
     }
-
-    await Promise.all(responseReads);
-    if (responseReadErrors.length > 0) {
-        throw responseReadErrors[0];
-    }
-    const summary = summarizeRuntimeBundle(jsPayloads, bundleInfoDir, scene);
-    const ignoredRawKB = bytesToRoundedKB(summary.ignoredRawBytes);
-    const rawBytes = summary.rawBytes;
-
-    await page.close();
-    return {
-        rawKB: bytesToRoundedKB(rawBytes),
-        rawBytes,
-        gzipKB: bytesToRoundedKB(summary.gzipBytes),
-        ignoredRawKB,
-        chunks: Array.from(new Set(chunkFiles)).sort(),
-    };
 }
