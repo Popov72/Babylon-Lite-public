@@ -5,6 +5,12 @@
 // through `toLite` before use.
 
 export const SHIP_URL = "/aquanova/ship.glb";
+
+export function resolveShipUrl(search = globalThis.location?.search ?? ""): string {
+    const name = new URLSearchParams(search).get("ship");
+    return name && /^ship-\d+-\d+-(?:raw|opt)\.glb$/.test(name) ? `/aquanova/${name}` : SHIP_URL;
+}
+
 export const MANIFEST_URL = "/aquanova/ship_manifest.json";
 /** Generated spatial box-projected specular environment probes. */
 export const LOCAL_ENVIRONMENTS_URL = "/aquanova/local-environments.json";

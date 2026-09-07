@@ -26,4 +26,14 @@ describe("Aquanova collision module lookup", () => {
         expect(collisionShapesForModule(collision, "Props\\Prop_Crate2")).toBe(shape);
         expect(collisionShapesForModule(collision, "Props/Missing")).toBeUndefined();
     });
+
+    it("does not guess when the same kit-relative id exists in two kits", () => {
+        const collision = {
+            "Kit A/Props/Crate": shape,
+            "Kit B/Props/Crate": { ...shape, centre: [1, 0, 0] as const },
+        };
+
+        expect(collisionShapesForModule(collision, "Props/Crate")).toBeUndefined();
+        expect(collisionShapesForModule(collision, "Kit B/Props/Crate")).toBe(collision["Kit B/Props/Crate"]);
+    });
 });

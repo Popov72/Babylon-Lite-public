@@ -324,32 +324,62 @@ const glbFailures = [];
 }
 
 // ---- every write keeps what it replaced -----------------------------------
-// The manifest, the collision file and the auto-save all rotate a timestamped
-// copy. The collision file was briefly exempted on the reasoning that every
-// manifest carries the same hulls in `moduleShapes` - but that argument is only
-// as good as its source, and when the file was overwritten with nothing the
-// manifest had been emptied in the same breath. The timestamped copies were the
-// only thing that got the work back. This is here so nobody removes them again.
+// The auto-save and every kit collision.json rotate a timestamped copy.
 const rotationFailures = [];
-for (const [route, stem] of [
-  ["collision", "ship_collision"],
-  ["autosave", "ship_autosave"],
-]) {
-  const body = (n) => JSON.stringify({ probe: stem, n });
+{
+  const moduleId = "Modular SciFi MegaKit/Props/__RotationProbe";
+  const body = (n) => JSON.stringify({
+    moduleShapes: {
+      [moduleId]: [{ kind: "box", position: [n, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1] }],
+    },
+  });
   const post = async (n) =>
     page.evaluate(
-      async ([r, b]) =>
+      async (b) =>
         (
-          await fetch(`/api/${r}`, {
+          await fetch("/api/collision", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: b,
           })
         ).json(),
-      [route, body(n)]
+      body(n)
     );
   const first = await post(1);
   await new Promise((r) => setTimeout(r, 1100)); // the stamp is per second
+  const second = await post(2);
+  const written = second.files?.find((file) => file.kit === "Modular SciFi MegaKit");
+  const folder = written ? path.dirname(written.path) : "";
+  const backups = folder
+    ? fs.readdirSync(folder).filter((f) => f.startsWith("collision.") && f !== "collision.json")
+    : [];
+  const kept = backups.some((f) => {
+    const data = JSON.parse(fs.readFileSync(path.join(folder, f), "utf8"));
+    return data.moduleShapes?.["Props/__RotationProbe"]?.[0]?.position?.[0] === 1;
+  });
+  console.log(`rotation kit collision: ${backups.length} backup(s), first write kept: ${kept}`);
+  if (!written?.previous || !kept) {
+    rotationFailures.push(`kit collision: previous=${written?.previous}, first write kept=${kept}`);
+  }
+  void first;
+}
+{
+  const stem = "ship_autosave";
+  const body = (n) => JSON.stringify({ probe: stem, n });
+  const post = async (n) =>
+    page.evaluate(
+      async (b) =>
+        (
+          await fetch("/api/autosave", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: b,
+          })
+        ).json(),
+      body(n)
+    );
+  const first = await post(1);
+  await new Promise((r) => setTimeout(r, 1100));
   const second = await post(2);
   const backups = fs.readdirSync(EXPORT).filter((f) => f.startsWith(`${stem}.`) && f !== `${stem}.json`);
   const kept = backups.some((f) => JSON.parse(fs.readFileSync(path.join(EXPORT, f), "utf8")).n === 1);

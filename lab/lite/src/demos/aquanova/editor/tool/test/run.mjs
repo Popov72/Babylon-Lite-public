@@ -18,6 +18,7 @@ const PORT = Number(process.env.SHIP_TEST_PORT || 5199);
 const URL = `http://localhost:${PORT}/`;
 
 const scratch = await fsp.mkdtemp(path.join(os.tmpdir(), "scifiship-test-"));
+const collisionScratch = path.join(scratch, "kits");
 
 // e2e checks that a manifest and .glb the tool did not write are preserved on
 // first save, so seed a pair that look like something else's output.
@@ -25,7 +26,12 @@ await fsp.writeFile(path.join(scratch, "ship_manifest.json"),
   JSON.stringify({ generator: "other", units: "metres", chunks: [] }, null, 2));
 await fsp.writeFile(path.join(scratch, "ship.glb"), Buffer.alloc(2048, 7));
 
-const env = { ...process.env, SHIP_EXPORT_DIR: scratch, SHIP_PORT: String(PORT) };
+const env = {
+  ...process.env,
+  SHIP_EXPORT_DIR: scratch,
+  SHIP_COLLISION_KITS_DIR: collisionScratch,
+  SHIP_PORT: String(PORT),
+};
 const server = spawn(process.execPath, [path.join(ROOT, "server.mjs")],
   { cwd: ROOT, env, stdio: ["ignore", "pipe", "pipe"] });
 server.stdout.on("data", (d) => process.stdout.write(`  [server] ${d}`));

@@ -4427,6 +4427,7 @@ async function restoreFrom(data) {
   loadModuleCollision(
     data.moduleShapes || moduleShapesFromRuntime(data.moduleCollision),
     data.stageLayout);
+  hooks.setStageViewpoint?.(data.stageView);
   // buildManifest() writes chunks as rich objects; serialize() writes plain
   // ids. Accept either so a saved manifest reloads cleanly.
   const ids = (data.chunks || []).map((c) => (typeof c === "string" ? c : c.id)).filter(Boolean);

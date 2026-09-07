@@ -238,11 +238,9 @@ function collisionByChunk() {
  * The manifest's `space` block names every field's space, so this can be
  * asserted rather than remembered.
  *
- * `moduleShapes` beside it is the same hulls in the editor's own coordinates -
- * the authoring source both this and the editor's reload come from. The two are
- * one transform apart, which is why they are two keys and not one: they were
- * one key once, and a reload silently threw every shape away because the reader
- * expected the other form.
+ * The owning kit's `collision.json` stores the same hulls in the editor's own
+ * coordinates. The editor merges those files into `state.moduleCollision`;
+ * this function derives the runtime form from that authoritative state.
  */
 function moduleCollision() {
   const out = {};
@@ -422,7 +420,7 @@ export function buildManifest() {
                 "portals",
                 "doors",
             ],
-      editor: ["instances", "markers", "colliders", "lights", "moduleShapes", "stageLayout", "view"],
+      editor: ["instances", "markers", "colliders", "lights", "stageLayout", "stageView", "view"],
             none: [
                 "generator",
                 "schema",
@@ -492,7 +490,7 @@ export function buildManifest() {
     // at all, because restoreFrom() reads this key and nothing wrote it.
     colliders: layout.colliders,
     // Authored lights, each riding a placement. Editor space and local to the
-    // owner, like `moduleShapes`: this is what the tool reloads from. What the
+    // owner, like kit collision transforms: this is what the tool reloads from. What the
     // RUNTIME reads is the exported TransformNode's own extras, not this - so
     // the two never have to agree about handedness.
     lights: layout.lights,
@@ -513,13 +511,13 @@ export function buildManifest() {
     // Take the *transform* from the loaded glTF node, not from `instances`:
     // the node is in the same space as this block, and `instances` is not.
     collision: collisionByChunk(),
-    // What each kit module carries, in its own local space, in Havok's terms -
-    // one shape per module, for the runtime to instance and to share.
+    // Derived runtime cache of what each kit module carries, in its own local
+    // space and in Havok's terms. The authoritative editor-space transforms
+    // live at `<kit>/collision.json`; this block lets the game run without
+    // fetching the authoring files.
     moduleCollision: moduleCollision(),
-    // The same hulls in the editor's own coordinates. The authoring source both
-    // of the above and the editor's own reload come from.
-    moduleShapes: layout.moduleShapes,
     stageLayout: layout.stageLayout,
+    stageView: hooks.stageViewpoint?.() || null,
     activeChunk: layout.activeChunk,
     // The sims a liquefied element may use. Seeded from the tool's config.json,
     // but a loaded ship's own list wins - see restoreFrom - so the two cannot
@@ -543,6 +541,10 @@ export function buildManifest() {
 }
 
 export async function saveLayout(name) {
+  // Kit collision is authoritative, so it is written first. A failed kit write
+  // must not leave a newly saved ship claiming that its stale runtime cache is
+  // the current one.
+  const collision = await saveCollision();
   const body = JSON.stringify(buildManifest(), null, 2);
   const url = name ? `/api/layout?name=${encodeURIComponent(name)}` : "/api/layout";
   const res = await fetch(url, {
@@ -551,23 +553,10 @@ export async function saveLayout(name) {
     body,
   });
   if (!res.ok) throw new Error(await res.text());
-  // Collision goes to its own file as well as into the manifest. The manifest
-  // is this ship; the file is the kit's, and is what you carry to the next one.
-  //
-  // A failure here must not fail the save: the ship is already written, and
-  // throwing would leave the editor believing it had unsaved work - which is
-  // exactly what happened against a server too old to know this route.
-    let collision = null,
-        collisionError = null;
-  try {
-    collision = await saveCollision();
-  } catch (e) {
-    collisionError = e.message || String(e);
-  }
-  return { ...(await res.json()), collision, collisionError };
+  return { ...(await res.json()), collision };
 }
 
-/** Write the per-module collision to its own file. */
+/** Split per-module collision into one collision.json at each kit root. */
 export async function saveCollision() {
     const body = JSON.stringify(
         {
@@ -576,14 +565,8 @@ export async function saveCollision() {
     savedAt: new Date().toISOString(),
     units: "metres",
             note:
-                "Collision authored per kit module, in each module's local space." + " Editor space: the manifest's own collision block is the mirrored," + " runtime-facing copy.",
+                "Collision authored per kit module, in each module's local editor space." + " The server splits this aggregate into each kit root.",
     moduleShapes: serializeModuleCollision(),
-    // What is on the collision staging area - read live if it is open, and from
-    // the last time it closed if it is not. Purely an authoring convenience,
-    // and no part of the ship.
-            stageLayout: (hooks.stageLayoutNow?.() || state.stageLayout).map((s) => ({ module: s.module, position: [...s.position] })),
-    // and where you were standing on the bench, so a reload puts you back
-    stageView: hooks.stageViewpoint?.() || null,
         },
         null,
         2
@@ -603,6 +586,9 @@ export async function saveAutosave() {
     const body = JSON.stringify(
         {
     ...buildManifest(),
+    // Recovery keeps unsaved kit work too. Deliberate ship saves omit this
+    // authoring block because each kit's collision.json owns it.
+    moduleShapes: serializeModuleCollision(),
     generator: "SciFiShip layout tool (auto-save)",
     autoSaved: true,
         },
@@ -619,11 +605,10 @@ export async function saveAutosave() {
 }
 
 /**
- * Read the per-module collision back from its own file.
+ * Read and merge the per-kit collision files.
  *
- * The file wins over whatever the ship manifest carries: it is the one you
- * shipped with the kit, and the point of having it is that a new ship starts
- * with every hull already fitted.
+ * The kit files win over the runtime cache in the ship manifest. Their point is
+ * that a new ship starts with every reusable hull already fitted.
  */
 export async function loadCollision() {
   const res = await fetch("/api/collision");
@@ -631,8 +616,13 @@ export async function loadCollision() {
   const data = await res.json();
   const shapes = data?.moduleShapes || data?.moduleCollision;
   if (!shapes || !Object.keys(shapes).length) return null;
-  loadModuleCollision(shapes, data.stageLayout);
-  hooks.setStageViewpoint?.(data.stageView);
+  loadModuleCollision(shapes);
+  // One-time compatibility for the old aggregate file. New kit files never
+  // contain ship/editor bench state.
+  if (data.legacy) {
+    if (Array.isArray(data.legacyStageLayout)) state.stageLayout = data.legacyStageLayout;
+    hooks.setStageViewpoint?.(data.legacyStageView);
+  }
   emit("colliders");
   return shapes;
 }
@@ -645,8 +635,8 @@ export async function loadLayout(name) {
     const data = await res.json();
     if (!data.instances) return null;    // a pre-schema-1 manifest, not reloadable
     await deserialize(data);
-    // The shipped collision file wins over whatever this ship's manifest
-    // carries, so a new ship built from the same kit starts fully fitted.
+    // The owning kit files win over the runtime cache in this ship's manifest,
+    // so a new ship built from the same kits starts fully fitted.
     await loadCollision();
     applyView(data.view);                // older manifests simply have none
     applyEnvironment(data.environment, data.editorEnvironment);
@@ -658,9 +648,10 @@ export async function loadLayout(name) {
 /**
  * Copy what is on disk into the demo, by running `sync-ship.ts` server-side.
  *
- * This publishes the **saved** ship: the manifest, collision hulls, probes and
- * glb the export folder holds right now. Unsaved edits in the viewport are not
- * part of it, which is why the caller says so before starting.
+ * This publishes the **saved** ship: the manifest (including its derived
+ * runtime collision), probes and glb the export folder holds right now.
+ * Unsaved edits in the viewport are not part of it, which is why the caller
+ * says so before starting.
  *
  * The script's own success is `ok`; a `false` with no `output` means the server
  * could not run it at all. Either way the whole transcript comes back, because

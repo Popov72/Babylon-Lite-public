@@ -46,12 +46,11 @@ export interface AxialCollisionShape extends ShapeCommon {
 }
 export type ShipCollisionShape = BoxCollisionShape | SphereCollisionShape | AxialCollisionShape;
 
-const KIT_MODULE_PREFIX = "Modular SciFi MegaKit/";
-
 /**
- * Resolve collision authored under either the full catalogue id or the GLB's kit-relative module id.
- * The editor manifest currently writes `Modular SciFi MegaKit/Platforms/...`, while baked GLB node
- * extras write `Platforms/...`; treating those as different modules silently removes all collision.
+ * Resolve collision authored under either a full catalogue id or a historic
+ * kit-relative GLB module id. Relative ids are accepted only when they identify
+ * exactly one kit: choosing one of two `Props/Crate` entries would attach the
+ * wrong hull silently.
  */
 export function collisionShapesForModule(
     moduleCollision: Readonly<Record<string, ShipCollisionShape | readonly ShipCollisionShape[]>> | undefined,
@@ -63,8 +62,17 @@ export function collisionShapesForModule(
     const normalized = module.replaceAll("\\", "/").replace(/^\.?\//, "");
     const normalizedExact = moduleCollision[normalized];
     if (normalizedExact) return normalizedExact;
-    const relative = normalized.startsWith(KIT_MODULE_PREFIX) ? normalized.slice(KIT_MODULE_PREFIX.length) : normalized;
-    return moduleCollision[relative] ?? moduleCollision[`${KIT_MODULE_PREFIX}${relative}`];
+    const suffix = `/${normalized}`;
+    const matches = Object.entries(moduleCollision).filter(([key]) => key.replaceAll("\\", "/").endsWith(suffix));
+    if (matches.length === 1) return matches[0]![1];
+
+    const parts = normalized.split("/");
+    if (parts.length > 2) {
+        const relative = parts.slice(1).join("/");
+        const relativeExact = moduleCollision[relative];
+        if (relativeExact) return relativeExact;
+    }
+    return undefined;
 }
 
 /** One placed kit module. `node` is the glTF node name, which is what entity behaviours key off. */

@@ -281,6 +281,19 @@ function serveReferenceImages(): Plugin {
                         return;
                     }
                 }
+                // Editor publishes use immutable, versioned ship files so an existing
+                // tab streaming an older GLB cannot lock the next publish on Windows.
+                // Serve them directly because ignored public files are not added to
+                // Vite's startup-time public-file cache.
+                if (/^\/aquanova\/ship-\d+-\d+-(?:raw|opt)\.glb$/.test(url)) {
+                    const filePath = resolve(__dirname, "public", url.slice(1));
+                    if (existsSync(filePath) && statSync(filePath).isFile()) {
+                        res.setHeader("Content-Type", "model/gltf-binary");
+                        res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+                        createReadStream(filePath).pipe(res);
+                        return;
+                    }
+                }
                 // Serve pre-built bundle JS (scenes + demos) directly from lab/public/bundle.
                 // Vite caches the public-file list at startup and never refreshes it for paths
                 // matching `server.watch.ignored` (which includes **/public/bundle/**). So any
@@ -904,7 +917,7 @@ export default defineConfig({
                 "**/public/bundle/**",
                 "**/public/gl/bundle/**",
                 "**/public/bundle-baseline/**",
-                "**/public/aquanova/ship.glb",
+                "**/public/aquanova/ship*.glb",
                 "**/public/api-docs/**",
                 "**/public/lite/api-docs/**",
                 "**/public/gl/api-docs/**",

@@ -3237,7 +3237,7 @@ check(
     `veiled=${modeTools.veiled} hidden=${modeTools.gone} restored=${modeTools.back}`
 );
 
-// leaving keeps everything, and collision travels in its own file
+// leaving keeps everything, and collision travels in the owning kit files
 const closed = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const co = await import("/js/colliders.js");
@@ -3251,7 +3251,7 @@ const closed = await page.evaluate(async () => {
     stored: ed.state.moduleCollision.size,
   };
 
-  // The collision file is server state shared by the whole run, so put back
+  // The collision files are server state shared by the whole run, so put back
   // exactly what was there. Saving the *ship* here would be worse still: it
   // would become what every later boot restores, and the suite would stop
   // being repeatable - which is precisely how it first went wrong.
@@ -3314,7 +3314,7 @@ const noDupes = await page.evaluate(
     inCollision: flat.length,
     kinds: flat.map((s) => s.kind),
     inModuleCollision: (man.moduleCollision[a] || []).length,
-    inModuleShapes: (man.moduleShapes[a] || []).length,
+    hasModuleShapes: Object.hasOwn(man, "moduleShapes"),
     // everything the runtime needs to place the hull itself
             instanceHasAll: man.instances.every((x) => x.module && x.chunk && x.position && x.rotation && x.scale),
   };
@@ -3335,13 +3335,13 @@ check(
   noDupes.inCollision === 1 && noDupes.kinds.join() === "sphere",
     `${noDupes.inCollision} record(s): ${JSON.stringify(noDupes.kinds)}`
 );
-check("the authoring form is there too, once per module", noDupes.inModuleShapes === 1, `${noDupes.inModuleShapes}`);
+check("the ship omits the kit-owned authoring form", noDupes.hasModuleShapes === false, `${noDupes.hasModuleShapes}`);
 check("and every instance carries what it takes to place the hull", noDupes.instanceHasAll === true);
 
 // ---- 1d-trestricies. the bench keeps what you left on it ------------------
 // Coming back to a blank stage after stepping out to look at the ship was the
-// wrong default: the area is a workbench. The roster rides in the collision
-// file, so it survives a reload as well as a trip back to the ship.
+// wrong default: the area is a workbench. The roster rides in the ship
+// manifest, so it survives a reload as well as a trip back to the ship.
 const bench = await page.evaluate(
     async ([a, b]) => {
   const ed = await import("/js/editor.js");
@@ -7291,11 +7291,10 @@ check(
 check("the toolbar controls it replaced are gone", viewModes.gone.length === 0, `still present: ${viewModes.gone.join()}`);
 check("both lighting rigs live on the Settings pane", viewModes.inSettings.length === 0, `not in Settings: ${viewModes.inSettings.join()}`);
 
-// ---- 1d-tervicies. Save writes the manifest and the glb together ------------
+// ---- 1d-tervicies. Save writes kit collision, manifest and glb together -----
 // They describe one thing: the runtime loads the geometry from the glb and
-// everything else - rooms, portals, collision, lamps - out of the manifest. A
-// manifest saved without its glb is a ship whose description and geometry
-// disagree.
+// everything else - rooms, portals, collision, lamps - out of the manifest,
+// whose module collision is derived from the owning kit files.
 const saveBoth = await page.evaluate(async () => {
   const realFetch = window.fetch;
   const posted = [];
@@ -7303,7 +7302,10 @@ const saveBoth = await page.evaluate(async () => {
     const u = String(url);
     if (opts?.method === "POST" && /\/api\/(layout|export|collision)/.test(u)) {
       posted.push(u.replace(location.origin, ""));
-            return Promise.resolve(new Response(JSON.stringify({ ok: true, bytes: 1048576, path: "x" }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      const response = u.includes("/api/collision")
+        ? { ok: true, count: 0, files: [] }
+        : { ok: true, bytes: 1048576, path: "x" };
+      return Promise.resolve(new Response(JSON.stringify(response), { status: 200, headers: { "Content-Type": "application/json" } }));
     }
     return realFetch(url, opts);
   };
@@ -7318,8 +7320,9 @@ const saveBoth = await page.evaluate(async () => {
   return { posted, status: document.getElementById("status-text").textContent };
 });
 check(
-    "one Save writes both files and says so",
-    saveBoth.posted.some((u) => u.includes("/api/layout")) &&
+    "one Save writes kit collision, manifest and glb and says so",
+    saveBoth.posted.some((u) => u.includes("/api/collision")) &&
+        saveBoth.posted.some((u) => u.includes("/api/layout")) &&
         saveBoth.posted.some((u) => u.includes("/api/export")) &&
         /saved \d+ bytes/.test(saveBoth.status) &&
         /MB →/.test(saveBoth.status),

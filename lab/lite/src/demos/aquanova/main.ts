@@ -186,7 +186,7 @@ import {
     MAX_WALKABLE_SLOPE_COSINE,
     PLAYER_CAPSULE_HEIGHT,
     PLAYER_CAPSULE_RADIUS,
-    SHIP_URL,
+    resolveShipUrl,
     SKYBOX_EXT,
     SKYBOX_SIZE,
     SKYBOX_URL,
@@ -354,7 +354,7 @@ export async function main(): Promise<void> {
     // ── Load the ship ──────────────────────────────────────────────────────────────────────
     // Authored runtime lamps provide direct lighting. Bounded local probes loaded below provide
     // diffuse SH and specular radiance; there is deliberately no scene-global environment.
-    const ship = await loadGltf(engine, SHIP_URL);
+    const ship = await loadGltf(engine, resolveShipUrl());
     const shipRoot = ship.entities[0] as SceneNode;
     for (const animation of ship.animationGroups ?? []) {
         stopAnimation(animation);

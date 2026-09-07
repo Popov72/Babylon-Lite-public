@@ -51,6 +51,11 @@ const ONLINE_BASE = String(KITS.onlineBase || "https://assets.babylonjs.com/").r
 // cannot drift apart.
 const KITS_PREFIX = String(KITS.prefix || "kits").replace(/^\/+|\/+$/g, "");
 const KITS_DIR = path.join(ASSETS_DIR, KITS_PREFIX);
+// Production writes collision beside the kit models. Tests override only this
+// root so they can keep using the real catalogue without touching BabylonAssets.
+const COLLISION_KITS_DIR = process.env.SHIP_COLLISION_KITS_DIR
+  ? path.resolve(HERE, process.env.SHIP_COLLISION_KITS_DIR)
+  : KITS_DIR;
 // Which kit the palette opens on, first installed name wins. The list itself
 // is alphabetical; this only picks the one to start on.
 const KIT_FOLDERS = Array.isArray(KITS.folders) ? KITS.folders : [];
@@ -74,13 +79,10 @@ const TURN_DIR = path.join(HERE, "cache", "turntable");
 const LAYOUT_DIR = path.join(HERE, "layouts");
 
 const MANIFEST = path.join(EXPORT_DIR, "ship_manifest.json");
-const COLLISION = path.join(EXPORT_DIR, "ship_collision.json");
+const LEGACY_COLLISION = path.join(EXPORT_DIR, "ship_collision.json");
 // Compound definitions - the recipes the compound editor saves. Beside the
-// collision file and for the same reason: it is authoring data that has to
-// travel with the project, is reusable across ships, and is emphatically not
-// something to write into a kit folder. Kit folders are re-scanned from disk on
-// every catalogue request and are replaced wholesale when a kit is downloaded
-// again, so anything the editor wrote there would vanish without a trace.
+// manifest because they are project authoring data, not a property of any one
+// kit module. Collision differs: it belongs beside the kit that owns it.
 const COMPOUNDS = path.join(EXPORT_DIR, "ship_compounds.json");
 const AUTOSAVE = path.join(EXPORT_DIR, "ship_autosave.json");
 const GLB = path.join(EXPORT_DIR, "ship.glb");
@@ -510,6 +512,171 @@ function mergeCompounds(categories, seen, kits) {
   }
 }
 
+const COLLISION_KINDS = new Set(["box", "sphere", "cylinder", "capsule"]);
+
+function validCollisionVector(value) {
+  return Array.isArray(value) && value.length === 3
+    && value.every((component) => Number.isFinite(Number(component)));
+}
+
+function validModuleShape(shape) {
+  return shape && COLLISION_KINDS.has(shape.kind)
+    && validCollisionVector(shape.position)
+    && validCollisionVector(shape.rotation)
+    && validCollisionVector(shape.scale);
+}
+
+function qualifyCollisionKey(kit, key) {
+  const normalized = String(key || "").replaceAll("\\", "/").replace(/^\.?\//, "");
+  if (!normalized || normalized.split("/").some((part) => !part || part === "." || part === "..")) return null;
+  return normalized.startsWith(`${kit}/`) ? normalized : `${kit}/${normalized}`;
+}
+
+function relativeCollisionKey(kit, key) {
+  const full = qualifyCollisionKey(kit, key);
+  if (!full || !full.startsWith(`${kit}/`)) return null;
+  const relative = full.slice(kit.length + 1);
+  return relative.split("/").length === 2 ? relative : null;
+}
+
+function validateModuleShapes(moduleShapes, kits) {
+  if (!moduleShapes || typeof moduleShapes !== "object" || Array.isArray(moduleShapes)) {
+    throw new Error("moduleShapes must be an object");
+  }
+  const installed = new Set(kits);
+  const grouped = new Map();
+  for (const [moduleId, shapes] of Object.entries(moduleShapes)) {
+    const normalized = String(moduleId).replaceAll("\\", "/").replace(/^\.?\//, "");
+    const cut = normalized.indexOf("/");
+    const kit = cut > 0 ? normalized.slice(0, cut) : "";
+    const relative = kit ? relativeCollisionKey(kit, normalized) : null;
+    if (!installed.has(kit) || !relative) {
+      throw new Error(`collision module is not in an installed kit: ${JSON.stringify(moduleId)}`);
+    }
+    if (!Array.isArray(shapes) || !shapes.length || shapes.some((shape) => !validModuleShape(shape))) {
+      throw new Error(`invalid collision shapes for ${JSON.stringify(moduleId)}`);
+    }
+    if (!grouped.has(kit)) grouped.set(kit, {});
+    grouped.get(kit)[relative] = shapes;
+  }
+  return grouped;
+}
+
+async function readKitCollision() {
+  const moduleShapes = {};
+  const files = [];
+  for (const kit of await kitFolders()) {
+    const file = path.join(COLLISION_KITS_DIR, kit, "collision.json");
+    let parsed;
+    try {
+      parsed = JSON.parse(await fsp.readFile(file, "utf8"));
+    } catch (error) {
+      if (error?.code === "ENOENT") continue;
+      throw new Error(`could not read ${file}: ${error.message || error}`);
+    }
+    const shapes = parsed?.moduleShapes;
+    if (!shapes || typeof shapes !== "object" || Array.isArray(shapes)) {
+      throw new Error(`${file} has no moduleShapes object`);
+    }
+    let count = 0;
+    for (const [key, records] of Object.entries(shapes)) {
+      const full = qualifyCollisionKey(kit, key);
+      if (!full || !relativeCollisionKey(kit, full)
+        || !Array.isArray(records) || !records.length
+        || records.some((shape) => !validModuleShape(shape))) {
+        throw new Error(`invalid collision record ${JSON.stringify(key)} in ${file}`);
+      }
+      moduleShapes[full] = records;
+      count++;
+    }
+    files.push({ kit, path: file, count });
+  }
+
+  // One release of the editor used a ship-wide aggregate. Reading it only when
+  // no kit file exists gives old checkouts a migration path without allowing
+  // the legacy copy to override the new owners.
+  if (!files.length) {
+    try {
+      const legacy = JSON.parse(await fsp.readFile(LEGACY_COLLISION, "utf8"));
+      const shapes = legacy?.moduleShapes;
+      if (shapes && typeof shapes === "object" && !Array.isArray(shapes)) {
+        Object.assign(moduleShapes, shapes);
+        return {
+          schema: 1,
+          moduleShapes,
+          legacy: true,
+          legacyStageLayout: legacy.stageLayout,
+          legacyStageView: legacy.stageView,
+          files: [],
+        };
+      }
+    } catch (error) {
+      if (error?.code !== "ENOENT") {
+        throw new Error(`could not read legacy collision file ${LEGACY_COLLISION}: ${error.message || error}`);
+      }
+    }
+  }
+  return { schema: 1, moduleShapes, files };
+}
+
+async function writeKitCollision(moduleShapes) {
+  const kits = await kitFolders();
+  const grouped = validateModuleShapes(moduleShapes, kits);
+
+  const files = [];
+  for (const kit of kits) {
+    const file = path.join(COLLISION_KITS_DIR, kit, "collision.json");
+    const records = Object.fromEntries(Object.entries(grouped.get(kit) || {}).sort(([a], [b]) => a.localeCompare(b)));
+    let current = null;
+    try {
+      current = JSON.parse(await fsp.readFile(file, "utf8"));
+    } catch (error) {
+      if (error?.code !== "ENOENT") {
+        throw new Error(`could not read ${file} before writing: ${error.message || error}`);
+      }
+    }
+    const currentRecords = current?.moduleShapes && typeof current.moduleShapes === "object"
+      ? Object.fromEntries(Object.entries(current.moduleShapes).sort(([a], [b]) => a.localeCompare(b)))
+      : null;
+    if (currentRecords && JSON.stringify(currentRecords) === JSON.stringify(records)) {
+      files.push({
+        kit,
+        path: file,
+        count: Object.keys(records).length,
+        bytes: (await fsp.stat(file)).size,
+        previous: null,
+        unchanged: true,
+      });
+      continue;
+    }
+    const text = `${JSON.stringify({
+      generator: "SciFiShip layout tool",
+      schema: 1,
+      savedAt: new Date().toISOString(),
+      units: "metres",
+      kit,
+      note: "Collision authored in module-local editor space. Keys are relative to this kit root.",
+      moduleShapes: records,
+    }, null, 2)}\n`;
+    await fsp.mkdir(path.dirname(file), { recursive: true });
+    const previous = await rotatePrevious(file);
+    await fsp.writeFile(file, text);
+    files.push({
+      kit,
+      path: file,
+      count: Object.keys(records).length,
+      bytes: Buffer.byteLength(text),
+      previous: previous ? path.basename(previous) : null,
+      unchanged: false,
+    });
+  }
+  return {
+    ok: true,
+    count: Object.keys(moduleShapes).length,
+    files,
+  };
+}
+
 async function buildCatalogue() {
   const names = await kitFolders();
   const categories = [];
@@ -845,9 +1012,10 @@ function findTsxCli() {
  *
  * The script writes into `lab/public/aquanova`, so two of them interleaved
  * would be two writers over one folder. The editor disables its own button for
- * the duration, but that is one tab's opinion - the lock is here.
+ * the duration, but that is one tab's opinion. Concurrent requests join the
+ * active publish so another editor tab does not fail with HTTP 409.
  */
-let syncing = false;
+let activeSync = null;
 
 /**
  * Run sync-ship.ts and report what it said.
@@ -863,10 +1031,13 @@ let syncing = false;
 async function runSyncShip(optimize) {
   if (!SYNC_SCRIPT) return { ok: false, error: "config.json has no demo.syncScript" };
   if (!fs.existsSync(SYNC_SCRIPT)) return { ok: false, error: `${SYNC_SCRIPT} does not exist` };
+  if (!fs.existsSync(GLB)) return { ok: false, error: `${GLB} does not exist` };
   const tsx = findTsxCli();
   if (!tsx) return { ok: false, error: "node_modules/tsx not found — run pnpm install in the repository" };
 
-  const args = [tsx.cli, SYNC_SCRIPT];
+  const source = fs.statSync(GLB, { bigint: true });
+  const shipName = `ship-${source.size}-${source.mtimeNs}-${optimize ? "opt" : "raw"}.glb`;
+  const args = [tsx.cli, SYNC_SCRIPT, "--ship-output-name", shipName];
   // The flag the script actually takes. Optimising is opt-IN because it runs
   // toktx over every texture on the ship, which is minutes rather than the
   // second a plain copy costs - and what a publish is usually for is looking at
@@ -874,33 +1045,36 @@ async function runSyncShip(optimize) {
   if (!optimize) args.push("--no-ship-optimize");
   const command = `node ${args.map((a) => (a.includes(" ") ? `"${a}"` : a)).join(" ")}`;
 
-  syncing = true;
-  try {
-    return await new Promise((resolve) => {
-      const child = spawn(process.execPath, args, { cwd: tsx.root });
-      let output = "";
-      // Interleaved into one string on purpose: the script reports progress on
-      // stdout and its errors on stderr, and which line came after which is
-      // most of what makes a failure readable.
-      const collect = (chunk) => { output += chunk.toString(); };
-      child.stdout.on("data", collect);
-      child.stderr.on("data", collect);
-      const timer = setTimeout(() => {
-        output += `\n[server] no answer after ${Math.round(SYNC_TIMEOUT_MS / 60000)} minutes — killed\n`;
-        child.kill();
-      }, SYNC_TIMEOUT_MS);
-      child.on("error", (err) => {
-        clearTimeout(timer);
-        resolve({ ok: false, error: String(err && err.message || err), command, output });
-      });
-      child.on("close", (code) => {
-        clearTimeout(timer);
-        resolve({ ok: code === 0, code, command, output, optimized: !!optimize });
-      });
+  return await new Promise((resolve) => {
+    const child = spawn(process.execPath, args, { cwd: tsx.root });
+    let output = "";
+    // Interleaved into one string on purpose: the script reports progress on
+    // stdout and its errors on stderr, and which line came after which is
+    // most of what makes a failure readable.
+    const collect = (chunk) => { output += chunk.toString(); };
+    child.stdout.on("data", collect);
+    child.stderr.on("data", collect);
+    const timer = setTimeout(() => {
+      output += `\n[server] no answer after ${Math.round(SYNC_TIMEOUT_MS / 60000)} minutes — killed\n`;
+      child.kill();
+    }, SYNC_TIMEOUT_MS);
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      resolve({ ok: false, error: String(err && err.message || err), command, output, shipName });
     });
-  } finally {
-    syncing = false;
-  }
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({ ok: code === 0, code, command, output, optimized: !!optimize, shipName });
+    });
+  });
+}
+
+function runOrJoinSyncShip(optimize) {
+  if (activeSync) return activeSync;
+  activeSync = runSyncShip(optimize).finally(() => {
+    activeSync = null;
+  });
+  return activeSync;
 }
 
 // ------------------------------------------------------------------ routes
@@ -1021,33 +1195,25 @@ async function handle(req, res) {
   }
 
   if (p === "/api/collision") {
-    // Collision authored per kit module, kept in its own file so it can be
-    // shipped and reused: a new ship built from the same kit gets every hull
-    // back without authoring any of it again. The manifest carries the same
-    // data for the runtime, but this is the copy meant to travel.
+    // Each kit owns one collision.json at its root. The browser still sees one
+    // aggregate map, so previews and the collision bench do not care which kit
+    // a module came from; this route qualifies keys on read and splits them on
+    // write.
     if (req.method === "GET") {
-      try {
-        return send(res, 200, await fsp.readFile(COLLISION), MIME[".json"]);
-      } catch {
-        return sendJson(res, 200, {});
-      }
+      return sendJson(res, 200, await readKitCollision());
     }
     if (req.method === "POST") {
-      const body = await readBody(req);
-      await fsp.mkdir(path.dirname(COLLISION), { recursive: true });
-      // Rotated, like the manifest. This was briefly not rotated, on the
-      // reasoning that every manifest carries the same hulls in `moduleShapes`
-      // so a copy could always be rebuilt. That reasoning is only as good as
-      // the source: when this file was once overwritten with nothing, the
-      // manifest had been emptied in the same breath, and the timestamped
-      // copies were the only thing that got the work back. Cheap files beat
-      // clever arguments.
-      const previous = await rotatePrevious(COLLISION);
-      await fsp.writeFile(COLLISION, body);
-      return sendJson(res, 200, {
-        ok: true, path: COLLISION, bytes: body.length,
-        previous: previous ? path.basename(previous) : null,
-      });
+      let parsed;
+      try {
+        parsed = JSON.parse((await readBody(req)).toString("utf8"));
+      } catch {
+        return sendJson(res, 400, { ok: false, error: "body is not JSON" });
+      }
+      try {
+        return sendJson(res, 200, await writeKitCollision(parsed?.moduleShapes));
+      } catch (error) {
+        return sendJson(res, 400, { ok: false, error: error.message || String(error) });
+      }
     }
     return send(res, 405, "method not allowed");
   }
@@ -1083,8 +1249,8 @@ async function handle(req, res) {
       }
       const text = `${JSON.stringify({ schema: 1, compounds: list }, null, 2)}\n`;
       await fsp.mkdir(path.dirname(COMPOUNDS), { recursive: true });
-      // Rotated for the same reason the collision file is: these are hand-built
-      // and there is no second copy of them anywhere.
+      // Rotated because these are hand-built and there is no second copy of
+      // them anywhere.
       const previous = await rotatePrevious(COMPOUNDS);
       await fsp.writeFile(COMPOUNDS, text);
       return sendJson(res, 200, {
@@ -1196,15 +1362,16 @@ async function handle(req, res) {
   // The editor opens the tab itself, so a failed publish opens nothing.
   if (p === "/api/sync-ship" && req.method === "POST") {
     if (!DEMO_URL) return sendJson(res, 501, { ok: false, error: "config.json has no demo.url" });
-    if (syncing) return sendJson(res, 409, { ok: false, error: "a publish is already running" });
     let optimize = false;
     try {
       const body = await readBody(req, 64 * 1024);
       const text = body.toString("utf8").trim();
       if (text) optimize = !!JSON.parse(text)?.optimize;
     } catch { return sendJson(res, 400, { ok: false, error: "body is not JSON" }); }
-    const result = await runSyncShip(optimize);
-    return sendJson(res, 200, { ...result, url: DEMO_URL });
+    const result = await runOrJoinSyncShip(optimize);
+    const demoUrl = new URL(DEMO_URL);
+    if (result.ok && result.shipName) demoUrl.searchParams.set("ship", result.shipName);
+    return sendJson(res, 200, { ...result, url: demoUrl.href });
   }
 
   if (p.startsWith("/environments/")) {
@@ -1257,6 +1424,7 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, () => {
   console.log(`ship layout tool   http://localhost:${PORT}`);
   console.log(`kits (${KITS_SOURCE})${" ".repeat(Math.max(1, 12 - KITS_SOURCE.length))}${KITS_SOURCE === "online" ? `${ONLINE_BASE}${KITS_PREFIX}/` : KITS_DIR}`);
+  if (COLLISION_KITS_DIR !== KITS_DIR) console.log(`kit collision      ${COLLISION_KITS_DIR}`);
   console.log(`export             ${EXPORT_DIR}`);
   if (!fs.existsSync(KITS_DIR)) {
     console.warn(`WARNING: ${KITS_DIR} does not exist - set kits.localDir in config.json or SHIP_ASSETS_DIR.`);

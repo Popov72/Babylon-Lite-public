@@ -3049,7 +3049,9 @@ async function doSave() {
     pruned = pruneOrphanEntities();
     const r = await saveLayout();
     markSaved();
-        const coll = r.collisionError ? ` — collision file NOT written: ${r.collisionError}` : r.collision ? `, collision → ${r.collision.path.split(/[\\/]/).pop()}` : "";
+        const coll = r.collision
+          ? `, collision → ${r.collision.count} module(s) across ${r.collision.files.length} kit(s)`
+          : "";
         saved = r.previous ? `saved ${r.bytes} bytes → ${r.path} (previous kept as ${r.previous})${coll}` : `saved ${r.bytes} bytes → ${r.path}${coll}`;
     } catch (e) {
         setStatus("save failed: " + e.message);
@@ -3103,10 +3105,9 @@ async function doLoad() {
  * would make the button do two very different things. A dirty scene is said out
  * loud instead, before the wait rather than after it.
  *
- * The named demo tab is blanked before publishing. On Windows, an earlier demo
- * can still be streaming the large GLB through Vite, which prevents the atomic
- * replacement until that request is aborted. A failure leaves the tab blank and
- * the whole script transcript in the console, which is the only place a
+ * The named demo tab is blanked before publishing so an old versioned GLB can
+ * be cleaned up as soon as its request closes. A failure leaves the tab blank
+ * and the whole script transcript in the console, which is the only place a
  * half-finished publish can be read from.
  */
 async function doStartDemo() {
@@ -3114,7 +3115,7 @@ async function doStartDemo() {
   try {
     // This runs synchronously in the click handler, before the first await, so
     // browsers permit the tab. Reusing and blanking the named tab also releases
-    // any previous ship.glb response before sync-ship atomically replaces it.
+    // its previous versioned ship response so a later publish can remove it.
     const tab = window.open("about:blank", "aquanova-demo");
     await new Promise((resolve) => setTimeout(resolve, 100));
     // The label is the whole feedback for the length of the run: the busy

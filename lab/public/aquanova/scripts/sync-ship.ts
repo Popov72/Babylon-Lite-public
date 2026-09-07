@@ -1,8 +1,9 @@
 /**
  * Publish the Aquanova editor's ship export into `lab/public/aquanova`.
  *
- * The ship is compressed to runtime-ready Meshopt/KTX2 data, while the authored manifest,
- * collision hulls, and converted local environment probes are copied alongside it.
+ * The ship is compressed to runtime-ready Meshopt/KTX2 data, while the authored manifest
+ * and converted local environment probes are copied alongside it. Reusable collision is
+ * authored in each kit; the manifest already carries its derived runtime block.
  *
  * Usage:
  *   pnpm tsx lab/public/aquanova/scripts/sync-ship.ts [options]
@@ -10,7 +11,7 @@
 
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, copyFile, open, readFile, rename, rm, writeFile, stat, access } from "node:fs/promises";
+import { mkdtemp, mkdir, copyFile, open, readFile, readdir, rename, rm, writeFile, stat, access } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -144,6 +145,7 @@ type AuthoredProbe = AuthoredProbeBase &
 interface Options {
     src: string;
     out: string;
+    shipOutputName: string;
     force: boolean;
     shipOptimize: boolean;
     shipUastcLevel: number;
@@ -155,6 +157,7 @@ function parseArgs(argv: readonly string[]): Options {
     const opts: Options = {
         src: DEFAULT_SRC,
         out: DEFAULT_OUT,
+        shipOutputName: "ship.glb",
         force: false,
         shipOptimize: true,
         shipUastcLevel: 2,
@@ -177,9 +180,14 @@ function parseArgs(argv: readonly string[]): Options {
             opts.src = path.resolve(argv[++i]!);
         } else if (a === "--out") {
             opts.out = path.resolve(argv[++i]!);
+        } else if (a === "--ship-output-name") {
+            opts.shipOutputName = argv[++i]!;
         } else {
             throw Error(`unknown option ${a}`);
         }
+    }
+    if (path.basename(opts.shipOutputName) !== opts.shipOutputName || !/^ship(?:-\d+-\d+-(?:raw|opt))?\.glb$/.test(opts.shipOutputName)) {
+        throw Error("--ship-output-name must be ship.glb or a generated ship-<size>-<mtime>-<raw|opt>.glb name");
     }
     return opts;
 }
@@ -278,6 +286,26 @@ async function copyIfChanged(src: string, dst: string): Promise<boolean> {
     }
     await replaceFileAtomically(src, dst);
     return true;
+}
+
+async function pruneVersionedShips(outputDir: string, currentName: string): Promise<void> {
+    if (currentName === "ship.glb") {
+        return;
+    }
+    const keep = new Set([currentName, `${currentName}.stamp`]);
+    for (const name of await readdir(outputDir)) {
+        if (keep.has(name) || !/^ship-\d+-\d+-(?:raw|opt)\.glb(?:\.stamp)?$/.test(name)) {
+            continue;
+        }
+        try {
+            await rm(path.join(outputDir, name), { force: true });
+        } catch (error) {
+            if (!isWindowsSharingViolation(error)) {
+                throw error;
+            }
+            console.log(`in use   ${name}  (will retry cleanup on the next publish)`);
+        }
+    }
 }
 
 async function readLocalEnvironmentIndex(sourceDir: string): Promise<SourceLocalEnvironmentIndex | null> {
@@ -573,14 +601,16 @@ async function main(): Promise<void> {
         await assertLocalEnvironmentsReady(generatedDir, localSource);
     }
 
-    const shipName = "ship.glb";
-    const shipSource = path.join(opts.src, shipName);
-    const shipDestination = path.join(opts.out, shipName);
+    const shipSource = path.join(opts.src, "ship.glb");
+    const shipDestination = path.join(opts.out, opts.shipOutputName);
     await publishShipGlb(shipSource, shipDestination, opts);
-    for (const name of ["ship_manifest.json", "ship_collision.json"]) {
+    for (const name of ["ship_manifest.json"]) {
         const copied = await copyIfChanged(path.join(opts.src, name), path.join(opts.out, name));
         console.log(`${copied ? "copied " : "current"}  ${name}`);
     }
+    // Removed source format: reusable authoring collision now lives at each
+    // kit root, while the manifest carries only the derived runtime block.
+    await rm(path.join(opts.out, "ship_collision.json"), { force: true });
 
     if (localSource) {
         const outEnvironments = path.join(opts.out, "environments");
@@ -650,6 +680,7 @@ async function main(): Promise<void> {
         }
         await writeFile(path.join(opts.out, "local-environments.json"), `${JSON.stringify(localRuntime, null, 1)}\n`);
     }
+    await pruneVersionedShips(opts.out, opts.shipOutputName);
 }
 
 main().catch((err: unknown) => {

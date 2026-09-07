@@ -992,8 +992,8 @@ So the split is by **who reads the field**:
 | `chunks[].aabb` — min/max swap with the flip     | `instances[]`           |
 | `portals[].centre` / `normal` / `corners`        | `markers[]`             |
 | `doors[].position` / `direction`                 | `colliders[]`           |
-| `collision[chunk]`                               | `moduleShapes[]`        |
-| `moduleCollision[module]` — **local**, see below | `stageLayout[]`, `view` |
+| `collision[chunk]`                               | `stageLayout[]`         |
+| `moduleCollision[module]` — **local**, see below | `stageView`, `view`     |
 
 The right-hand column is the tool's own reload data: it exists to rebuild the
 editor and never leaves it. The left-hand column is everything the game
@@ -1021,8 +1021,8 @@ declared, so a new block cannot ship without someone saying what space it is in.
 >   mirrored, which looks correct on anything symmetrical.
 >
 > Mirroring `instances[]` as well would make the runtime-facing half uniform,
-> but it would not make the _file_ uniform: `colliders`, `moduleShapes`,
-> `stageLayout` and `view` are authoring data and would still be editor space,
+> but it would not make the _file_ uniform: `colliders`, `stageLayout`,
+> `stageView` and `view` are authoring data and would still be editor space,
 > and `instances` is what the editor reloads from, so it would need un-mirroring
 > on load and a schema bump to keep old manifests readable. The line has to fall
 > somewhere; saying where is worth more than moving it.
@@ -2838,8 +2838,8 @@ is far too much to hang off a button you press to look around.
 **The bench keeps what you left on it.** Closing the area records which modules
 were on it and where, and re-opening puts them back. Coming back to a blank
 stage after stepping out to look at the ship was the wrong default: this is a
-workbench, not a dialog. The roster rides in the collision file, so it survives
-a reload as well as a trip back to the ship.
+workbench, not a dialog. The roster rides in the ship manifest, so it survives a
+reload as well as a trip back to the ship.
 
 **Each side keeps its own viewpoint.** Coming back to the ship pointing at a
 barrel, or to the bench pointing across the ship, meant finding your bearings
@@ -2855,7 +2855,7 @@ file as well, so a reload puts you back where you were working.
 > "the view was not restored" — because it wasn't. The test missed it for the
 > same reason: it drove the camera with `setTarget`, the one gesture that keeps
 > the target honest. It now aims by rotation, the way a user does, and checks
-> the rotation comes back too. `stageView` in the collision file therefore holds
+> the rotation comes back too. `stageView` in the ship manifest therefore holds
 > `{position, rotation}`; an older `{position, target}` entry is dropped on load
 > rather than misapplied.
 
@@ -2913,21 +2913,28 @@ catches all of them, including any added later. Each shape remembers which
 element claimed it, so a move knows whose shapes to carry without re-deciding
 ownership half way through.
 
-### Collision travels in its own file
+### Collision belongs to each kit
 
-Saving writes `ship_collision.json` beside `ship_manifest.json`, and loading
-reads it back **in preference to whatever the ship carries**. That is the whole
-point of it living apart: the collision is a property of the _kit_, not of any
-one ship, so once these hulls are fitted the file can be shipped and the next
-ship built from the same kit starts fully fitted.
+Saving splits reusable module hulls into one `collision.json` at each owning kit
+root:
 
-**A failure writing it does not fail the save.** The ship is already on disk by
-then, and throwing would leave the editor believing it had unsaved work — which
-is exactly what happened against a server too old to know the route: every save
-appeared to fail, and every reload warned about losing changes that were in fact
-safely written. The status line names the problem instead.
+```
+BabylonAssets/kits/<kit>/collision.json
+```
 
-The manifest carries three collision blocks, and they are **not** three copies
+Keys inside a kit file are relative (`Props/Prop_Crate2`); the editor qualifies
+them as `<kit>/Props/Prop_Crate2` while merging every installed kit. Every
+discovered kit gets a file, with an empty `moduleShapes` object until something
+is fitted. An unchanged file is left untouched; each changed file is
+timestamp-rotated before replacement.
+
+The kit files are authoritative and are written **before** the ship manifest. A
+kit write failure therefore fails the save instead of leaving a fresh manifest
+with a stale derived runtime block. Ship-local collision-bench state
+(`stageLayout` and `stageView`) stays in `ship_manifest.json`; it is not a
+property of a reusable kit.
+
+The manifest carries two runtime collision blocks, and they are **not** copies
 of the same thing:
 
 - `collision[chunk]` — a room's **own** one-off shapes, world space, in Havok's
@@ -2935,11 +2942,8 @@ of the same thing:
 - `moduleCollision[moduleId]` — what a kit module carries, in the module's own
   local space, in Havok's parameters. **Written once per module**, for the
   runtime to instance onto every placement of it and to share one Havok shape
-  between them.
-- `moduleShapes[moduleId]` — the same hulls in the **authoring** form: editor
-  coordinates, position/rotation/scale. The source the tool reloads from, and
-  what `moduleCollision` is derived from — exactly the way `colliders` relates
-  to `collision`.
+  between them. This is a derived cache of the kit files, so the game does not
+  fetch editor-space authoring data.
 - `colliders` — the editor's record of the _room's_ shapes.
 
 **A module's hull is deliberately not expanded per placement.** It used to be,
@@ -2950,10 +2954,9 @@ transform, which is everything required to place the hull. On a 114-instance
 ship dropping the expansion took the manifest from 87 KB to 69 KB, and the gap
 widens with every room.
 
-`moduleCollision` and `moduleShapes` were once the same key, and a reload
-silently produced empty shape lists: the reader expects editor coordinates and
-filtered out every runtime-shaped record. One name, one meaning. A manifest
-written before the split is converted on load rather than lost.
+`ship_autosave.json` still includes `moduleShapes` as recovery data, so an
+unsaved collision-bench edit is recoverable after a crash. A deliberate
+`ship_manifest.json` does not: the owning kit files are its source.
 
 ### Seeing collision the ship inherits
 
@@ -4690,9 +4693,11 @@ demo:
 pnpm tsx lab/public/aquanova/scripts/sync-ship.ts
 ```
 
-It takes `export/ship.glb`, `export/ship_manifest.json`,
-`export/ship_collision.json` and the whole of `export/environments/`, and writes
-them under `lab/public/aquanova/`. The `.stamp` beside each `.env` is what lets
+It takes `export/ship.glb`, `export/ship_manifest.json` and the whole of
+`export/environments/`, and writes them under `lab/public/aquanova/`. Reusable
+collision is already present in the manifest as its derived runtime block; the
+kit `collision.json` files are editor sources and are not published. The
+`.stamp` beside each `.env` is what lets
 it refuse a half-captured folder: a probe whose stamp does not match the digest
 in `local-environments.json` has not finished being taken, and publishing it
 would ship a cubemap of a room that no longer exists.
@@ -4717,13 +4722,12 @@ npm test           # spins up a private server and runs every suite
 ```
 
 The runner starts its own server instance on port 5199 pointed at a **throwaway
-export directory**, runs the three suites against it, then deletes it. A test
-run therefore cannot touch a real ship — earlier the suites saved and exported
-straight into `export/`, which would have overwritten whatever you were working
-on. `SHIP_EXPORT_DIR` and `SHIP_PORT` override `config.json` if you want to
-point a server anywhere else. `SHIP_TEST_KEEP=1` leaves the throwaway directory
-behind instead of deleting it, which is the only way to look at the `.glb`, the
-manifest and the captured `.env` cubemaps a failing run actually produced.
+export directory and kit-collision root**, runs the suites against it, then
+deletes it. A test run therefore cannot touch a real ship or any
+`BabylonAssets/kits/*/collision.json`. `SHIP_EXPORT_DIR`,
+`SHIP_COLLISION_KITS_DIR` and `SHIP_PORT` provide the corresponding server
+overrides. `SHIP_TEST_KEEP=1` leaves the throwaway directory behind instead of
+deleting it.
 
 Individual suites can still be run by hand, but they will not guess a server:
 
@@ -4742,9 +4746,9 @@ directory the two before it left behind.
 > suite by hand pointed it straight at the ship being built. The suites are
 > destructive: they call `clearAll()`, place and delete elements, change
 > settings and let the auto-save tick fire. Doing it once wrote a one-instance
-> manifest over `ship_autosave.json` and an empty hull set over
-> `ship_collision.json` (73 modules and 163 shapes, gone), recoverable only
-> because the server keeps timestamped backups of every write.
+> manifest over `ship_autosave.json` and an empty hull set over the collision
+> store, recoverable only because the server keeps timestamped backups of every
+> write.
 >
 > `test/target.mjs` now refuses to start without `TOOL_URL`, and refuses 5180
 > even when named unless `TOOL_URL_I_MEAN_IT=yes`. The convenience of a default
@@ -4800,15 +4804,12 @@ true`, so it is never mistaken for a deliberate save.
 
 ### Why every write is rotated
 
-`ship_manifest.json`, `ship_collision.json` and `ship_autosave.json` all keep a
-timestamped copy of what they replaced.
+`ship_manifest.json`, `ship_autosave.json` and every kit-root `collision.json`
+keep a timestamped copy of what they replaced.
 
-The collision file was briefly exempted, on the reasoning that every manifest
-carries the same hulls in `moduleShapes`, so a lost copy could always be
-rebuilt. **That reasoning is only as good as its source.** It was overwritten
-with an empty file once, and the manifest had been emptied in the same breath —
-so the derived-from argument was worth nothing, and the timestamped copies were
-the only thing that got the work back.
+Collision is the irreplaceable authoring source even though the manifest carries
+a derived runtime block. Rotating each kit independently preserves the pack
+being edited without duplicating unrelated kits into the same backup.
 
 Storage is cheap and these files are kilobytes. Recovering an afternoon is not.
 
