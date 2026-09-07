@@ -798,9 +798,13 @@ export function resolveFluidGridCompatibility(
         };
     }
     const availableBytes = fluidParticleBufferLimitBytes(limits);
-    const requiredBytes = method === "FLIP" ? fluidFlipMacBufferBytes(dim, paging) : dim[0] * dim[1] * dim[2] * 16;
+    const usesPagedGrid = (method === "FLIP" || method === "MLS-MPM") && paging?.enabled === true;
+    const requestedPageCount = Number.isFinite(paging?.maxPages) ? Math.max(1, Math.floor(paging?.maxPages ?? 1)) : 1;
+    const mlsPageCount = Math.min(mpmBlockCount(dim), requestedPageCount);
+    const requiredBytes =
+        method === "FLIP" ? fluidFlipMacBufferBytes(dim, paging) : method === "MLS-MPM" && usesPagedGrid ? (mlsPageCount + 1) * MPM_PAGE_BYTES : dim[0] * dim[1] * dim[2] * 16;
     if (requiredBytes > availableBytes) {
-        const subject = method === "FLIP" && paging?.enabled ? `Page capacity ${paging.maxPages.toLocaleString()}` : `Grid ${dim.join(" \u00d7 ")}`;
+        const subject = usesPagedGrid ? `Page capacity ${requestedPageCount.toLocaleString()}` : `Grid ${dim.join(" \u00d7 ")}`;
         return {
             compatible: false,
             code: "storage-binding-limit",

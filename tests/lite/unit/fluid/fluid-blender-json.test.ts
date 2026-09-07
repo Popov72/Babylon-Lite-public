@@ -105,6 +105,26 @@ describe("Blender FLIP Fluids exporter", () => {
         preset.physics.liquidViscosity = 1.001;
         expect(() => parseBlenderFluidJson(selfContainedJson(preset))).toThrow(/liquidViscosity/);
     });
+
+    it("accepts zero MLS-MPM ground damping", () => {
+        const preset = validPreset();
+        preset.meta.method = "MLS-MPM";
+        preset.physics = {
+            gravity: 9.8,
+            stiffness: 60,
+            viscosity: 0.01,
+            restDensity: 10,
+            damping: 0.998,
+            affineDamping: 1,
+            groundDamp: 0,
+            groundDampHeight: 0,
+            restitution: 0,
+            substeps: 2,
+            maxSubDtMs: 8.4,
+        };
+
+        expect(parseBlenderFluidJson(selfContainedJson(preset)).preset.physics.groundDamp).toBe(0);
+    });
 });
 
 function validPreset(): FluidExportJson {

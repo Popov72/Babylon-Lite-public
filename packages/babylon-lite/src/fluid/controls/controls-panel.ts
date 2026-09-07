@@ -500,7 +500,7 @@ export const DEFAULT_FLUID_SCHEMAS: Record<string, PhysSchemaEntry[]> = {
         {
             key: "groundDamp",
             label: "Ground damping",
-            min: 0.7,
+            min: 0,
             max: 1,
             step: 0.01,
             value: 0.85,

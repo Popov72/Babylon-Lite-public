@@ -39,6 +39,10 @@ describe("fluid controls capabilities contract", () => {
         expect(DEFAULT_FLUID_SCHEMAS["PB-MPM"]!.find((entry) => entry.key === "liquidViscosity")?.max).toBe(1);
     });
 
+    it("allows MLS-MPM ground damping down to zero", () => {
+        expect(DEFAULT_FLUID_SCHEMAS["MLS-MPM"]!.find((entry) => entry.key === "groundDamp")?.min).toBe(0);
+    });
+
     it("gates timing on device timestamp-query support with an optimistic default", () => {
         expect(resolveFluidControlsCapabilities({ method: "FLIP" }).timing).toBe(true);
         expect(resolveFluidControlsCapabilities({ method: "FLIP", timestampQuerySupported: false }).timing).toBe(false);

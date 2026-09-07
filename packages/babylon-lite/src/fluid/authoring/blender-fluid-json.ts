@@ -77,7 +77,7 @@ const PHYSICS_LIMITS: Record<string, Record<string, readonly [number, number]>> 
         restDensity: [1, 100],
         damping: [0.9, 1],
         affineDamping: [0.1, 1],
-        groundDamp: [0.7, 1],
+        groundDamp: [0, 1],
         groundDampHeight: [0, 10],
         restitution: [0, 1],
         substeps: [1, 8],

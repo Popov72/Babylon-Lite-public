@@ -171,7 +171,7 @@ import { createPostProcessTask } from "babylon-lite";
 import { demoAssetUrl } from "./demo-asset-url.js";
 import type { DemoParam, FluidCtx, FluidDemo, FluidDomainBounds, FluidGridSettings, PairState, PendingForce } from "./fluid/demo.js";
 import { getQualityPreset, QUALITIES, DEFAULT_QUALITY, loadQualityPresets, type Quality } from "./fluid/quality-presets.js";
-import { ENV_STUDIO_URL } from "./fluid/demo.js";
+import { ENV_STUDIO_URL, INTERACTIVE_FORCE_SAMPLE_HOLD_MS } from "./fluid/demo.js";
 import {
     cellSizeForPhysicsScale,
     FLIP_DEFAULT_MARKERS_PER_CELL,
@@ -512,7 +512,9 @@ async function main(): Promise<void> {
         grid: FluidGridSettings,
         method: string,
         physicsSize: number,
-        flipPaging: { enabled: boolean; maxPages: number } = { enabled: flipPagedGrid, maxPages: flipPagedGridMaxPages },
+        paging: { enabled: boolean; maxPages: number } = method === "MLS-MPM"
+            ? { enabled: mpmPagedGrid, maxPages: mpmPagedGridMaxPages }
+            : { enabled: flipPagedGrid, maxPages: flipPagedGridMaxPages },
         flipResolution = flipGridResolution
     ): string | undefined => {
         const cells = gridCellsForSettings(grid, method, physicsSize, flipResolution);
@@ -522,7 +524,7 @@ async function main(): Promise<void> {
         } else {
             throw new RangeError(`[fluid] unsupported allocation method ${method}.`);
         }
-        return resolveFluidGridCompatibility(allocationMethod, cells, deviceLimits, allocationMethod === "FLIP" ? flipPaging : undefined).message;
+        return resolveFluidGridCompatibility(allocationMethod, cells, deviceLimits, allocationMethod === "FLIP" || allocationMethod === "MLS-MPM" ? paging : undefined).message;
     };
 
     // Gridless presets retain the historical hidden domain multiplier. Once a pair has an
@@ -4420,8 +4422,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                 methodName,
                 nextPhysicsScale,
                 {
-                    enabled: methodName === "FLIP" ? nextPagedGrid : flipPagedGrid,
-                    maxPages: methodName === "FLIP" ? nextPagedGridMaxPages : flipPagedGridMaxPages,
+                    enabled: (methodName === "FLIP" || methodName === "MLS-MPM") && nextPagedGrid,
+                    maxPages: nextPagedGridMaxPages,
                 },
                 nextGridResolution
             );
@@ -4974,14 +4976,13 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             captureStarted = true;
             canvas.dataset.captureStarted = "true";
         }
-        // Interactive push force: enabled ONLY while a push is pending, so the
-        // dedicated force compute pass is dispatched (and first-compiled) only during
-        // an active Shift+RMB drag. Idle frames disable it — nothing force-related runs.
-        if (pendingForce) {
+        // Keep the latest pointer sample alive briefly: MLS-MPM may defer a whole step
+        // while asynchronous status buffers are unavailable.
+        if (pendingForce && pendingForce.expiresAt >= performance.now()) {
             rayForce.setRay(pendingForce.origin, pendingForce.dir, pendingForce.push, pendingForce.radius, pendingForce.accel);
             setFluidSimulationForceField(activeSim, forceFieldHandle(rayForce.spec));
-            pendingForce = null;
         } else {
+            pendingForce = null;
             setFluidSimulationForceField(activeSim, forceFieldHandle(importedScene ? null : (activeDemo?.forceField?.() ?? null)));
         }
         // "P" pauses: freeze the obstacles + the solver so the fluid stops advancing.
@@ -5024,6 +5025,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     canvas.addEventListener("pointerdown", (e) => {
         if (isForceGesture(e)) {
             forceDragging = true;
+            pendingForce = null;
             canvas.setPointerCapture(e.pointerId);
             forceLastX = e.clientX;
             forceLastY = e.clientY;
@@ -5036,7 +5038,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         if (forceDragging) {
             // Push the fluid: direction = screen motion mapped into world space via
             // the camera basis; magnitude ∝ mouse speed (px/s); origin/dir = the
-            // cursor ray. Applied for one frame by the loop (see pendingForce).
+            // cursor ray. The loop retains the latest sample briefly across deferred steps.
             const dx = e.clientX - forceLastX;
             const dy = e.clientY - forceLastY;
             const now = performance.now();
@@ -5062,7 +5064,14 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             px /= plen;
             py /= plen;
             pz /= plen;
-            pendingForce = { origin: ray.origin, dir: ray.dir, push: [px, py, pz], radius: FORCE_RADIUS, accel: speed * 0.5 };
+            pendingForce = {
+                origin: ray.origin,
+                dir: ray.dir,
+                push: [px, py, pz],
+                radius: FORCE_RADIUS,
+                accel: speed * 0.5,
+                expiresAt: now + INTERACTIVE_FORCE_SAMPLE_HOLD_MS,
+            };
         } else if (!importedScene) {
             activeDemo?.onPointerMove?.(e);
         }
@@ -5070,7 +5079,9 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     const onPointerEnd = (e: PointerEvent): void => {
         if (forceDragging) {
             forceDragging = false;
-            pendingForce = null;
+            if (e.type === "pointercancel") {
+                pendingForce = null;
+            }
             canvas.releasePointerCapture(e.pointerId);
         } else if (!importedScene) {
             activeDemo?.onPointerUp?.(e);

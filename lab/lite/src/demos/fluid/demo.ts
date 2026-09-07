@@ -29,6 +29,7 @@ export const DEFAULT_SPAWN_MAX: [number, number, number] = [2, 12, 2];
 // background + the fluid-surface reflection cube when the active demo changes.
 /** Neutral studio HDR — used by the capsule / box / fountain / marble-tower demos. */
 export const ENV_STUDIO_URL = "https://playground.babylonjs.com/textures/environment.env";
+export const INTERACTIVE_FORCE_SAMPLE_HOLD_MS = 100;
 // The waterfall's open-sky `.hdr` is declared next to that demo's own assets, as
 // `WATERFALL_ENV_URL` in scenes/waterfall.ts.
 
@@ -38,13 +39,14 @@ export const ENV_STUDIO_URL = "https://playground.babylonjs.com/textures/environ
 import type { DemoParam, DemoStateValue, FluidDomainBounds, FluidGridSettings, PairState } from "babylon-lite";
 export type { DemoParam, DemoStateValue, FluidDomainBounds, FluidGridSettings, PairState };
 
-/** Interactive push force applied for exactly one frame (box mouse-stir). */
+/** Latest interactive push sample, kept briefly so deferred solver steps do not lose it. */
 export interface PendingForce {
     origin: [number, number, number];
     dir: [number, number, number];
     push: [number, number, number];
     radius: number;
     accel: number;
+    expiresAt: number;
 }
 
 // Services the core gives each demo. Demos read/write the shared scene-SDF UBO

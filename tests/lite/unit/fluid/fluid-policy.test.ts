@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import { resolveFluidImpulseForce } from "../../../../packages/babylon-lite/src/fluid/core/fluid-facade";
 import { resolveFluidGridCompatibility } from "../../../../packages/babylon-lite/src/fluid/core/allocation-plan";
-import { fitFluidGridResolution, normalizeFluidFlipDiscretization, resolveFluidRenderMode, transformFluidFlow } from "../../../../packages/babylon-lite/src/fluid/core/fluid-policy";
+import {
+    fitFluidGridResolution,
+    normalizeFluidFlipDiscretization,
+    resolveFluidRenderMode,
+    transformFluidFlow,
+} from "../../../../packages/babylon-lite/src/fluid/core/fluid-policy";
 import type { FluidFlowConfig } from "../../../../packages/babylon-lite/src/fluid/core/sim-common";
 
 const flow: FluidFlowConfig = {
@@ -152,6 +157,23 @@ describe("shared fluid policy", () => {
             compatible: false,
             code: "storage-binding-limit",
             availableBytes: 1_024,
+        });
+        const mlsLimits = {
+            maxStorageBufferBindingSize: 2_048 * 1024 * 1024,
+            maxBufferSize: 2_048 * 1024 * 1024,
+        };
+        expect(resolveFluidGridCompatibility("MLS-MPM", [667, 334, 667], mlsLimits)).toMatchObject({
+            compatible: false,
+            code: "storage-binding-limit",
+        });
+        expect(
+            resolveFluidGridCompatibility("MLS-MPM", [667, 334, 667], mlsLimits, {
+                enabled: true,
+                maxPages: 84_000,
+            })
+        ).toMatchObject({
+            compatible: true,
+            requiredBytes: (84_000 + 1) * 4 * 4 * 4 * 16,
         });
     });
 });

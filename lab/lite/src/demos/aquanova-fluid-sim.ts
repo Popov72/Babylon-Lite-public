@@ -207,7 +207,7 @@ import type {
     VolumeSamplingMode,
 } from "babylon-lite";
 import type { ParticleFillWorkerResponse } from "./particle-fill-worker.js";
-import type { PairState, PendingForce } from "./fluid/demo.js";
+import { INTERACTIVE_FORCE_SAMPLE_HOLD_MS, type PairState, type PendingForce } from "./fluid/demo.js";
 import { screenRay } from "./fluid/pick.js";
 import { demoAssetUrl } from "./demo-asset-url.js";
 import { collisionShapesForModule, worldShapesForMatrix } from "./aquanova/collision-shapes.js";
@@ -446,7 +446,7 @@ async function main(): Promise<void> {
     window.addEventListener("pointerup", (e) => {
         if (e.button !== 2) return;
         if (forceDragging) {
-            endManualForceDrag(e.pointerId);
+            endManualForceDrag(e.pointerId, true);
         } else {
             releaseLook();
         }
@@ -1889,6 +1889,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             return false;
         }
         forceDragging = true;
+        pendingForce = null;
         forcePointerId = event.pointerId;
         forceLastX = event.clientX;
         forceLastY = event.clientY;
@@ -1933,17 +1934,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             push: [pushX, pushY, pushZ],
             radius: manualForceRadius,
             accel: speed * manualForceStrength,
+            expiresAt: now + INTERACTIVE_FORCE_SAMPLE_HOLD_MS,
         };
     }
 
-    function endManualForceDrag(pointerId = forcePointerId): void {
+    function endManualForceDrag(pointerId = forcePointerId, preservePendingForce = false): void {
         if (!forceDragging) {
             return;
         }
         forceDragging = false;
-        pendingForce = null;
-        rayForce.clear();
-        if (manualRun) setFluidSimulationForceField(manualRun.sim, null);
+        if (!preservePendingForce) {
+            pendingForce = null;
+            rayForce.clear();
+            if (manualRun) setFluidSimulationForceField(manualRun.sim, null);
+        }
         if (pointerId >= 0 && canvas.hasPointerCapture(pointerId)) {
             canvas.releasePointerCapture(pointerId);
         }
@@ -5620,11 +5624,11 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                 }
             }
             if (manualRun) {
-                if (pendingForce) {
+                if (pendingForce && pendingForce.expiresAt >= performance.now()) {
                     rayForce.setRay(pendingForce.origin, pendingForce.dir, pendingForce.push, pendingForce.radius, pendingForce.accel);
                     setFluidSimulationForceField(manualRun.sim, forceFieldHandle(rayForce.spec));
-                    pendingForce = null;
                 } else {
+                    pendingForce = null;
                     setFluidSimulationForceField(manualRun.sim, null);
                 }
                 stepFluidSimulation(manualRun.sim, dt);
