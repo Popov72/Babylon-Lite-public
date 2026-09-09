@@ -23,4 +23,18 @@ export interface AudioGraphHostState {
     /** @internal */ _engine: AudioEngine;
     /** @internal */ _graph: SoundSubGraph;
     /** Live playing instances (sounds only; buses have none). @internal */ _instances?: Set<{ _volumeNode: AudioNode }>;
+    /** Preloaded streaming instances already connected to the graph head. @internal */ _preloaded?: Array<{ _volumeNode: AudioNode }>;
+}
+
+/** Every instance whose input must follow graph-head changes. @internal */
+export function audioGraphHostInstances(host: AudioGraphHostState): Iterable<{ _volumeNode: AudioNode }> | undefined {
+    const active = host._instances;
+    const preloaded = host._preloaded;
+    if (!preloaded?.length) {
+        return active;
+    }
+    if (!active?.size) {
+        return preloaded;
+    }
+    return [...active, ...preloaded];
 }

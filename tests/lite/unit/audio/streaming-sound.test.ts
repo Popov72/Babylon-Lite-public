@@ -21,6 +21,7 @@ import {
     stopStreamingSound,
     disposeStreamingSound,
 } from "../../../../packages/babylon-lite/src/audio/streaming-sound.js";
+import { enableSpatial, type SpatialSubNode } from "../../../../packages/babylon-lite/src/audio/spatial.js";
 
 const asGain = (node: unknown) => node as unknown as MockGainNode;
 const media = (el: unknown) => el as unknown as MockMediaElement;
@@ -100,6 +101,19 @@ describe("streaming-sound", () => {
         expect(sound.instanceCount).toBe(1);
         expect(sound.state).toBe(SoundState.Started);
         expect(sound.preloadCompletedCount).toBe(0);
+        disposeAudioEngine(engine);
+    });
+
+    it("reconnects preloaded instances when spatial audio is enabled", async () => {
+        const engine = await makeEngine();
+        const sound = await createStreamingSoundAsync(engine, "music.mp3");
+        const instance = sound._preloaded[0]!;
+
+        enableSpatial(sound, { panningEnabled: false });
+
+        const spatial = sound._graph._spatial as SpatialSubNode;
+        expect(asGain(instance._volumeNode).connections.has(asGain(spatial._inputNode))).toBe(true);
+        expect(asGain(instance._volumeNode).connections.has(asGain(sound._graph._volume))).toBe(false);
         disposeAudioEngine(engine);
     });
 

@@ -25,7 +25,7 @@ import { type AudioEngine } from "./audio-engine.js";
 import { type RampParam, createRampParam, isRamping, setRampTarget } from "./audio-param.js";
 import { type AudioSignal } from "./audio-signal.js";
 import { rebuildSoundSubGraphHead } from "./sound-sub-graph.js";
-import { type AudioGraphHost, type AudioGraphHostState } from "./host-types.js";
+import { audioGraphHostInstances, type AudioGraphHost, type AudioGraphHostState } from "./host-types.js";
 import { type Mat4, type Quat, type Vec3 } from "../math/types.js";
 import { mat4Decompose } from "../math/mat4-decompose.js";
 
@@ -424,8 +424,8 @@ function ensureSpatialSubNode(host: AudioGraphHostState): SpatialSubNode {
     connectSpatialOutput(node, graph._volume);
     graph._spatial = node;
 
-    // Recompute the head and reconnect live instances (handles spatial+stereo parallel routing).
-    rebuildSoundSubGraphHead(graph, host._instances);
+    // Preloaded streaming instances are already connected and must move with live instances.
+    rebuildSoundSubGraphHead(graph, audioGraphHostInstances(host));
 
     return node;
 }

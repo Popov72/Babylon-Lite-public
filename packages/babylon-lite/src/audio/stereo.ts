@@ -14,7 +14,7 @@
 import { type AudioEngine } from "./audio-engine.js";
 import { type RampOptions, type RampParam, createRampParam, setRampTarget } from "./audio-param.js";
 import { rebuildSoundSubGraphHead } from "./sound-sub-graph.js";
-import { type AudioGraphHost, type AudioGraphHostState } from "./host-types.js";
+import { audioGraphHostInstances, type AudioGraphHost, type AudioGraphHostState } from "./host-types.js";
 
 /** Default stereo pan: centered. */
 const DEFAULT_PAN = 0;
@@ -61,8 +61,8 @@ function ensureStereoSubNode(host: AudioGraphHostState): StereoSubNode {
     node._inputNode.connect(graph._volume);
     graph._stereo = node;
 
-    // Recompute the head and reconnect live instances (handles spatial+stereo parallel routing).
-    rebuildSoundSubGraphHead(graph, host._instances);
+    // Preloaded streaming instances are already connected and must move with live instances.
+    rebuildSoundSubGraphHead(graph, audioGraphHostInstances(host));
 
     return node;
 }
