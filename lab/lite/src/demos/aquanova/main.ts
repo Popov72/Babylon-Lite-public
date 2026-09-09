@@ -241,6 +241,7 @@ import {
     antiGravityCollisionSlideDisplacement,
     AquanovaBehaviorManager,
     AquanovaExplosionRuntime,
+    AquanovaSparkRuntime,
     ExplodeBehavior,
     PlayerBehavior,
     SoundManager,
@@ -1713,6 +1714,7 @@ export async function main(): Promise<void> {
             });
         },
     });
+    const sparkRuntime = new AquanovaSparkRuntime(engine, scene, (mesh) => portalVisibility.isPortalCulled(mesh));
     registerDoorEntityEventHandlers(behaviorManager.events, manifest?.doors ?? [], (door, enabled) => {
         portalVisibility.setDoorEnabled(door, enabled);
     });
@@ -2078,6 +2080,7 @@ export async function main(): Promise<void> {
                     explodeEntity(entityName, meshes, options);
                 },
             },
+            sparks: sparkRuntime,
             retireEntity: (entityName, meshes) => {
                 if (!retirePickedEntity) {
                     throw new Error("[aquanova] entity retirement service is not ready");
@@ -5109,6 +5112,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             applyPortalDrawOrder(sceneTask);
             if (msaaSceneTask) applyPortalDrawOrder(msaaSceneTask as RenderTask);
         }
+        sparkRuntime.update(deltaMs);
+        soundManager.updateSpatial();
         inspectOverlay?.onFrame();
         colliderOverlay?.onFrame(); // dynamic proxies move; the chunk changes as you walk
         fluidSimulationOverlay?.onFrame();

@@ -1,5 +1,6 @@
 export { AquanovaBehaviorManager } from "./aquanova-behavior-manager.js";
 export { AquanovaExplosionRuntime } from "./explosion-runtime.js";
+export { AquanovaSparkRuntime } from "./spark-runtime.js";
 export { ExplodeBehavior } from "./explode.js";
 export {
     DisableCollisionBehavior,
@@ -18,6 +19,7 @@ export { PickEntityBehavior } from "./pick-entity.js";
 export { PlayAnimationBehavior } from "./play-animation.js";
 export { SetCollisionShapeBehavior } from "./set-collision-shape.js";
 export { SoundBehavior } from "./sound.js";
+export { SparkBehavior } from "./spark.js";
 export { SoundManager } from "./sound-manager.js";
 export { TriggerBehavior } from "./trigger.js";
 export { PlayerBehavior } from "./player.js";
@@ -43,6 +45,7 @@ export type {
     PickEntityBehaviorConfig,
     PlayAnimationBehaviorConfig,
     SetCollisionShapeBehaviorConfig,
+    SparkBehaviorConfig,
     SoundBehaviorConfig,
     SoundCueConfig,
     SoundPlayCueConfig,
@@ -59,6 +62,9 @@ export type {
     IntersectionTriggerCallbacks,
     IntersectionTriggerRegistration,
     JumpApertureAssist,
+    SparkOptions,
+    SparkRegistration,
+    SparkRuntime,
     WeaponAntiGravityGunRuntime,
     WeaponInventoryRuntime,
     WeaponLiquefactorRuntime,

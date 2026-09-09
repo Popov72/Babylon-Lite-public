@@ -9,14 +9,18 @@ import { WeaponInventory } from "../../../../lab/lite/src/demos/aquanova/behavio
 import { WeaponLiquefactorBehavior } from "../../../../lab/lite/src/demos/aquanova/behaviors/weapon-liquefactor";
 
 const audio = vi.hoisted(() => ({
+    attachSpatialTarget: vi.fn(),
     createAudioEngineAsync: vi.fn(),
     createStreamingSoundAsync: vi.fn(),
+    detachSpatialTarget: vi.fn(),
     disposeAudioEngine: vi.fn(),
+    enableSpatial: vi.fn(),
     playStreamingSound: vi.fn(),
     preloadStreamingInstanceAsync: vi.fn(),
     setMasterVolume: vi.fn(),
     setStreamingSoundVolume: vi.fn(),
     stopStreamingSound: vi.fn(),
+    updateSpatialAudio: vi.fn(),
 }));
 
 vi.mock("../../../../packages/babylon-lite/src/index.ts", () => audio);

@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { Mesh } from "../../../../packages/babylon-lite/src";
+import { createSceneNode } from "../../../../packages/babylon-lite/src/scene/scene-node";
 import { AquanovaEventManager } from "../../../../lab/lite/src/demos/aquanova/behaviors/aquanova-event-manager";
 import { SoundBehavior } from "../../../../lab/lite/src/demos/aquanova/behaviors/sound";
 
-function harness(config: ConstructorParameters<typeof SoundBehavior>[2]) {
+function harness(config: ConstructorParameters<typeof SoundBehavior>[2], meshes: readonly Mesh[] = []) {
     const events = new AquanovaEventManager();
     const soundById = {
         alarmLoop: { label: "alarm", source: "/aquanova/sounds/alarm.mp3", sound: "runtime-alarm" },
@@ -14,9 +16,12 @@ function harness(config: ConstructorParameters<typeof SoundBehavior>[2]) {
         resolvePlayback: vi.fn(async (id: string) => soundById[id as keyof typeof soundById]),
         play: vi.fn(),
         stop: vi.fn(),
+        enableDistanceAttenuation: vi.fn(),
+        disableDistanceAttenuation: vi.fn(),
     };
-    const behavior = new SoundBehavior("speaker", [], config, { events, sounds } as never);
-    return { behavior, events, soundById, sounds };
+    const camera = createSceneNode("camera");
+    const behavior = new SoundBehavior("speaker", meshes, config, { camera, events, sounds } as never);
+    return { behavior, camera, events, soundById, sounds };
 }
 
 describe("Aquanova sound behavior", () => {
@@ -41,6 +46,7 @@ describe("Aquanova sound behavior", () => {
         expect(sounds.resolvePlayback).toHaveBeenCalledTimes(2);
         expect(sounds.play).toHaveBeenNthCalledWith(1, soundById.alarmLoop, { fade: 0.75, loop: true, volume: 0.4 });
         expect(sounds.play).toHaveBeenNthCalledWith(2, soundById.chimeOnce, { fade: 0, loop: false, volume: 1 });
+        expect(sounds.enableDistanceAttenuation).not.toHaveBeenCalled();
         behavior.dispose();
         expect(sounds.stop).toHaveBeenCalledWith(soundById.alarmLoop);
         expect(sounds.stop).toHaveBeenCalledWith(soundById.chimeOnce);
@@ -101,5 +107,54 @@ describe("Aquanova sound behavior", () => {
         expect(() => harness({ cues: [{ action: "play", id: "alarmLoop", sound: "alarm", delay: -1 }] })).toThrow("sound.cues[].delay must be finite and non-negative");
         expect(() => harness({ cues: [{ action: "stop", soundId: "alarmLoop", fade: Number.NaN }] })).toThrow("sound.cues[].fade must be finite and non-negative");
         expect(() => harness({ cues: [{ action: "play", id: "alarmLoop", sound: "alarm", events: [] }] })).toThrow("sound.cues[].events must contain at least one event");
+        expect(() => harness({ radius: -1, cues: [{ action: "play", id: "alarmLoop", sound: "alarm" }] })).toThrow("sound.radius must be a finite non-negative number");
+        expect(() => harness({ radius: 5, cues: [{ action: "play", id: "alarmLoop", sound: "alarm" }] })).toThrow("sound.radius requires an owner mesh");
+    });
+
+    it("attaches positive-radius play cues to the owner and player camera", async () => {
+        const mesh = createSceneNode("speaker") as Mesh;
+        const { behavior, camera, soundById, sounds } = harness(
+            {
+                radius: 12,
+                cues: [{ action: "play", id: "alarmLoop", sound: "alarm", volume: 0.4 }],
+            },
+            [mesh]
+        );
+
+        await behavior.init();
+
+        expect(sounds.enableDistanceAttenuation).toHaveBeenCalledWith(soundById.alarmLoop, mesh, camera, 12);
+        behavior.start();
+        expect(sounds.play).toHaveBeenCalledWith(soundById.alarmLoop, { fade: 0, loop: false, volume: 0.4 });
+        behavior.dispose();
+        expect(sounds.disableDistanceAttenuation).toHaveBeenCalledWith(soundById.alarmLoop);
+    });
+
+    it("stops inaudible loops and restarts them when the player returns", async () => {
+        const mesh = createSceneNode("speaker") as Mesh;
+        const { behavior, camera, events, soundById, sounds } = harness(
+            {
+                radius: 3,
+                cues: [{ action: "play", id: "alarmLoop", sound: "alarm", loop: true }],
+            },
+            [mesh]
+        );
+        camera.position.set(10, 0, 0);
+
+        await behavior.init();
+        behavior.start();
+        expect(sounds.play).not.toHaveBeenCalled();
+
+        camera.position.set(2, 0, 0);
+        events.emit("frameStart", { deltaMs: 16 });
+        expect(sounds.play).toHaveBeenCalledWith(soundById.alarmLoop, { fade: 0, loop: true, volume: 1 });
+
+        camera.position.set(3, 0, 0);
+        events.emit("frameStart", { deltaMs: 16 });
+        expect(sounds.stop).toHaveBeenCalledWith(soundById.alarmLoop);
+
+        camera.position.set(1, 0, 0);
+        events.emit("frameStart", { deltaMs: 16 });
+        expect(sounds.play).toHaveBeenCalledTimes(2);
     });
 });

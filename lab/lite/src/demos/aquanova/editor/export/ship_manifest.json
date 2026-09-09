@@ -1,7 +1,7 @@
 {
   "generator": "SciFiShip layout tool",
   "schema": 3,
-  "savedAt": "2026-09-03T13:29:24.093Z",
+  "savedAt": "2026-09-08T14:56:28.944Z",
   "units": "metres",
   "up": "Y (glTF)",
   "space": {
@@ -3833,9 +3833,9 @@
       "chunk": "CH02_StorageCTL",
       "name": "testElectrifier",
       "position": [
-        -7.576,
-        0,
-        3.348
+        -7.664,
+        0.034,
+        3.367
       ],
       "rotation": [
         0,
@@ -5041,6 +5041,394 @@
   ],
   "collision": {},
   "moduleCollision": {
+    "Aquanova/Walls/WallAstra_Straight_left_hole": [
+      {
+        "id": "Aquanova/Walls/WallAstra_Straight_left_hole:0",
+        "kind": "box",
+        "centre": [
+          7.613,
+          2.8534,
+          -10
+        ],
+        "halfExtents": [
+          2,
+          0.175,
+          0.5
+        ],
+        "rotation": [
+          -0.144,
+          0.6923,
+          -0.144,
+          -0.6923
+        ]
+      },
+      {
+        "id": "Aquanova/Walls/WallAstra_Straight_left_hole:1",
+        "kind": "box",
+        "centre": [
+          7.984,
+          1.467,
+          -10
+        ],
+        "halfExtents": [
+          0.2685,
+          1.6,
+          0.222
+        ],
+        "rotation": [
+          0,
+          0,
+          -0.0872,
+          -0.9962
+        ]
+      },
+      {
+        "id": "Aquanova/Walls/WallAstra_Straight_left_hole:2",
+        "kind": "box",
+        "centre": [
+          7.8188,
+          1.477,
+          -10.74
+        ],
+        "halfExtents": [
+          0.175,
+          1.6,
+          1.265
+        ],
+        "rotation": [
+          0,
+          0,
+          -0.0872,
+          -0.9962
+        ]
+      },
+      {
+        "id": "Aquanova/Walls/WallAstra_Straight_left_hole:3",
+        "kind": "box",
+        "centre": [
+          7.8756,
+          0.5357,
+          -8.7413
+        ],
+        "halfExtents": [
+          0.175,
+          0.71,
+          0.75
+        ],
+        "rotation": [
+          0,
+          0,
+          -0.0872,
+          -0.9962
+        ]
+      },
+      {
+        "id": "Aquanova/Walls/WallAstra_Straight_left_hole:4",
+        "kind": "box",
+        "centre": [
+          7.6401,
+          1.9614,
+          -8.1634
+        ],
+        "halfExtents": [
+          0.175,
+          0.725,
+          0.17
+        ],
+        "rotation": [
+          0,
+          0,
+          -0.0872,
+          -0.9962
+        ]
+      },
+      {
+        "id": "Aquanova/Walls/WallAstra_Straight_left_hole:5",
+        "kind": "box",
+        "centre": [
+          7.5318,
+          2.553,
+          -8.8858
+        ],
+        "halfExtents": [
+          0.175,
+          0.165,
+          0.615
+        ],
+        "rotation": [
+          0,
+          0,
+          -0.0872,
+          -0.9962
+        ]
+      }
+    ],
+    "Aquanova/Walls/WallAstra_Straight-left-riveted": [
+      {
+        "id": "Aquanova/Walls/WallAstra_Straight-left-riveted:0",
+        "kind": "box",
+        "centre": [
+          -2.387,
+          2.8537,
+          0
+        ],
+        "halfExtents": [
+          2,
+          0.175,
+          0.5
+        ],
+        "rotation": [
+          -0.144,
+          0.6923,
+          -0.144,
+          -0.6923
+        ]
+      },
+      {
+        "id": "Aquanova/Walls/WallAstra_Straight-left-riveted:1",
+        "kind": "box",
+        "centre": [
+          -2.016,
+          1.4673,
+          0
+        ],
+        "halfExtents": [
+          0.2685,
+          1.6,
+          0.222
+        ],
+        "rotation": [
+          0,
+          0,
+          -0.0872,
+          -0.9962
+        ]
+      },
+      {
+        "id": "Aquanova/Walls/WallAstra_Straight-left-riveted:2",
+        "kind": "box",
+        "centre": [
+          -2.1812,
+          1.4773,
+          -0.74
+        ],
+        "halfExtents": [
+          0.175,
+          1.6,
+          1.265
+        ],
+        "rotation": [
+          0,
+          0,
+          -0.0872,
+          -0.9962
+        ]
+      },
+      {
+        "id": "Aquanova/Walls/WallAstra_Straight-left-riveted:3",
+        "kind": "box",
+        "centre": [
+          -2.1244,
+          0.536,
+          1.2587
+        ],
+        "halfExtents": [
+          0.175,
+          0.71,
+          0.75
+        ],
+        "rotation": [
+          0,
+          0,
+          -0.0872,
+          -0.9962
+        ]
+      },
+      {
+        "id": "Aquanova/Walls/WallAstra_Straight-left-riveted:4",
+        "kind": "box",
+        "centre": [
+          -2.3599,
+          1.9617,
+          1.8366
+        ],
+        "halfExtents": [
+          0.175,
+          0.725,
+          0.17
+        ],
+        "rotation": [
+          0,
+          0,
+          -0.0872,
+          -0.9962
+        ]
+      },
+      {
+        "id": "Aquanova/Walls/WallAstra_Straight-left-riveted:5",
+        "kind": "box",
+        "centre": [
+          -2.4682,
+          2.5533,
+          1.1142
+        ],
+        "halfExtents": [
+          0.175,
+          0.165,
+          0.615
+        ],
+        "rotation": [
+          0,
+          0,
+          -0.0872,
+          -0.9962
+        ]
+      }
+    ],
+    "Aquanova/Walls/WallAstra_Straight-right-riveted": [
+      {
+        "id": "Aquanova/Walls/WallAstra_Straight-right-riveted:0",
+        "kind": "box",
+        "centre": [
+          -2.387,
+          2.8174,
+          0
+        ],
+        "halfExtents": [
+          2,
+          0.175,
+          0.5
+        ],
+        "rotation": [
+          -0.144,
+          0.6923,
+          -0.144,
+          -0.6923
+        ]
+      },
+      {
+        "id": "Aquanova/Walls/WallAstra_Straight-right-riveted:1",
+        "kind": "box",
+        "centre": [
+          -2.016,
+          1.431,
+          0
+        ],
+        "halfExtents": [
+          0.2685,
+          1.6,
+          0.222
+        ],
+        "rotation": [
+          0,
+          0,
+          -0.0872,
+          -0.9962
+        ]
+      },
+      {
+        "id": "Aquanova/Walls/WallAstra_Straight-right-riveted:2",
+        "kind": "box",
+        "centre": [
+          -2.1812,
+          1.441,
+          0.7801
+        ],
+        "halfExtents": [
+          0.175,
+          1.6,
+          1.265
+        ],
+        "rotation": [
+          0,
+          0,
+          -0.0872,
+          -0.9962
+        ]
+      },
+      {
+        "id": "Aquanova/Walls/WallAstra_Straight-right-riveted:3",
+        "kind": "box",
+        "centre": [
+          -2.1244,
+          0.4997,
+          -1.2403
+        ],
+        "halfExtents": [
+          0.175,
+          0.71,
+          0.75
+        ],
+        "rotation": [
+          0,
+          0,
+          -0.0872,
+          -0.9962
+        ]
+      },
+      {
+        "id": "Aquanova/Walls/WallAstra_Straight-right-riveted:4",
+        "kind": "box",
+        "centre": [
+          -2.3599,
+          1.9254,
+          -1.8218
+        ],
+        "halfExtents": [
+          0.175,
+          0.725,
+          0.17
+        ],
+        "rotation": [
+          0,
+          0,
+          -0.0872,
+          -0.9962
+        ]
+      },
+      {
+        "id": "Aquanova/Walls/WallAstra_Straight-right-riveted:5",
+        "kind": "box",
+        "centre": [
+          -2.4682,
+          2.517,
+          -1.0418
+        ],
+        "halfExtents": [
+          0.175,
+          0.165,
+          0.615
+        ],
+        "rotation": [
+          0,
+          0,
+          -0.0872,
+          -0.9962
+        ]
+      }
+    ],
+    "Aquanova/Props/AreaBox": [
+      {
+        "id": "Aquanova/Props/AreaBox:0",
+        "kind": "box",
+        "centre": [
+          0,
+          0.5,
+          0
+        ],
+        "halfExtents": [
+          0.5,
+          0.5,
+          0.5
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          -1
+        ]
+      }
+    ],
     "Modular SciFi MegaKit/Platforms/Platform_Metal2": [
       {
         "id": "Modular SciFi MegaKit/Platforms/Platform_Metal2:0",
@@ -9348,394 +9736,6 @@
         ]
       }
     ],
-    "Aquanova/Walls/WallAstra_Straight_left_hole": [
-      {
-        "id": "Aquanova/Walls/WallAstra_Straight_left_hole:0",
-        "kind": "box",
-        "centre": [
-          7.613,
-          2.8534,
-          -10
-        ],
-        "halfExtents": [
-          2,
-          0.175,
-          0.5
-        ],
-        "rotation": [
-          -0.144,
-          0.6923,
-          -0.144,
-          -0.6923
-        ]
-      },
-      {
-        "id": "Aquanova/Walls/WallAstra_Straight_left_hole:1",
-        "kind": "box",
-        "centre": [
-          7.984,
-          1.467,
-          -10
-        ],
-        "halfExtents": [
-          0.2685,
-          1.6,
-          0.222
-        ],
-        "rotation": [
-          0,
-          0,
-          -0.0872,
-          -0.9962
-        ]
-      },
-      {
-        "id": "Aquanova/Walls/WallAstra_Straight_left_hole:2",
-        "kind": "box",
-        "centre": [
-          7.8188,
-          1.477,
-          -10.74
-        ],
-        "halfExtents": [
-          0.175,
-          1.6,
-          1.265
-        ],
-        "rotation": [
-          0,
-          0,
-          -0.0872,
-          -0.9962
-        ]
-      },
-      {
-        "id": "Aquanova/Walls/WallAstra_Straight_left_hole:3",
-        "kind": "box",
-        "centre": [
-          7.8756,
-          0.5357,
-          -8.7413
-        ],
-        "halfExtents": [
-          0.175,
-          0.71,
-          0.75
-        ],
-        "rotation": [
-          0,
-          0,
-          -0.0872,
-          -0.9962
-        ]
-      },
-      {
-        "id": "Aquanova/Walls/WallAstra_Straight_left_hole:4",
-        "kind": "box",
-        "centre": [
-          7.6401,
-          1.9614,
-          -8.1634
-        ],
-        "halfExtents": [
-          0.175,
-          0.725,
-          0.17
-        ],
-        "rotation": [
-          0,
-          0,
-          -0.0872,
-          -0.9962
-        ]
-      },
-      {
-        "id": "Aquanova/Walls/WallAstra_Straight_left_hole:5",
-        "kind": "box",
-        "centre": [
-          7.5318,
-          2.553,
-          -8.8858
-        ],
-        "halfExtents": [
-          0.175,
-          0.165,
-          0.615
-        ],
-        "rotation": [
-          0,
-          0,
-          -0.0872,
-          -0.9962
-        ]
-      }
-    ],
-    "Aquanova/Walls/WallAstra_Straight-left-riveted": [
-      {
-        "id": "Aquanova/Walls/WallAstra_Straight-left-riveted:0",
-        "kind": "box",
-        "centre": [
-          -2.387,
-          2.8537,
-          0
-        ],
-        "halfExtents": [
-          2,
-          0.175,
-          0.5
-        ],
-        "rotation": [
-          -0.144,
-          0.6923,
-          -0.144,
-          -0.6923
-        ]
-      },
-      {
-        "id": "Aquanova/Walls/WallAstra_Straight-left-riveted:1",
-        "kind": "box",
-        "centre": [
-          -2.016,
-          1.4673,
-          0
-        ],
-        "halfExtents": [
-          0.2685,
-          1.6,
-          0.222
-        ],
-        "rotation": [
-          0,
-          0,
-          -0.0872,
-          -0.9962
-        ]
-      },
-      {
-        "id": "Aquanova/Walls/WallAstra_Straight-left-riveted:2",
-        "kind": "box",
-        "centre": [
-          -2.1812,
-          1.4773,
-          -0.74
-        ],
-        "halfExtents": [
-          0.175,
-          1.6,
-          1.265
-        ],
-        "rotation": [
-          0,
-          0,
-          -0.0872,
-          -0.9962
-        ]
-      },
-      {
-        "id": "Aquanova/Walls/WallAstra_Straight-left-riveted:3",
-        "kind": "box",
-        "centre": [
-          -2.1244,
-          0.536,
-          1.2587
-        ],
-        "halfExtents": [
-          0.175,
-          0.71,
-          0.75
-        ],
-        "rotation": [
-          0,
-          0,
-          -0.0872,
-          -0.9962
-        ]
-      },
-      {
-        "id": "Aquanova/Walls/WallAstra_Straight-left-riveted:4",
-        "kind": "box",
-        "centre": [
-          -2.3599,
-          1.9617,
-          1.8366
-        ],
-        "halfExtents": [
-          0.175,
-          0.725,
-          0.17
-        ],
-        "rotation": [
-          0,
-          0,
-          -0.0872,
-          -0.9962
-        ]
-      },
-      {
-        "id": "Aquanova/Walls/WallAstra_Straight-left-riveted:5",
-        "kind": "box",
-        "centre": [
-          -2.4682,
-          2.5533,
-          1.1142
-        ],
-        "halfExtents": [
-          0.175,
-          0.165,
-          0.615
-        ],
-        "rotation": [
-          0,
-          0,
-          -0.0872,
-          -0.9962
-        ]
-      }
-    ],
-    "Aquanova/Walls/WallAstra_Straight-right-riveted": [
-      {
-        "id": "Aquanova/Walls/WallAstra_Straight-right-riveted:0",
-        "kind": "box",
-        "centre": [
-          -2.387,
-          2.8174,
-          0
-        ],
-        "halfExtents": [
-          2,
-          0.175,
-          0.5
-        ],
-        "rotation": [
-          -0.144,
-          0.6923,
-          -0.144,
-          -0.6923
-        ]
-      },
-      {
-        "id": "Aquanova/Walls/WallAstra_Straight-right-riveted:1",
-        "kind": "box",
-        "centre": [
-          -2.016,
-          1.431,
-          0
-        ],
-        "halfExtents": [
-          0.2685,
-          1.6,
-          0.222
-        ],
-        "rotation": [
-          0,
-          0,
-          -0.0872,
-          -0.9962
-        ]
-      },
-      {
-        "id": "Aquanova/Walls/WallAstra_Straight-right-riveted:2",
-        "kind": "box",
-        "centre": [
-          -2.1812,
-          1.441,
-          0.7801
-        ],
-        "halfExtents": [
-          0.175,
-          1.6,
-          1.265
-        ],
-        "rotation": [
-          0,
-          0,
-          -0.0872,
-          -0.9962
-        ]
-      },
-      {
-        "id": "Aquanova/Walls/WallAstra_Straight-right-riveted:3",
-        "kind": "box",
-        "centre": [
-          -2.1244,
-          0.4997,
-          -1.2403
-        ],
-        "halfExtents": [
-          0.175,
-          0.71,
-          0.75
-        ],
-        "rotation": [
-          0,
-          0,
-          -0.0872,
-          -0.9962
-        ]
-      },
-      {
-        "id": "Aquanova/Walls/WallAstra_Straight-right-riveted:4",
-        "kind": "box",
-        "centre": [
-          -2.3599,
-          1.9254,
-          -1.8218
-        ],
-        "halfExtents": [
-          0.175,
-          0.725,
-          0.17
-        ],
-        "rotation": [
-          0,
-          0,
-          -0.0872,
-          -0.9962
-        ]
-      },
-      {
-        "id": "Aquanova/Walls/WallAstra_Straight-right-riveted:5",
-        "kind": "box",
-        "centre": [
-          -2.4682,
-          2.517,
-          -1.0418
-        ],
-        "halfExtents": [
-          0.175,
-          0.165,
-          0.615
-        ],
-        "rotation": [
-          0,
-          0,
-          -0.0872,
-          -0.9962
-        ]
-      }
-    ],
-    "Aquanova/Props/AreaBox": [
-      {
-        "id": "Aquanova/Props/AreaBox:0",
-        "kind": "box",
-        "centre": [
-          0,
-          0.5,
-          0
-        ],
-        "halfExtents": [
-          0.5,
-          0.5,
-          0.5
-        ],
-        "rotation": [
-          0,
-          0,
-          0,
-          -1
-        ]
-      }
-    ],
     "Ultimate RPG Items Pack/Items/Coin": [
       {
         "id": "Ultimate RPG Items Pack/Items/Coin:0",
@@ -9799,6 +9799,23 @@
       ]
     }
   ],
+  "stageView": {
+    "position": [
+      -3.55,
+      1.604,
+      33.538
+    ],
+    "rotation": [
+      0.336,
+      1.597,
+      0
+    ],
+    "target": [
+      5.887,
+      -1.694,
+      33.288
+    ]
+  },
   "activeChunk": "CH03_StorageC2",
   "fluidSim": [
     "viscosity-inplace",
@@ -10456,6 +10473,23 @@
               "fade": 0.5
             }
           ]
+        },
+        {
+          "name": "spark",
+          "spread": 0.02,
+          "speed": 2
+        },
+        {
+          "name": "sound",
+          "cues": [
+            {
+              "action": "play",
+              "id": "sparks0",
+              "sound": "spark",
+              "loop": true
+            }
+          ],
+          "radius": 8
         }
       ]
     },
@@ -10686,19 +10720,19 @@
   },
   "view": {
     "position": [
-      2.623,
-      2.589,
-      1.686
+      -7.863,
+      1.023,
+      1.06
     ],
     "rotation": [
-      0.057,
-      -1.516,
+      0.163,
+      0.034,
       0
     ],
     "target": [
-      -7.346,
-      2.021,
-      2.236
+      -7.528,
+      -0.6,
+      10.922
     ]
   },
   "environment": {
@@ -11242,23 +11276,6 @@
         "to": "CH03_StorageC2",
         "portal": "Portal_Door_D06"
       }
-    ]
-  },
-  "stageView": {
-    "position": [
-      -3.55,
-      1.604,
-      33.538
-    ],
-    "rotation": [
-      0.336,
-      1.597,
-      0
-    ],
-    "target": [
-      5.887,
-      -1.694,
-      33.288
     ]
   }
 }

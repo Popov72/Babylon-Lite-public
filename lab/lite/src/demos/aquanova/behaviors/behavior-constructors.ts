@@ -18,6 +18,7 @@ export { FluidSimulationBehavior } from "./fluid-simulation.js";
 export { FluidElectrifierBehavior } from "./fluid-electrifier.js";
 export { SetCollisionShapeBehavior } from "./set-collision-shape.js";
 export { SoundBehavior } from "./sound.js";
+export { SparkBehavior } from "./spark.js";
 export { TriggerBehavior } from "./trigger.js";
 export { WeaponAntiGravityGunBehavior } from "./weapon-anti-gravity-gun.js";
 export { WeaponLiquefactorBehavior } from "./weapon-liquefactor.js";

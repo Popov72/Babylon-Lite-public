@@ -1,15 +1,21 @@
 import {
+    attachSpatialTarget,
     createAudioEngineAsync,
     createStreamingSoundAsync,
+    detachSpatialTarget,
     disposeAudioEngine,
+    enableSpatial,
     playStreamingSound,
     preloadStreamingInstanceAsync,
     setMasterVolume,
     setStreamingSoundVolume,
     stopStreamingSound,
+    updateSpatialAudio,
 } from "babylon-lite";
-import type { AudioEngine, StreamingSound, StreamingSoundOptions, StreamingSoundPlayOptions } from "babylon-lite";
+import type { AudioEngine, SpatialTarget, StreamingSound, StreamingSoundOptions, StreamingSoundPlayOptions } from "babylon-lite";
 import { normalizeSoundVolume } from "./sound-volume.js";
+
+const DISTANCE_ATTENUATION_MIN_DISTANCE = 1e-6;
 
 export interface ManagedSound {
     readonly label: string;
@@ -36,6 +42,9 @@ export class SoundManager {
     private readonly registeredPlaybacks = new Map<string, RegisteredPlayback>();
     private readonly activeLoops = new Set<ManagedSound>();
     private readonly pendingStops = new Map<ManagedSound, ReturnType<typeof setTimeout>>();
+    private readonly spatialSounds = new Set<ManagedSound>();
+    private spatialEngine: AudioEngine | null = null;
+    private spatialListenerTarget: SpatialTarget | null = null;
     private enabled = true;
     private volume = 1;
 
@@ -134,6 +143,43 @@ export class SoundManager {
         }
     }
 
+    public enableDistanceAttenuation(sound: ManagedSound, source: SpatialTarget, listener: SpatialTarget, radius: number): void {
+        const engine = sound.sound._engine;
+        if (this.spatialEngine !== engine || this.spatialListenerTarget !== listener) {
+            attachSpatialTarget(engine, listener, "position");
+            this.spatialEngine = engine;
+            this.spatialListenerTarget = listener;
+        }
+        enableSpatial(sound.sound, {
+            attachedTo: source,
+            attachmentType: "position",
+            panningEnabled: false,
+            distanceModel: "linear",
+            minDistance: Math.min(radius, DISTANCE_ATTENUATION_MIN_DISTANCE),
+            maxDistance: radius,
+            rolloffFactor: 1,
+        });
+        this.spatialSounds.add(sound);
+    }
+
+    public disableDistanceAttenuation(sound: ManagedSound): void {
+        if (!this.spatialSounds.delete(sound)) {
+            return;
+        }
+        detachSpatialTarget(sound.sound);
+        if (this.spatialSounds.size === 0 && this.spatialEngine) {
+            detachSpatialTarget(this.spatialEngine);
+            this.spatialEngine = null;
+            this.spatialListenerTarget = null;
+        }
+    }
+
+    public updateSpatial(): void {
+        if (this.spatialEngine) {
+            updateSpatialAudio(this.spatialEngine);
+        }
+    }
+
     public dispose(): void {
         this.stopActiveLoops();
         for (const timer of this.pendingStops.values()) {
@@ -145,6 +191,9 @@ export class SoundManager {
         }
         this.engine = null;
         this.engineInitialization = null;
+        this.spatialEngine = null;
+        this.spatialListenerTarget = null;
+        this.spatialSounds.clear();
         this.loads.clear();
         this.registeredPlaybacks.clear();
     }

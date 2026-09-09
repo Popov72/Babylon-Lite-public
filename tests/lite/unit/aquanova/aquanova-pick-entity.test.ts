@@ -6,15 +6,19 @@ import { SoundManager } from "../../../../lab/lite/src/demos/aquanova/behaviors/
 import { PLAYER_CAPSULE_HEIGHT, PLAYER_CAPSULE_RADIUS } from "../../../../lab/lite/src/demos/aquanova/constants";
 
 const runtime = vi.hoisted(() => ({
+    attachSpatialTarget: vi.fn(),
     createAudioEngineAsync: vi.fn(),
     createStreamingSoundAsync: vi.fn(),
+    detachSpatialTarget: vi.fn(),
     disposeAudioEngine: vi.fn(),
+    enableSpatial: vi.fn(),
     getMeshTriangles: vi.fn(),
     playStreamingSound: vi.fn(),
     preloadStreamingInstanceAsync: vi.fn(),
     setMasterVolume: vi.fn(),
     setStreamingSoundVolume: vi.fn(),
     stopStreamingSound: vi.fn(),
+    updateSpatialAudio: vi.fn(),
 }));
 
 vi.mock("../../../../packages/babylon-lite/src/index.ts", () => runtime);

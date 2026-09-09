@@ -265,6 +265,13 @@
             "description": "Runs one or more independently triggered sound actions.",
             "eventsRaised": [],
             "properties": {
+                "radius": {
+                    "type": "number",
+                    "minimum": 0,
+                    "default": 0,
+                    "label": "Hearing radius (m)",
+                    "description": "Volume falls linearly with player distance and reaches zero at this radius. Zero disables distance attenuation."
+                },
                 "cues": {
                     "type": "array",
                     "minItems": 1,
@@ -584,6 +591,54 @@
                     "exclusiveMinimum": true,
                     "default": 2,
                     "label": "Fade duration (s)"
+                }
+            }
+        },
+        "spark": {
+            "label": "Sparks",
+            "description": "Continuously emits sparks from the owner's live world position.",
+            "eventsRaised": [],
+            "properties": {
+                "rate": {
+                    "type": "number",
+                    "minimum": 0,
+                    "exclusiveMinimum": true,
+                    "default": 30,
+                    "label": "Emission rate (/s)"
+                },
+                "speed": {
+                    "type": "number",
+                    "minimum": 0,
+                    "exclusiveMinimum": true,
+                    "default": 2.5,
+                    "label": "Initial speed (m/s)"
+                },
+                "lifetime": {
+                    "type": "number",
+                    "minimum": 0,
+                    "exclusiveMinimum": true,
+                    "default": 0.45,
+                    "label": "Particle lifetime (s)",
+                    "description": "How long each emitted spark remains visible. Emission continues for as long as the owner mesh is displayed."
+                },
+                "size": {
+                    "type": "number",
+                    "minimum": 0,
+                    "exclusiveMinimum": true,
+                    "default": 0.035,
+                    "label": "Spark width (m)"
+                },
+                "spread": {
+                    "type": "number",
+                    "minimum": 0,
+                    "default": 0.08,
+                    "label": "Spawn spread (m)"
+                },
+                "gravity": {
+                    "type": "number",
+                    "minimum": 0,
+                    "default": 9.81,
+                    "label": "Gravity (m/s²)"
                 }
             }
         },

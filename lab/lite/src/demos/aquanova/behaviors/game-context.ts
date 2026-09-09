@@ -67,6 +67,23 @@ export interface ExplosionRuntime {
     explode(entityName: string, meshes: readonly Mesh[], options: ExplosionOptions): void;
 }
 
+export interface SparkOptions {
+    readonly rate: number;
+    readonly speed: number;
+    readonly lifetime: number;
+    readonly size: number;
+    readonly spread: number;
+    readonly gravity: number;
+}
+
+export interface SparkRegistration {
+    dispose(): void;
+}
+
+export interface SparkRuntime {
+    register(mesh: Mesh, options: SparkOptions): SparkRegistration;
+}
+
 export interface AquanovaGameContext {
     readonly canvas: HTMLCanvasElement;
     readonly camera: FreeCamera;
@@ -94,6 +111,7 @@ export interface AquanovaGameContext {
     readonly playerMaxGrabDistance: () => number;
     readonly dynamicMassOf: (mesh: Mesh) => number | null;
     readonly explosions: ExplosionRuntime;
+    readonly sparks: SparkRuntime;
     readonly retireEntity: (entityName: string, meshes: readonly Mesh[]) => void;
     readonly setCollisionShape: (entityName: string, type: "aabb" | "mesh", fluidSimShape?: FluidSimShapeRegistration) => void;
     readonly registerIntersectionTrigger: (entityName: string, playerOnly: boolean, callbacks: IntersectionTriggerCallbacks) => IntersectionTriggerRegistration;

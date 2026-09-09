@@ -1,29 +1,38 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SoundManager } from "../../../../lab/lite/src/demos/aquanova/behaviors/sound-manager";
+import { mat4Identity } from "../../../../packages/babylon-lite/src/math/mat4-identity";
 
 const audio = vi.hoisted(() => ({
+    attachSpatialTarget: vi.fn(),
     createAudioEngineAsync: vi.fn(),
     createStreamingSoundAsync: vi.fn(),
+    detachSpatialTarget: vi.fn(),
     disposeAudioEngine: vi.fn(),
+    enableSpatial: vi.fn(),
     playStreamingSound: vi.fn(),
     preloadStreamingInstanceAsync: vi.fn(),
     setMasterVolume: vi.fn(),
     setStreamingSoundVolume: vi.fn(),
     stopStreamingSound: vi.fn(),
+    updateSpatialAudio: vi.fn(),
 }));
 
 vi.mock("../../../../packages/babylon-lite/src/index.ts", () => audio);
 
 describe("Aquanova sound manager", () => {
     beforeEach(() => {
+        audio.attachSpatialTarget.mockReset();
         audio.createAudioEngineAsync.mockReset().mockResolvedValue({ id: "audio-engine" });
         audio.createStreamingSoundAsync.mockReset().mockImplementation(async (_engine: unknown, source: string) => source);
+        audio.detachSpatialTarget.mockReset();
         audio.disposeAudioEngine.mockReset();
+        audio.enableSpatial.mockReset();
         audio.playStreamingSound.mockReset();
         audio.preloadStreamingInstanceAsync.mockReset().mockResolvedValue(undefined);
         audio.setMasterVolume.mockReset();
         audio.setStreamingSoundVolume.mockReset();
         audio.stopStreamingSound.mockReset();
+        audio.updateSpatialAudio.mockReset();
     });
 
     it("owns one lazy engine, deduplicates loads, and applies global controls", async () => {
@@ -96,5 +105,33 @@ describe("Aquanova sound manager", () => {
         expect(() => manager.registerPlayback("first-loop", "/sounds/other.mp3")).toThrow('sound playback ID "first-loop" is defined more than once');
         expect(() => manager.resolvePlayback("missing")).toThrow('sound playback ID "missing" is not defined');
         manager.dispose();
+    });
+
+    it("configures linear distance attenuation independently from playback volume", () => {
+        const manager = new SoundManager();
+        const engine = { id: "audio-engine" };
+        const runtimeSound = { _engine: engine };
+        const sound = { label: "alarm", source: "/sounds/alarm.mp3", sound: runtimeSound } as never;
+        const source = { worldMatrix: mat4Identity() };
+        const listener = { worldMatrix: mat4Identity() };
+
+        manager.enableDistanceAttenuation(sound, source, listener, 12);
+
+        expect(audio.enableSpatial).toHaveBeenCalledWith(runtimeSound, {
+            attachedTo: source,
+            attachmentType: "position",
+            panningEnabled: false,
+            distanceModel: "linear",
+            minDistance: 1e-6,
+            maxDistance: 12,
+            rolloffFactor: 1,
+        });
+        expect(audio.attachSpatialTarget).toHaveBeenCalledWith(engine, listener, "position");
+        manager.updateSpatial();
+        expect(audio.updateSpatialAudio).toHaveBeenCalledWith(engine);
+
+        manager.disableDistanceAttenuation(sound);
+        expect(audio.detachSpatialTarget).toHaveBeenNthCalledWith(1, runtimeSound);
+        expect(audio.detachSpatialTarget).toHaveBeenNthCalledWith(2, engine);
     });
 });

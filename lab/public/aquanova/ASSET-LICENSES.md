@@ -54,6 +54,10 @@ The first-person Liquefactor weapon models under `weapons/` were supplied for
 this project. No separate redistribution license has been documented for them,
 so treat those files as project-only assets rather than reusable CC0 content.
 
+The `sounds/spark.mp3` effect was likewise supplied for the Aquanova project.
+No separate redistribution license has been documented for it, so treat it as
+a project-only asset rather than reusable CC0 content.
+
 Any asset added here that is **not** CC0 (or otherwise freely redistributable)
 MUST be listed in this section with its source and license terms, so downstream
 users know it cannot be reused freely. Do not commit non-redistributable assets.

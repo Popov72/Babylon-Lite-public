@@ -49,6 +49,7 @@ export interface PortalVisibility {
     traversals(): readonly PortalTraversal[];
     meshOrder(mesh: Mesh): number | undefined;
     chunkIds(mesh: Mesh): string[];
+    isPortalCulled(mesh: Mesh): boolean;
     setPortalEnabled(id: string, enabled: boolean): boolean;
     setDoorEnabled(door: string, enabled: boolean): number;
     portalStates(): Array<{ id: string; door?: string; enabled: boolean }>;
@@ -419,9 +420,9 @@ export function createPortalVisibility(options: PortalVisibilityOptions): Portal
                     portalHidden.delete(mesh);
                     if (options.canRestore?.(mesh) !== false) setMeshVisible(mesh, true);
                 }
-            } else if (mesh.visible !== false) {
+            } else {
                 portalHidden.add(mesh);
-                setMeshVisible(mesh, false);
+                if (mesh.visible !== false) setMeshVisible(mesh, false);
             }
             if (mesh.visible !== false) displayed++;
         }
@@ -528,6 +529,7 @@ export function createPortalVisibility(options: PortalVisibilityOptions): Portal
         traversals: () => currentTraversals,
         meshOrder: (mesh) => currentMeshOrder.get(mesh),
         chunkIds: (mesh) => (options.dynamicMeshes?.has(mesh) ? [...dynamicChunksForMesh(mesh)].sort() : manifestChunksForMesh(mesh)),
+        isPortalCulled: (mesh) => portalHidden.has(mesh),
         setPortalEnabled(id: string, enabled: boolean): boolean {
             const portal = runtimePortals.find((candidate) => candidate.id === id);
             if (!portal) return false;

@@ -6,7 +6,7 @@ import { assertBehaviorConfigKeys } from "./behavior-config-validation.js";
 import { eventSubscriptionMatches, validateEventSubscriptions } from "./event-subscription.js";
 import { aquanovaSoundUrl, validateAquanovaSoundName } from "./sound-asset.js";
 
-type SoundContext = Pick<AquanovaGameContext, "events" | "sounds">;
+type SoundContext = Pick<AquanovaGameContext, "camera" | "events" | "sounds">;
 
 interface SoundCueBase {
     readonly delay: number;
@@ -26,24 +26,40 @@ interface SoundStopCue extends SoundCueBase {
 
 type SoundCue = SoundPlayCue | SoundStopCue;
 
+interface DistanceGatedPlayback {
+    readonly cue: SoundPlayCue;
+    audible: boolean;
+}
+
 export class SoundBehavior implements Behavior<"sound"> {
     public readonly name = "sound";
     public readonly mesh: Mesh | null;
     public readonly config: SoundBehaviorConfig;
     private readonly context: SoundContext;
     private readonly cues: SoundCue[];
+    private readonly radius: number;
+    private readonly distanceGatedPlaybacks = new Map<ManagedSound, DistanceGatedPlayback>();
     private stopEntityEvent: (() => void) | null = null;
+    private stopFrameStart: (() => void) | null = null;
     private readonly timers = new Set<ReturnType<typeof setTimeout>>();
     private disposed = false;
 
     public constructor(_entityName: string, meshes: readonly Mesh[], config: SoundBehaviorConfig, context: SoundContext) {
-        assertBehaviorConfigKeys(config, "sound", ["cues"]);
+        assertBehaviorConfigKeys(config, "sound", ["cues", "radius"]);
         if (!Array.isArray(config.cues) || config.cues.length === 0) {
             throw new Error("[aquanova] sound.cues must contain at least one cue");
         }
+        const radius = config.radius ?? 0;
+        if (!Number.isFinite(radius) || radius < 0) {
+            throw new Error("[aquanova] sound.radius must be a finite non-negative number");
+        }
         this.mesh = meshes[0] ?? null;
+        if (radius > 0 && !this.mesh) {
+            throw new Error("[aquanova] sound.radius requires an owner mesh");
+        }
         this.config = config;
         this.context = context;
+        this.radius = radius;
         this.cues = config.cues.map((cue) => {
             if (!cue || typeof cue !== "object" || Array.isArray(cue)) {
                 throw new Error("[aquanova] sound.cues[] must be an object");
@@ -93,11 +109,21 @@ export class SoundBehavior implements Behavior<"sound"> {
         for (const cue of this.cues) {
             cue.sound = sounds.get(playbackId(cue)) ?? null;
         }
+        if (this.radius > 0) {
+            for (const cue of this.cues) {
+                if (isPlayCue(cue) && cue.sound) {
+                    this.context.sounds.enableDistanceAttenuation(cue.sound, this.mesh!, this.context.camera, this.radius);
+                }
+            }
+        }
     }
 
     public start(): void {
         if (this.cues.some((cue) => !cue.sound)) {
             throw new Error("[aquanova] sound behavior was not initialized");
+        }
+        if (this.radius > 0) {
+            this.stopFrameStart = this.context.events.on("frameStart", () => this.updateDistanceGating());
         }
         for (const cue of this.cues) {
             if (!cue.config.events) {
@@ -120,6 +146,8 @@ export class SoundBehavior implements Behavior<"sound"> {
         this.disposed = true;
         this.stopEntityEvent?.();
         this.stopEntityEvent = null;
+        this.stopFrameStart?.();
+        this.stopFrameStart = null;
         for (const timer of this.timers) {
             clearTimeout(timer);
         }
@@ -127,7 +155,11 @@ export class SoundBehavior implements Behavior<"sound"> {
         const sounds = new Set(this.cues.flatMap((cue) => (isPlayCue(cue) && cue.sound ? [cue.sound] : [])));
         for (const sound of sounds) {
             this.context.sounds.stop(sound);
+            if (this.radius > 0) {
+                this.context.sounds.disableDistanceAttenuation(sound);
+            }
         }
+        this.distanceGatedPlaybacks.clear();
     }
 
     private scheduleAction(cue: SoundCue): void {
@@ -150,10 +182,57 @@ export class SoundBehavior implements Behavior<"sound"> {
             throw new Error("[aquanova] sound behavior was not initialized");
         }
         if (isPlayCue(cue)) {
-            this.context.sounds.play(sound, { fade: cue.fade, loop: cue.loop, volume: cue.volume });
+            if (this.radius === 0) {
+                this.play(cue, sound);
+                return;
+            }
+            const audible = this.isWithinHearingRadius();
+            if (cue.loop) {
+                this.distanceGatedPlaybacks.set(sound, { cue, audible });
+            } else if (audible) {
+                this.distanceGatedPlaybacks.set(sound, { cue, audible: true });
+            }
+            if (audible) {
+                this.play(cue, sound);
+            }
         } else {
+            this.distanceGatedPlaybacks.delete(sound);
             this.context.sounds.stop(sound, cue.fade);
         }
+    }
+
+    private play(cue: SoundPlayCue, sound: ManagedSound): void {
+        this.context.sounds.play(sound, { fade: cue.fade, loop: cue.loop, volume: cue.volume });
+    }
+
+    private updateDistanceGating(): void {
+        const withinRadius = this.isWithinHearingRadius();
+        for (const [sound, playback] of this.distanceGatedPlaybacks) {
+            if (withinRadius === playback.audible) {
+                continue;
+            }
+            if (!withinRadius) {
+                this.context.sounds.stop(sound);
+                playback.audible = false;
+                if (!playback.cue.loop) {
+                    this.distanceGatedPlaybacks.delete(sound);
+                }
+                continue;
+            }
+            if (playback.cue.loop) {
+                this.play(playback.cue, sound);
+                playback.audible = true;
+            }
+        }
+    }
+
+    private isWithinHearingRadius(): boolean {
+        const world = this.mesh!.worldMatrix;
+        const listener = this.context.camera.position;
+        const dx = world[12]! - listener.x;
+        const dy = world[13]! - listener.y;
+        const dz = world[14]! - listener.z;
+        return dx * dx + dy * dy + dz * dz < this.radius * this.radius;
     }
 }
 

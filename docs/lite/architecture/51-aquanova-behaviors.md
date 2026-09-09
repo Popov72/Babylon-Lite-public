@@ -74,6 +74,7 @@ the resolved base behavior is instantiated. The current base behaviors are:
 | `fluidElectrifier`     | Permanently charges contacted electrifiable liquid      |
 | `electricalDetonator`  | Raises `explode` on electrified-liquid contact          |
 | `explode`              | Fractures and ejects nearby eligible entities           |
+| `spark`                | Emits sparks from the owner's live world position       |
 | `setCollisionShape`    | Replaces an entity collider from its visible geometry   |
 | `trigger`              | Raises owner events when its collider is entered/exited |
 | `playAnimation`        | Starts one animation clip from the ship glTF            |
@@ -90,6 +91,26 @@ Each behavior receives:
 - its resolved manifest assignment;
 - one Aquanova-specific `AquanovaGameContext` containing the camera, canvas,
   character controller, picker access, event manager, and gameplay services.
+
+`spark` emits continuously and follows the first owner mesh's live world origin,
+including dynamic motion. `lifetime` is the lifespan of each individual spark,
+not the emitter. All spark behaviors share one additive billboard batch.
+Emission and existing particles are suppressed only while the owner mesh is
+portal-culled, and resume immediately when its portal is displayed again. The
+mesh's ordinary visibility does not affect sparks, so an intentionally hidden
+emitter mesh remains useful. `rate`, `speed`, `lifetime`, `size`, `spread`, and
+downward `gravity` are independently configurable; retiring the owner removes
+both its emitter and its remaining particles.
+
+The `sound` behavior's `radius` defaults to `0`, which disables distance
+attenuation. A positive radius attaches each play cue to the behavior owner's
+mesh and the listener to the player camera. Cue volume is multiplied by a
+linear distance factor: `1` at the source, decreasing to `0` at the radius and
+remaining silent beyond it. This attenuation is independent from cue fade and
+per-cue volume. Radius-limited loops are virtualized: they are not started while
+outside the radius, an active loop is stopped on crossing out, and a logically
+active loop restarts when the player returns. A one-shot cue triggered outside
+the radius is skipped rather than replayed later.
 
 ## Events
 

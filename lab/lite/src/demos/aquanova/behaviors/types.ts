@@ -85,6 +85,8 @@ export interface SoundStopCueConfig extends SoundCueBaseConfig {
 export type SoundCueConfig = SoundPlayCueConfig | SoundStopCueConfig;
 
 export interface SoundBehaviorConfig {
+    /** Distance in metres at which the sound reaches zero volume. Zero disables distance attenuation. Defaults to 0. */
+    radius?: number;
     /** Independently triggered sound actions, evaluated in declaration order. */
     cues: SoundCueConfig[];
 }
@@ -165,6 +167,21 @@ export interface ExplodeBehaviorConfig {
     debrisLifetime?: number;
     /** Debris fade duration in seconds. Defaults to 2. */
     fadeDuration?: number;
+}
+
+export interface SparkBehaviorConfig {
+    /** Sparks emitted per second. Defaults to 30. */
+    rate?: number;
+    /** Initial spark speed in metres per second. Defaults to 2.5. */
+    speed?: number;
+    /** Average lifetime of each emitted spark in seconds. Emission remains continuous. Defaults to 0.45. */
+    lifetime?: number;
+    /** Spark width in metres. Defaults to 0.035. */
+    size?: number;
+    /** World-space spawn radius around the owner origin. Defaults to 0.08 metres. */
+    spread?: number;
+    /** Downward acceleration in metres per second squared. Defaults to 9.81. */
+    gravity?: number;
 }
 
 export interface TriggerBehaviorConfig {
@@ -255,6 +272,11 @@ export interface BehaviorConfig {
     strength?: number;
     debrisLifetime?: number;
     fadeDuration?: number;
+    rate?: number;
+    lifetime?: number;
+    size?: number;
+    spread?: number;
+    gravity?: number;
     fluidSimulationOnly?: boolean;
     type?: "mesh";
     fluidSimShape?: FluidSimShape;
