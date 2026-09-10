@@ -86,7 +86,7 @@ import {
     resetFluidParticleLifecycle,
     resetFluidFlowState,
     SCENE_NORMAL_WGSL,
-    SCENE_SDF_GRID_WGSL,
+    sceneSdfGridBindingWgsl,
     setFluidFlowConfig,
     updateFluidFlowEmitter,
 } from "../core/sim-common.js";
@@ -618,7 +618,7 @@ function buildApplyWgsl(scene: SceneSdfSpec | null): string {
     // Baked SDF grid (optional): binding 4 is free here (0=sortedPos, 1=sortedDelta,
     // 2=sim, 3=sceneSdfParams). Injected BEFORE scene.sdf so sceneSdf can call
     // sampleSdfGrid.
-    const gridInject = scene?.sdfGrid ? `\n@group(0) @binding(4) var<storage, read> sceneSdfGrid: array<f32>;\n${SCENE_SDF_GRID_WGSL}` : "";
+    const gridInject = scene ? sceneSdfGridBindingWgsl(scene, 4) : "";
     const decls = scene ? `${scene.struct}\n@group(0) @binding(3) var<uniform> sceneSdfParams: SceneSdfParams;${gridInject}\n${scene.sdf}\n${SCENE_NORMAL_WGSL}` : "";
     const confine = scene ? APPLY_CONFINE_SDF : APPLY_CONFINE_NONE;
     return /* wgsl */ `

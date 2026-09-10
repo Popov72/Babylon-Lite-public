@@ -1815,6 +1815,10 @@ export function createWaterfallDemo(ctx: FluidCtx): FluidDemo {
         },
         demoParams(): DemoParam[] {
             return [
+                { key: "sourceSpeed", label: "Source speed", type: "number", min: 0, max: 4, step: 0.05, value: wf.sourceSpeed, hidden: true },
+                { key: "emitRate", label: "Recirculation rate", type: "number", min: 0.05, max: 6, step: 0.05, value: wf.emitRate, hidden: true },
+                { key: "spread", label: "Jet spread", type: "number", min: 0, max: 2, step: 0.02, value: wf.spread, hidden: true },
+                { key: "frontBias", label: "Front bias", type: "number", min: 0, max: 16, step: 0.5, value: wf.frontBias, hidden: true },
                 { key: "pondWaveSources", label: "Pond wave sources", type: "number", min: 0, max: POND_WAVE_SOURCES_MAX, step: 1, value: wf.pondWaveSources },
                 // { key: "meshScale", label: "Mesh scale", type: "number", min: 1, max: 3, step: 0.05, value: wf.meshScale },
                 // { key: "rockYaw", label: "Rock yaw", type: "number", min: 0, max: 360, step: 1, value: wf.rockYaw },

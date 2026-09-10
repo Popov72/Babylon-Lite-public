@@ -4,13 +4,13 @@
 
 ## Purpose
 
-Export either a native liquid setup or a third-party FLIP add-on setup as one self-contained Babylon Lite fluid preset. The exporter detects the active domain type. Add-on FLIP domains map to Babylon Lite's FLIP backend; native domains retain the calibrated PBF compatibility mapping.
+Export either a native liquid setup or a third-party FLIP add-on setup as a Babylon Lite fluid preset. The scene GLB and collision SDF can be embedded in one JSON or written as separately referenced files. Both domain types map to Babylon Lite's FLIP backend; the exporter reads the source-specific settings and normalizes them into one shared FLIP schema.
 
-The export is a live simulation description, not a baked animation. Babylon Lite recreates the liquid with its PBF solver.
+The export is a live simulation description, not a baked animation. Babylon Lite recreates the liquid with its FLIP solver.
 
 ## Format
 
-Format 14 adds explicit solver-value semantics and retains format 10's FLIP-native resolution and marker-density fields. It also retains format 6's embedded scene payload, format 7's explicit sink lifecycle behavior, format 8's optional Blender Initial Velocity fields, format 9's stable emitter-to-GLB-node binding, and the later FLIP/foam controls:
+Format 15 adds rigid animated mesh collisions. It retains format 14's explicit solver-value semantics, format 10's FLIP-native resolution and marker-density fields, format 6's embedded scene payload, format 7's explicit sink lifecycle behavior, format 8's optional Blender Initial Velocity fields, format 9's stable emitter-to-GLB-node binding, and the later FLIP/foam controls:
 
 ```ts
 export interface FluidExportJson {
@@ -48,15 +48,32 @@ export interface FluidExportJson {
     }>;
     // Existing physics, flow, grid, render, foam, and lifecycle fields...
     scene?: {
-        encoding: "base64";
+        encoding: "base64" | "external";
         glb: string;
         collision: string;
+        sdfCompression?: "zlib";
+        collisionEnabled?: boolean;
+        collisionTrilinear?: boolean;
+        collisionByteLength?: number;
         anchorPosition?: [number, number, number];
+        animatedCollisions?: Array<{
+            id: string;
+            node: string;
+            sdf: string;
+            byteOffset?: number;
+            byteLength?: number;
+            space: "node-local";
+            resolution: number;
+            bakeFrame: number;
+            presentation: boolean;
+            enabled?: boolean;
+            trilinear?: boolean;
+        }>;
     };
 }
 ```
 
-`scene.glb` is a base64 self-contained GLB containing every visible Blender presentation mesh and supported punctual light, including flow objects and effectors but excluding the liquid Domain control volume. `scene.collision` is the base64 binary SDF payload. `scene.anchorPosition` records the grid position at which those immutable payload coordinates were authored, allowing a moved imported bundle to be exported and imported again without losing alignment. Files without it use their top-level `gridPosition`. Parameter-only presets omit `scene`. Self-contained Blender exports accept formats 6 through 14; format 6 sinks are migrated to recycle mode. New format-14 files require explicit semantics. FLIP exports use `gridResolution` as divisions along the longest domain side and default `markersPerCell` to `8`.
+With `encoding: "base64"`, every GLB/SDF string contains embedded data. With `encoding: "external"`, the export remains exactly three files: JSON, GLB, and one shared SDF container. New exports set `sdfCompression: "zlib"`. External mode compresses the complete concatenated container; embedded mode compresses each static/animated BLSF payload before base64 encoding. Byte offsets and lengths always address decompressed BLSF bytes. Legacy uncompressed and separate-SDF format-15 manifests remain readable. `scene.collision` remains the static world-space union. Each `animatedCollisions` entry links one object-local SDF to a unique glTF transform node. `presentation: false` keeps a hidden collision-only node and its animation in the GLB while suppressing its render mesh after import. The GLB otherwise contains visible Blender presentation meshes and, when enabled, supported punctual lights, excluding the liquid Domain control volume and FLIP Fluids' generated surface/whitewater cache objects. Babylon Lite reconstructs those outputs live. Optional Blender Decimate modifiers target a user-authored total triangle count across exported presentation meshes and are removed immediately after GLB generation; selected animated collision meshes are protected from decimation. `scene.anchorPosition` records the grid position at which the immutable static payload coordinates were authored, allowing a moved imported bundle to be exported and imported again without losing alignment. Files without it use their top-level `gridPosition`. Parameter-only presets omit `scene`. Blender exports accept formats 6 through 15; format 6 sinks are migrated to recycle mode. Formats 14 and 15 require explicit semantics. FLIP exports use `gridResolution` as divisions along the longest domain side and default `markersPerCell` to `8`.
 
 The embedded collision payload is little-endian:
 
@@ -81,12 +98,25 @@ offset  type      meaning
 Use Blender's **Physics Properties > Fluid** controls:
 
 - A liquid **Domain** defines the simulation grid and solver settings.
+- **Target initial-fluid particles** optionally replaces the source domain resolution for export. `0` preserves the authored Resolution Divisions; a positive value chooses the compatible longest-axis resolution whose domain-clipped deterministic marker lattice is closest to the target. Rotated or oversized Initial objects therefore count only sites the runtime can actually seed inside the FLIP domain.
+- **Target inflow particles** adds dormant capacity for all Inflow emitters on top of the initial marker count. It does not affect Resolution Divisions. The exported capacity is `resolved initial markers + target inflow particles`, preventing a large Initial volume from consuming every available slot before an Inflow starts.
+- Each target input is disabled when the scene has no emitter of the corresponding class.
+- The panel displays the resulting **Resolution Divisions** and the informational breakdown `initial + inflow = total particles`. This preview uses the same clipped-lattice derivation as export and caches unchanged scene inputs so regular panel redraws remain inexpensive.
+- Planar Initial objects are included in the initial-particle target. They use the same one-cell-thick analytical shape exported to the runtime, matching its surface-emitter count semantics.
 - `GEOMETRY` liquid Flow modifiers become finite initial emitters.
 - `INFLOW` liquid Flow modifiers become continuous sources whose supply is effectively unlimited while enabled.
 - `OUTFLOW` liquid Flow modifiers become `mode: "delete"` sinks. They free particle slots independently of any emitter.
-- Every visible presentation mesh and glTF-compatible punctual light (`POINT`, `SUN`, or `SPOT`), including Flow, Outflow, collision Effectors, and ordinary scene geometry, is exported to reconstruct the Blender scene. The liquid Domain control volume is excluded because Babylon Lite reconstructs the fluid itself. Blender area lights have no `KHR_lights_punctual` representation and produce an explicit export warning instead of being silently approximated.
+- Every visible presentation mesh and glTF-compatible punctual light (`POINT`, `SUN`, or `SPOT`), including Flow, Outflow, collision Effectors, and ordinary scene geometry, is exported to reconstruct the Blender scene. A flow mesh linked through `sourceNode` is also exported when render-hidden so its transform remains resolvable; `sourcePresentation: false` suppresses its attached render mesh after import. The liquid Domain control volume is excluded because Babylon Lite reconstructs the fluid itself. Blender area lights have no `KHR_lights_punctual` representation and produce an explicit export warning instead of being silently approximated.
+- A directly connected Blender **Checker Texture → Base Color** is converted temporarily to an embedded image texture for glTF export and restored afterward. This preserves checkerboard floor planes that glTF would otherwise flatten to the material's gray fallback because procedural shader nodes are not part of core glTF.
 - Enabled collision Effectors additionally contribute to the baked collision SDF, even when **Disable in Renders** is set. Render-hidden effectors are collision-only and are omitted from `scene.glb`.
+- Every animated mesh is listed under **Animated mesh collisions** with an independent `0..2048` local-SDF resolution. `0` means the mesh has no fluid collision, even when it is a native Effector or FLIP obstacle. A positive value exports a separate local-space SDF and includes the animated transform node in the GLB, including render-hidden objects such as `WaveMaker`.
+- Animated collision baking currently supports rigid object/parent transforms. The exporter samples evaluated local geometry across the authored frame range and rejects deformation or topology changes explicitly; armature, shape-key, and time-varying modifier collisions require a future deforming-SDF format.
 - Emitter records retain a `sourceNode` link to their Blender flow object's GLB node. Emission remains analytical; source mesh triangles are not sampled.
+- Planar flow objects are expanded to one simulation-cell thickness along zero-width axes. This preserves Blender's planar inflow authoring while satisfying the shared analytical box-shape contract.
+- Axis-aligned extruded flow meshes are exported as analytical `polygonPrism` shapes. Other meshes use their local bounding box centered on the actual local bounds, not the Blender object origin. This preserves offset wedges and prisms such as ramp-following initial-fluid volumes without embedding arbitrary flow triangles in the runtime buffer.
+- **Export separate files** always writes exactly `.json`, `.glb`, and `.sdf`. The SDF file concatenates the static BLSF payload and every enabled animated BLSF payload; JSON byte ranges identify each grid. Browser import therefore keeps the original three-file selection workflow.
+- **Export lights** controls whether visible point, sun, and spot lights are included.
+- **Decimate exported meshes** adds temporary Decimate modifiers with one global ratio derived from the requested total scene triangle count. Meshes with at most 256 triangles remain exact so low-poly structural surfaces, ramps, containers, and flow guides cannot be topologically damaged for negligible savings. No exporter ceiling is applied to the target.
 
 An Outflow must overlap the liquid particle layer, not merely the domain boundary. At coarse Mantaflow resolutions, particle centers can remain one or more cells above the domain floor. Prefer a thin floor-level mesh with enough native **Surface Emission** distance to reach that layer rather than raising the physical Outflow mesh. The exporter expands the corresponding Babylon Lite sink by the same number of Mantaflow cells.
 
@@ -96,29 +126,34 @@ The exporter validates before writing. Missing or degenerate domains, flow objec
 
 ## Mantaflow Mapping
 
-Babylon Lite uses PBF because Mantaflow's FLIP/APIC liquid is an incompressible particle liquid and does not map honestly to elastic/sand PB-MPM materials.
+Native Mantaflow liquid uses FLIP or APIC particles on a MAC grid, so it maps to Babylon Lite's FLIP backend rather than the unrelated SPH/PBF solver.
 
-| Blender setting                                        | Babylon Lite field                                    |
-| ------------------------------------------------------ | ----------------------------------------------------- |
-| Domain cage bounds                                     | `gridPosition`, `gridSize`                            |
-| `resolution_max`                                       | physics particle size and derived simulation capacity |
-| Add-on Collision SDF resolution                        | embedded collision-grid resolution                    |
-| `sys_particle_maximum`, or cell count x `particle_max` | `particleCount`                                       |
-| Downward Z gravity                                     | PBF `gravity`                                         |
-| CFL condition                                          | PBF `relaxation`                                      |
-| Maximum adaptive timesteps                             | PBF `iterations`                                      |
-| Diffusion surface tension                              | PBF `scorr`                                           |
-| Diffusion viscosity base/exponent                      | PBF XSPH `viscosity`                                  |
-| `time_scale`                                           | `simulationTimeScale`                                 |
-| Flow transform/bounds                                  | grid-local box emitter/sink                           |
-| Enabled Initial Velocity X/Y/Z                         | emitter `velocity` in world space                     |
-| Flow object/node link                                  | emitter `sourceNode`                                  |
-| Enabled Initial Velocity Source                        | animated node velocity x `sourceVelocityFactor`       |
-| Enabled Initial Velocity Normal                        | per-particle analytical `normalVelocity`              |
-| Continuous liquid Inflow                               | calibrated `volumeRate = 50`                          |
-| `use_mesh`, mesh particle radius/smoothing             | surface render settings                               |
-| Foam, Spray, or Bubbles enabled                        | `foam.enableFoam`                                     |
-| Bubbles enabled                                        | `foam.subsurfaceBubbleStrength = 0.2`                 |
+| Blender setting                            | Babylon Lite field                               |
+| ------------------------------------------ | ------------------------------------------------ |
+| Domain cage bounds                         | `gridPosition`, `gridSize`                       |
+| `resolution_max`                           | `gridResolution`                                 |
+| `particle_number³`                         | `markersPerCell`, clamped to `1..64`             |
+| `sys_particle_maximum`                     | `particleCount` capacity hint                    |
+| Downward Z gravity                         | FLIP `gravity`                                   |
+| `flip_ratio`                               | `flipRatio`                                      |
+| Minimum/maximum adaptive timesteps         | `minSubsteps`, `maxSubsteps`                     |
+| CFL condition                              | `cflNumber`                                      |
+| Diffusion viscosity base/exponent          | `kinematicViscosity`                             |
+| High-viscosity value                       | lower-bound contribution to `kinematicViscosity` |
+| Diffusion surface tension                  | `surfaceTension`                                 |
+| Minimum/maximum particles per cell         | FLIP reseeding bounds                            |
+| Fractional obstacles                       | `fractionalSolids`                               |
+| Add-on Collision SDF resolution            | embedded collision-grid resolution               |
+| `time_scale`                               | `simulationTimeScale`                            |
+| Flow transform/bounds                      | grid-local box emitter/sink                      |
+| Enabled Initial Velocity X/Y/Z             | emitter `velocity` in world space                |
+| Flow object/node link                      | emitter `sourceNode`                             |
+| Enabled Initial Velocity Source            | animated node velocity x `sourceVelocityFactor`  |
+| Enabled Initial Velocity Normal            | per-particle analytical `normalVelocity`         |
+| Continuous liquid Inflow                   | calibrated `volumeRate = 20`                     |
+| `use_mesh`, mesh particle radius/smoothing | surface render settings                          |
+| Foam, Spray, or Bubbles enabled            | `foam.enableFoam`                                |
+| Bubbles enabled                            | `foam.subsurfaceBubbleStrength = 0.2`            |
 
 ## Add-on FLIP Mapping
 
@@ -140,29 +175,21 @@ The exporter recognizes objects whose `flip_fluid.object_type` is `TYPE_DOMAIN`,
 | Initial/inflow velocity            | Emitter launch velocity                               |
 | Add object velocity                | Animated `sourceNode` velocity and influence          |
 
-For FLIP presets, active initial markers are derived from authored initial-fluid volume, cell size, and markers per cell. `particleCount` remains GPU capacity, primarily providing dormant slots for inflows.
+For FLIP presets, active initial markers are derived from authored initial-fluid volume, cell size, and markers per cell. `particleCount` remains GPU capacity, primarily providing dormant slots for inflows. The exporter does not silently lower authored marker capacity or subdivision quality; users opt into mesh decimation, while runtime import retains its explicit high-particle warning and device-fit controls.
 
 For an unparented Domain without constraints, cage bounds use the authored `matrix_basis`. Blender normally keeps it identical to `matrix_world`, but saved Mantaflow scenes can retain the intended location and scale in `matrix_basis` while exposing a stale identity `matrix_world`. Parented or constrained Domains continue to use `matrix_world` so inherited and evaluated transforms remain authoritative.
 
+The same authored-transform rule applies to unparented Flow and static collider objects. This keeps analytical emitters and collision baking aligned with glTF, which exports Blender's authored location even when a saved Mantaflow modifier exposes a stale identity `matrix_world`.
+
 Values without a direct runtime equivalent are retained exactly under `source.settings`, grouped into timeline, domain, flows, and effectors. This prevents information loss and gives future mappings a stable source without adding Babylon-specific controls to Blender.
 
-The uncalibrated PBF particle-size conversion is the Mantaflow voxel size divided by Babylon Lite's base PBF cell size:
-
-```text
-mantaflowVoxelSize = max(gridSize) / resolution_max
-uncalibratedPhysicsParticleSize = mantaflowVoxelSize / 0.4
-physicsParticleSize = clamp(uncalibratedPhysicsParticleSize * 2.1333333333333333, 0.7, 8)
-```
-
-For the `12 x 6 x 12`, resolution-32 smoke domain, the original conversion was `12 / 32 / 0.4 = 0.9375`. Visual comparison with Blender requires the calibrated multiplier `2.1333333333333333`, producing `2.0`.
+Native `particle_number` is the number of marker samples per cell axis, so the exported marker density is its cube. The default value `2` therefore becomes `markersPerCell = 8`. The authored FLIP ratio and adaptive timestep bounds carry over directly.
 
 Mantaflow does not expose a physical volume-per-second value that maps directly to Babylon Lite. Continuous Inflows therefore export with the visually calibrated fixed rate `20`. Flow dimensions, FPS, and subframes remain available under `source.settings` but do not multiply the exported rate.
 
-When Blender **Diffusion** is enabled, viscosity Base and Exponent are first combined as `base * 10^-exponent`, then mapped logarithmically into PBF's dimensionless XSPH viscosity range and clamped to `1.9`. Surface Tension is mapped linearly into PBF `scorr`. Both are calibrated visual approximations rather than unit-equivalent solver parameters: XSPH is velocity smoothing, while `scorr` is PBF's artificial-pressure surface-stability term. Blender's separate **High Viscosity** solver toggle remains metadata because Babylon Lite has no equivalent numerical solver mode.
+When Blender **Diffusion** is enabled, viscosity Base and Exponent combine as `base * 10^-exponent` and map directly to FLIP kinematic viscosity. An enabled High Viscosity value provides a lower bound for that coefficient. Surface Tension maps directly to the FLIP surface-force coefficient; both values are clamped to the shared control ranges.
 
-On JSON import, gravity and PBF artificial pressure (`scorr`) are truncated toward zero to three decimal places so Blender floating-point serialization noise does not leak into the controls or live solver state. Other physics values retain their authored precision.
-
-Every emitter exports its Blender flow-object name as `sourceNode`. Blender fluid bundles already convert presentation, analytical flow, grid, and collision data into one shared bundle basis, so Whiteboard cancels the glTF loader's synthetic X mirror on the imported asset root before adding it to the scene. Babylon Lite then resolves each unique glTF transform node, ignoring the attached render-mesh child even when Blender gave the glTF node and mesh the same name. Animated position/rotation/scale and derived Source velocity follow that rendered bundle-basis transform directly. When a bundle references a source node absent from its GLB, import emits a warning and retains the emitter's authored static analytical transform instead of rejecting the complete scene. Initial Velocity fields are emitted only when Blender's **Initial Velocity** option is enabled: the authored Source multiplier applies to that derived velocity, while Normal velocity is evaluated per launched particle from the analytical emitter shape. The source mesh remains visual/transform data only; its triangles are not used for emission.
+Every emitter exports its Blender flow-object name as `sourceNode`. Source nodes are included in the GLB even when **Disable in Renders** is set, and `sourcePresentation` records whether their mesh should be shown. Blender fluid bundles already convert presentation, analytical flow, grid, and collision data into one shared bundle basis, so Whiteboard cancels the glTF loader's synthetic X mirror on the imported asset root before adding it to the scene. Babylon Lite then resolves each unique glTF transform node, ignoring or hiding the attached render-mesh child as requested. Animated position/rotation/scale and derived Source velocity follow that rendered bundle-basis transform directly. Legacy bundles that reference a source node absent from their GLB emit a warning and retain the emitter's authored static analytical transform instead of rejecting the complete scene. Initial Velocity fields are emitted only when Blender's **Initial Velocity** option is enabled: the authored Source multiplier applies to that derived velocity, while Normal velocity is evaluated per launched particle from the analytical emitter shape. The source mesh remains transform data only for analytical emission; its triangles are not sampled.
 
 Reset-time volume-sampled Initial emitters use a deterministic, evenly spaced lattice rather than independent random points. The lattice spacing is derived from the emitter's allocated world volume per particle, transformed through the emitter's scale and rotation, and tightened only when curved boundaries leave too few valid sites. Candidate sites outside the simulation grid are discarded before activation rather than being clamped together by the first solver step; this matches Mantaflow's clipping of Initial geometry to its Domain. These rules remove random overlaps, density clumps, and boundary-compression spikes, so Initial liquid is visible immediately and begins close to the solver's rest spacing. Gravity, collision geometry, and a free surface can still cause a small physical adjustment; exact hydrostatic equilibrium cannot be inferred from emitter geometry alone.
 
@@ -170,7 +197,7 @@ Reset-time volume-sampled Initial emitters use a deterministic, evenly spaced la
 
 The emitter editor shows the linked **Source mesh** name and retains **Delay before start** for independently delayed Inflows plus optional **Source factor** and **Normal velocity** controls behind **Source + normal**. The sink editor exposes the same **Delay before start** control for delete and recycle sinks. Source velocity itself is read-only derived state and is not authored in the UI. **Velocity (XYZ)** remains independent because it is the constant launch velocity Blender authors explicitly; the derived Source velocity is the linked object's motion.
 
-Blender exports use the Whiteboard PBF render profile: surface rendering, particle size `0.6`, depth blur `17`, thickness blur `2`, half-resolution rendering, thickness downscale `8`, and the narrow-range filter with delta `2` and mu `1`, together with the profile's remaining color, refraction, reflection, and anisotropy values.
+Blender exports use the shared Whiteboard render profile: surface rendering, particle size `0.6`, depth blur `18`, thickness blur `6`, half-resolution rendering, thickness downscale `8`, and the narrow-range filter with delta `10` and mu `1`. Polygon-surface reconstruction is disabled by default. The fluid color is read from the active surface shader's unlinked Base Color on the native Domain or FLIP generated surface and converted from Blender linear RGB to sRGB; scenes without a readable material retain the blue fallback.
 
 When Blender enables **Foam**, **Spray**, or **Bubbles**, the exported preset enables Babylon Lite foam and applies the approved smoke-scene profile: trapped-air rate `51`, wave-crest rate `48`, lifetime `1.0416666666666667`, minimum lifetime `0.4166666666666667`, buoyancy `4.2`, drag `0.45`, pool size `3.5`, softness `0`, density `8.25`, blur radius `1`, ambient `1`, size `0.15`, and subsurface color `#5380ea`. Subsurface bubble strength is `0.2` only while Blender **Bubbles** is enabled; otherwise it is `0`, including Foam-only and Spray-only exports.
 
@@ -180,11 +207,11 @@ The simulation duration is indefinite and alpha decay is disabled because Mantaf
 
 Foam debug mode uses `"off"` for normal rendering. Imports normalize the older `"none"` value and the empty value produced by affected round trips to `"off"`.
 
-When a self-contained Blender JSON is active in any demo, including Whiteboard, **Export parameters** emits another self-contained JSON. Live simulation/UI values replace the preset values, while the active GLB, collision SDF, and Blender `source` metadata are preserved.
+When a Blender JSON is active in any demo, including Whiteboard, **Export parameters** preserves the live simulation/UI values and Blender `source` metadata. An externally sourced scene exposes **Embed external GLB/SDF in JSON**: unchecked preserves every original external GLB/SDF filename and changes only JSON-authored state; checked embeds the already-resolved static and animated SDF bytes into a self-contained JSON. Embedded imports remain embedded.
 
 ## Collision
 
-The add-on exposes one export setting, **Collision SDF resolution**, independent from Mantaflow's **Resolution Divisions**. It sets the number of grid points on the longest SDF axis. Other axes use the same cell size:
+The add-on exposes **Static collision SDF resolution**, independent from Mantaflow's **Resolution Divisions**, with a control range of 8 through 2048. It sets the number of grid points on the longest domain-space SDF axis. Other axes use the same cell size:
 
 ```text
 cellSize = max(gridSize) / (resolution - 1)
@@ -193,18 +220,26 @@ origin = gridPosition - gridSize / 2
 textureBytes = dims.x * dims.y * dims.z * 4
 ```
 
-The add-on displays the resulting dimensions and `R32Float` GPU texture size in MiB below the resolution control. The JSON collision payload adds a 64-byte header and base64 encoding increases its textual size by roughly one third.
+The add-on displays the resulting dimensions and uncompressed f32 payload size in MiB below the static resolution control. Each animated mesh has a separate longest-axis resolution and up to two positive padding cells around its evaluated local bounds. Every collision payload uses the same 64-byte BLSF header. Zlib compression is lossless and typically reduces smooth SDF fields to roughly one third of their raw size; embedded base64 then adds its usual one-third textual overhead to the compressed bytes. Decompression is bounded to 512 MiB per resource. The 16-million-voxel guard applies to the combined static and animated atlas, and at most 16 animated collision grids can be installed.
 
-Blender evaluates modifiers, combines enabled liquid collision effectors into one BVH regardless of render visibility, and stores negative distances inside solids. Render-hidden effectors provide collision without adding presentation geometry to `scene.glb`. Collision meshes should be closed and consistently oriented.
+Blender evaluates modifiers and builds one BVH per enabled static liquid collision effector regardless of render visibility. Animated meshes are always excluded from this static union, so resolution `0` cannot leave a frozen ghost collider. For each collision-grid sample, the exporter finds the nearest unsigned surface distance and classifies the point against each candidate object's closed volume with ray parity. The signed-distance union is negative when any collider contains the point. Per-object classification avoids nearest-triangle sign ambiguity at corners and edges, which previously created phantom vertical solids and localized FLIP marker traps. Animated SDFs use the same distance/sign calculation in object-local bundle coordinates. Collision meshes should be closed and consistently oriented.
+
+The Fluid panel's **Collision** section appears for imported SDF bundles. It lists the static grid and every animated local grid with authored resolution and actual dimensions. Each entry can be disabled independently or switched between trilinear and nearest-neighbour sampling. These settings update uniform metadata only: atlas buffers, bind groups, and solver pipelines remain unchanged. The flags round-trip through `collisionEnabled`, `collisionTrilinear`, and each animated entry's `enabled`/`trilinear` fields.
+
+The on-disk BLSF payload remains f32 for authoring fidelity and compatibility. During import, every distance is divided by its grid cell size, converted to IEEE float16, and packed two values per `u32` in the shared GPU atlas. WGSL decodes with `unpack2x16float` and restores world/local distance by multiplying by cell size after nearest or trilinear sampling. Cell-relative quantization keeps precision concentrated around the zero surface while halving atlas storage. Legacy custom and floating-body SDF buffers retain their original f32 layouts.
+
+Nearest mode reconstructs a local linear distance from the nearest voxel and its central-difference gradient instead of returning a piecewise-constant raw cell value. For animated local grids it also disables sub-frame matrix extrapolation: the obstacle follows its current visual pose, but contributes no derived moving-boundary velocity. This avoids voxel-boundary jumps becoming extreme false wall speeds in FLIP; trilinear mode remains the higher-quality choice for continuously velocity-coupled animated obstacles.
+
+The Foam panel hides its FLIP-only whitewater controls—turbulence generation, energy/curvature/turbulence ranges, layer depth, and spray drag—whenever another solver method is active. Shared diffuse controls remain visible for methods that support them.
 
 ## Runtime Import
 
-1. Parse and validate the format-6 through format-9 preset, inferring recycle sinks for format 6.
-2. Decode and validate the embedded GLB and collision payload.
+1. Parse and validate the format-6 through format-15 preset, inferring recycle sinks for format 6.
+2. Decode embedded payloads, or resolve and validate the external GLB/static-SDF/animated-SDF resources supplied alongside the JSON.
 3. Load the GLB from its `ArrayBuffer`, register all animation groups, and play every clip on a continuous loop.
 4. Suspend the dashboard demo's presentation meshes, ground, and direct lights. Whiteboard keeps its selected environment cubemap as the background and leaves the single-sample/MSAA scene passes in skybox-covered no-clear mode; imports hosted by other demos hide the skybox and switch those passes to per-frame clear mode. Both paths redraw every pixel after camera motion, so stale color cannot remain.
 5. Cancel the imported GLB root's synthetic X mirror, resolve each format-9 emitter's `sourceNode`, then copy its rendered bundle-basis transform to the analytical emitter after animation advances each frame. Derived Source velocity updates without resetting emission budgets.
-6. Install the collision storage/uniform buffers as the active `SceneSdfSpec`. In Whiteboard's MLS-MPM backend, intersect its free space with the invisible grid container so imported obstacles and the inset numerical-boundary walls are both enforced.
+6. Pack the static grid and up to 16 animated local grids into one storage atlas plus one fixed-layout uniform buffer. Per-grid uniform flags select enabled/disabled and trilinear/nearest sampling. After glTF animation advances, update each linked node's current and previous world-to-local matrix without replacing buffers or recompiling solver pipelines. Every solver continues consuming one `SceneSdfSpec`; FLIP derives moving-solid normal velocity through its existing time-offset SDF samples. In Whiteboard's MLS-MPM backend, intersect free space with the invisible grid container so imported obstacles and inset numerical-boundary walls are both enforced.
 7. Set each solver's safety floor to the imported grid's lower bound. Treat the imported grid position as the bundle's translation anchor: editing it translates the GLB presentation root, baked collision-SDF origin, analytical emitters, and sinks together without changing their grid-local layout or generating synthetic source velocity.
 8. Restore grid, PBF physics, time scale, emitters, sinks, render, and foam settings.
 9. For Whiteboard imports only, use the Blender front view and frame the camera around the union of the simulation grid and every emitter/sink's transformed analytical shape. Presentation-only meshes are excluded so oversized grounds, walls, and backgrounds cannot pull the camera away from the fluid or place the camera behind a backdrop.
@@ -218,6 +253,6 @@ Resetting the fluid with `R` or **Reset simulation** also rewinds imported GLB a
 
 ## Validation
 
-- Unit tests cover format-6 migration, format-7 sink modes, format-8 Initial Velocity fields, format-9 source-node bindings, dynamic emitter-buffer updates, base64 scene parsing, collision headers, preset bounds, flow references, and lifecycle/time-scale bounds.
-- The focused Chrome/WebGPU workflow imports format-9 JSON, verifies scene/SDF/preset restoration, plays an animated GLB, follows a linked source node, then confirms cleanup on demo switch.
-- Blender background smoke export verifies native domain/flow/effector discovery and produces a self-contained `.json`.
+- Unit coverage includes format-15 animated collision parsing, unique node links, embedded/external re-export, collision headers, preset bounds, flow references, and lifecycle/time-scale bounds.
+- The focused Chrome/WebGPU workflow imports a selected JSON/GLB/static-SDF/animated-SDF set, verifies the packed collision binding, plays the linked glTF animation, advances the collision transform after animation, and confirms cleanup on demo switch.
+- Blender background export verifies animated-mesh listing, `0` collision override, rigid local SDF baking, hidden-node animation export, the 2048 control ceilings, optional lights, separate resource files, and decimation protection.

@@ -55,5 +55,9 @@ export function editFluidPresetSession(session: FluidPresetSession, edit: FluidP
 export function exportFluidPresetSession(session: FluidPresetSession, options: FluidPresetSessionExport): FluidExportJson {
     const edited = editFluidPresetSession(session, options);
     const mapped = exportJsonFromPairState(options.demo, options.method, edited.state);
-    return mergeFluidPresetData(mapped, edited.application) as FluidExportJson;
+    const exported = mergeFluidPresetData(mapped, edited.application) as FluidExportJson;
+    if (exported.scene?.animatedCollisions?.length) {
+        exported.formatVersion = Math.max(exported.formatVersion ?? 0, 15);
+    }
+    return exported;
 }

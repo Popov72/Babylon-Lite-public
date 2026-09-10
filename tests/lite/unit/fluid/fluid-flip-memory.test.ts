@@ -88,6 +88,18 @@ describe("FLIP particle dispatch", () => {
         expect(source).toContain("dispatchWorkgroupsIndirect(args, offset)");
         expect(source).toContain("writeDispatch(0u, select(pages * ${FLIP_PAGE_CELLS}u, 0u, overflow))");
         expect(source).toContain("writeDispatch(3u, select(pages * ${FLIP_PAGE_CELLS * 3}u, 0u, overflow))");
+    });
+
+    it("keeps page capacity runtime-configurable and reuses compute pipelines", () => {
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/solvers/flip-sim.ts"), "utf8");
+        expect(source).toContain("pageCapacity: u32");
+        expect(source).toContain("paramsF32[38] = pageLayout?.maxPages ?? 0");
+        expect(source).toContain("cachedFlipComputePipeline(device, label, code)");
+        expect(source).not.toContain("const FLIP_PAGE_MAX_PAGES:");
+        expect(source).not.toContain("const POLYGON_PAGE_MAX_PAGES:");
+        expect(source).not.toContain("const PAGE_MAX_PAGES:");
+        expect(source).not.toContain("const PAGE_STORAGE_CELLS:");
+        expect(source).toContain("FLIP_PIPELINE_CACHE_LIMIT = 256");
         expect(source).toContain("writeDispatch(6u, select(config.activeParticleGroups * ${WORKGROUP_SIZE}u, 0u, overflow))");
         expect(source).toContain("writeDispatch(9u, select(config.allParticleGroups * ${WORKGROUP_SIZE}u, 0u, overflow))");
         expect(source).toContain("writeDispatch(12u, select(${WORKGROUP_SIZE}u, 0u, overflow))");
@@ -112,12 +124,21 @@ describe("FLIP particle dispatch", () => {
         const compactWgsl =
             "const FIXED_POINT:f32=1.0;struct Params{x:u32,};fn gridDim(p:Params)->vec3<i32>{return vec3<i32>(1);}fn cellIndex(c:vec3<i32>,p:Params)->u32{let d=gridDim(p);return u32(c.x+d.x*(c.y+d.y*c.z));}fn inCellGrid(c:vec3<i32>,p:Params)->bool{return true;}fn storageCellExists(c:vec3<i32>,p:Params)->bool{return inCellGrid(c,p);}fn uDim(p:Params)->vec3<i32>{return gridDim(p);}fn vDim(p:Params)->vec3<i32>{return gridDim(p);}fn wDim(p:Params)->vec3<i32>{return gridDim(p);}fn faceCount(d:vec3<i32>)->u32{return 1u;}fn uCount(p:Params)->u32{return 1u;}fn vCount(p:Params)->u32{return 1u;}fn totalFaceCount(p:Params)->u32{return uCount(p)+vCount(p)+faceCount(wDim(p));}fn localFaceIndex(c:vec3<i32>,d:vec3<i32>)->u32{return 0u;}fn globalFaceIndex(kind:u32,c:vec3<i32>,p:Params)->u32{if(kind==0u){return 0u;}if(kind==1u){return 1u;}return 2u;}fn faceCoord(localIndex:u32,d:vec3<i32>)->vec3<i32>{let x=i32(localIndex%u32(d.x));let yz=i32(localIndex/u32(d.x));let y=yz%d.y;return vec3<i32>(x,y,yz/d.y);}fn faceKind(globalIndex:u32,p:Params)->u32{if(globalIndex<uCount(p)){return 0u;}if(globalIndex<uCount(p)+vCount(p)){return 1u;}return 2u;}fn faceLocalIndex(globalIndex:u32,kind:u32,p:Params)->u32{if(kind==0u){return globalIndex;}if(kind==1u){return globalIndex-uCount(p);}return globalIndex-uCount(p)-vCount(p);}fn faceGridDim(kind:u32,p:Params)->vec3<i32>{return gridDim(p);}@compute @workgroup_size(64)fn main(){}";
         const rewritten = rewriteFlipWgslForPagedStorage(compactWgsl, resolveFlipPageLayout([16, 16, 16], 8, 64));
-        expect(rewritten).toContain("return FLIP_PAGE_STORAGE_CELLS");
-        expect(rewritten).toContain("return FLIP_PAGE_STORAGE_FACES");
+        expect(rewritten).toContain("return flipPageStorageCells(p)");
+        expect(rewritten).toContain("return flipPageStorageFaces(p)");
         expect(rewritten).toContain("return globalIndex % 3u");
         expect(rewritten).toContain("return globalIndex / 3u");
-        expect(rewritten).toContain("return page != 0u && page <= FLIP_PAGE_MAX_PAGES;");
+        expect(rewritten).toContain("return page != 0u && page <= flipPageMaxPages(p);");
         expect(rewritten).not.toContain("return u32(c.x+d.x*(c.y+d.y*c.z))");
+    });
+
+    it("keeps paged solver WGSL identical across page-capacity changes", () => {
+        const compactWgsl =
+            "const FIXED_POINT:f32=1.0;struct Params{sheeting:vec4<f32>,};fn gridDim(p:Params)->vec3<i32>{return vec3<i32>(1);}fn cellIndex(c:vec3<i32>,p:Params)->u32{return 0u;}fn inCellGrid(c:vec3<i32>,p:Params)->bool{return true;}fn storageCellExists(c:vec3<i32>,p:Params)->bool{return true;}fn uDim(p:Params)->vec3<i32>{return gridDim(p);}fn vDim(p:Params)->vec3<i32>{return gridDim(p);}fn wDim(p:Params)->vec3<i32>{return gridDim(p);}fn faceCount(d:vec3<i32>)->u32{return 1u;}fn uCount(p:Params)->u32{return 1u;}fn vCount(p:Params)->u32{return 1u;}fn totalFaceCount(p:Params)->u32{return 1u;}fn localFaceIndex(c:vec3<i32>,d:vec3<i32>)->u32{return 0u;}fn globalFaceIndex(kind:u32,c:vec3<i32>,p:Params)->u32{return 0u;}fn faceCoord(localIndex:u32,d:vec3<i32>)->vec3<i32>{return vec3<i32>(0);}fn faceKind(globalIndex:u32,p:Params)->u32{return 0u;}fn faceLocalIndex(globalIndex:u32,kind:u32,p:Params)->u32{return 0u;}fn faceGridDim(kind:u32,p:Params)->vec3<i32>{return gridDim(p);}@compute @workgroup_size(64)fn main(){}";
+
+        expect(rewriteFlipWgslForPagedStorage(compactWgsl, resolveFlipPageLayout([32, 32, 32], 8, 64))).toBe(
+            rewriteFlipWgslForPagedStorage(compactWgsl, resolveFlipPageLayout([32, 32, 32], 32, 64))
+        );
     });
 
     it("reuses the force bind group while only uniform contents change", () => {
@@ -428,6 +449,9 @@ describe("FLIP particle dispatch", () => {
         expect(foamRenderer).toContain('polygonSurfaceDepth ? "polygon" : "screen"');
         expect(foamRenderer).toContain("foamSplatPipelineCaches: WeakMap<GPUDevice, FoamSplatPipelineCache>");
         expect(foamRenderer).toContain("buildSplatWgsl(activeParticles, surfaceDepthMode)");
+        expect(foamRenderer).toContain("activeState[activeListBase(activeState[3], arrayLength(&diffuse)) + ii]");
+        expect(foamRenderer).toContain("resource: { buffer: pool.activeIndices! }");
+        expect(foamRenderer).not.toContain("offset: pool.activeIndicesOffset");
         expect(foamRenderer).toContain("let orientationWeight = 1.0;");
         expect(foamRenderer).not.toContain("let polygonDepth = u.gains.w > 1.5;");
         expect(foamRenderer).not.toContain("if (u.gains.w < 0.5)");
@@ -502,6 +526,11 @@ describe("FLIP particle dispatch", () => {
         const controls = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/controls/controls-panel.ts"), "utf8");
         expect(controls).not.toContain("Active foam particles");
         expect(controls).toContain("\\u00a0/\\u00a0");
+        expect(controls).toMatch(/"Pool size \(\\u00d7 fluid\)",\s*1,\s*20,/);
+        expect(controls).toMatch(/"Foam density",\s*0\.2,\s*50,/);
+        expect(controls).toContain('absorbInput.max = "150"');
+        expect(controls).toContain("const foamFlipOnlyControls = [");
+        expect(controls).toContain("setRowVisible(control, flip)");
         expect(controls.indexOf('"Generate foam"')).toBeLessThan(controls.indexOf('"Generate spray"'));
         expect(controls.indexOf('"Generate spray"')).toBeLessThan(controls.indexOf('"Generate bubbles"'));
         expect(controls).toContain("setFoamParticleCounts");

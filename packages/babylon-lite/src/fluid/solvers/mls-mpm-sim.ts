@@ -75,7 +75,7 @@ import {
     resetFluidParticleLifecycle,
     resetFluidFlowState,
     SCENE_NORMAL_WGSL,
-    SCENE_SDF_GRID_WGSL,
+    sceneSdfGridBindingWgsl,
     setFluidFlowConfig,
     updateFluidFlowEmitter,
 } from "../core/sim-common.js";
@@ -810,7 +810,7 @@ function buildUpdateGridWgsl(scene: SceneSdfSpec | null, activeBlocks: boolean, 
     // storage grid + sampler are injected only then (else the binding would be unused and
     // stripped from the layout:"auto" layout, breaking the bind group). Binding 3 is free
     // (0=cells, 1=p, 2=sceneSdfParams).
-    const gridInject = closed && scene.sdfGrid ? `\n@group(0) @binding(3) var<storage, read> sceneSdfGrid: array<f32>;\n${SCENE_SDF_GRID_WGSL}` : "";
+    const gridInject = closed ? sceneSdfGridBindingWgsl(scene, 3) : "";
     const decls = closed ? `${scene.struct}\n@group(0) @binding(2) var<uniform> sceneSdfParams: SceneSdfParams;${gridInject}\n${scene.sdf}\n${SCENE_NORMAL_WGSL}` : "";
     const wall = closed
         ? `
@@ -926,7 +926,7 @@ function g2pConfineSdf(scene: SceneSdfSpec): string {
 function buildG2pWgsl(scene: SceneSdfSpec | null, pagedGrid: boolean): string {
     // Baked SDF grid (optional): binding 4 is free here (0=particles, 1=cells, 2=p,
     // 3=sceneSdfParams). Injected BEFORE scene.sdf so `sceneSdf` can call sampleSdfGrid.
-    const gridInject = scene?.sdfGrid ? `\n@group(0) @binding(4) var<storage, read> sceneSdfGrid: array<f32>;\n${SCENE_SDF_GRID_WGSL}` : "";
+    const gridInject = scene ? sceneSdfGridBindingWgsl(scene, 4) : "";
     const decls = scene ? `${scene.struct}\n@group(0) @binding(3) var<uniform> sceneSdfParams: SceneSdfParams;${gridInject}\n${scene.sdf}\n${SCENE_NORMAL_WGSL}` : "";
     const pageDecls = pagedGrid
         ? `

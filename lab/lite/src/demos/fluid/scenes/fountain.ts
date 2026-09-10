@@ -206,7 +206,24 @@ export function createFountainDemo(ctx: FluidCtx): FluidDemo {
             /* jets refresh on param change, not per-frame */
         },
         demoParams() {
-            return [];
+            return [
+                { key: "centralSpeed", label: "Central jet speed", type: "number" as const, min: 4, max: 18, step: 0.5, value: fountainParams.centralSpeed, hidden: true },
+                { key: "ringSpeed", label: "Ring jet speed", type: "number" as const, min: 4, max: 18, step: 0.5, value: fountainParams.ringSpeed, hidden: true },
+                { key: "ringOut", label: "Ring outward angle", type: "number" as const, min: 0, max: 2, step: 0.05, value: fountainParams.ringOut, hidden: true },
+                {
+                    key: "centralRadius",
+                    label: "Central nozzle radius",
+                    type: "number" as const,
+                    min: 0.05,
+                    max: 0.6,
+                    step: 0.01,
+                    value: fountainParams.centralRadius,
+                    hidden: true,
+                },
+                { key: "ringRadius", label: "Ring nozzle radius", type: "number" as const, min: 0.05, max: 0.6, step: 0.01, value: fountainParams.ringRadius, hidden: true },
+                { key: "rate", label: "Emit rate", type: "number" as const, min: 0.05, max: 1.5, step: 0.05, value: fountainParams.rate, hidden: true },
+                { key: "spread", label: "Jet spread", type: "number" as const, min: 0, max: 2, step: 0.05, value: fountainParams.spread, hidden: true },
+            ];
         },
         applyParam(key: string, value: number | boolean | string): void {
             if (key in fountainParams && typeof value === "number") {

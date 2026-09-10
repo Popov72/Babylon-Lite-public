@@ -97,6 +97,7 @@ import {
     bindFluidControls,
     configureFluidSimulationRenderLayer,
     commitFluidReconfiguration,
+    createFluidCompositeSceneSdf,
     createFluidInitialStatePlanCache,
     createFluidSimulation,
     createFluidSimulationCollection,
@@ -108,6 +109,7 @@ import {
     createSolidGridBounds,
     DEFAULT_FLUID_SCHEMAS,
     disposeFluidControlsBinding,
+    disposeFluidSceneSdf,
     exportJsonFromPairState,
     FLIP_DEFAULT_PAGE_CAPACITY,
     fluidCaptureCompletionTime,
@@ -141,8 +143,12 @@ import {
     stepFluidSimulation,
     syncFluidControls,
     updateFluidSimulationEmitter,
+    updateFluidSceneSdfContainer,
+    updateFluidSceneSdfGridSettings,
+    updateFluidSceneSdfStaticOffset,
+    updateFluidSceneSdfTransforms,
 } from "babylon-lite";
-import type { FluidEmitter, FluidFlowConfig, FluidSceneSdf, FluidShape, FluidSimulationSemantics, FluidSink, ForceFieldSpec } from "babylon-lite";
+import type { FluidEmitter, FluidFlowConfig, FluidSceneSdf, FluidShape, FluidSimulationSemantics, FluidSink, ForceFieldSpec, Mat4 } from "babylon-lite";
 import type {
     BlenderFluidScene,
     FluidExportJson,
@@ -163,7 +169,7 @@ import type {
     SceneSdfSpec,
 } from "babylon-lite";
 import type { AssetContainer, Mesh, Task, EnvironmentTextures, Renderable, Material, PbrMaterialProps, SceneNode, Vec3 } from "babylon-lite";
-import { buildHdrSkyboxRenderable, retireGpuResources } from "babylon-lite";
+import { buildHdrSkyboxRenderable } from "babylon-lite";
 // Plain source→target blit used as the no-bloom presentation pass. Only the TYPE is
 // re-exported from the package root, so the factory comes from its own module (the same
 // deep-import convention the fluid sim + HDR skybox already use here).
@@ -248,7 +254,23 @@ const SHARED_FLUID_BINDING_KEYS: readonly (keyof FluidControlValues)[] = [
 // World-space radius of the interactive Shift+RMB push force (mouse-stir). Shared
 // by every demo now the force is core-owned.
 const FORCE_RADIUS = 3.5;
+const SHARED_HELPER_TEXT = "Drag rotate · RMB slide · Shift+RMB push fluid · wheel zoom · R refill · M switch method · P pause · F8 hide UI";
 const clampScale = (s: number, lo: number, hi: number): number => Math.min(Math.max(s, lo), hi);
+const applyLatestOnAnimationFrame = <T>(apply: (value: T) => void): ((value: T) => void) => {
+    let scheduled = false;
+    let latest: T;
+    return (value: T): void => {
+        latest = value;
+        if (scheduled) {
+            return;
+        }
+        scheduled = true;
+        requestAnimationFrame(() => {
+            scheduled = false;
+            apply(latest);
+        });
+    };
+};
 // Material 2 = sand. Sand renders as opaque grainy spheres (no water surface) with no velocity
 // brightening (uniform grains); its colour comes from the per-material sand preset.
 const PBMPM_SAND_MATERIAL = 2;
@@ -256,6 +278,12 @@ const PBMPM_SAND_MATERIAL = 2;
 async function main(): Promise<void> {
     const __initStart = performance.now();
     const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+    const helperText = document.querySelector<HTMLElement>(".hint");
+    const syncHelperText = (demo: FluidDemo): void => {
+        if (helperText) {
+            helperText.textContent = demo.helperText ? `${SHARED_HELPER_TEXT} — ${demo.helperText}` : SHARED_HELPER_TEXT;
+        }
+    };
     const params = new URLSearchParams(location.search);
     const captureSeconds = Number(params.get("captureSeconds"));
     const captureFixedDt = Number(params.get("fixedDt"));
@@ -870,11 +898,12 @@ async function main(): Promise<void> {
         node: SceneNode;
         lastPosition: [number, number, number];
     }
+    interface ImportedAnimatedCollisionBinding {
+        id: string;
+        node: SceneNode;
+    }
     interface ImportedCollisionResources {
-        sdf: SceneSdfSpec;
-        mlsSdf: SceneSdfSpec;
-        paramsBuffer: GPUBuffer;
-        gridBuffer: GPUBuffer;
+        sceneSdf: FluidSceneSdf;
         collisionOrigin: [number, number, number];
     }
     interface ImportedFluidScene extends ImportedCollisionResources {
@@ -886,9 +915,13 @@ async function main(): Promise<void> {
         groundWasVisible: boolean;
         bundle: BlenderFluidScene;
         sourceBindings: ImportedEmitterSourceBinding[];
+        animatedCollisionBindings: ImportedAnimatedCollisionBinding[];
         sourceBindingHook?: (deltaMs: number) => void;
     }
     let importedScene: ImportedFluidScene | null = null;
+    let collisionControlsHost: HTMLDivElement | null = null;
+    let externalSceneExportRow: HTMLLabelElement | null = null;
+    let embedExternalSceneChk: HTMLInputElement | null = null;
     let suppressPairSnapshot = false;
     let importGeneration = 0;
 
@@ -1527,8 +1560,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     let fpsFrames = 0;
 
     // Mouse-force state. The Shift+RMB drag sets `pendingForce`; the frame loop
-    // applies it for one frame then clears it, so the force only acts while the
-    // mouse is actually moving.
+    // retains the latest sample briefly so a deferred solver step cannot lose it.
     let pendingForce: PendingForce | null = null;
 
     // Shift+RMB "push the fluid" drag state (core-owned; works in every demo).
@@ -1540,13 +1572,17 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     let forceLastT = 0;
 
     const effectiveGridSettings = (method = methodName, scale = domainScale): FluidGridSettings => gridSettings ?? defaultGridSettings(method, scale);
-    function writeWhiteboardMlsContainer(buffer: GPUBuffer, byteOffset: number): void {
+    function whiteboardMlsContainerBounds(): { min: [number, number, number]; max: [number, number, number] } {
         const grid = effectiveGridSettings();
         const dx = gridSettings ? fluidSimulationCellSize("MLS-MPM", fluidDiscretization(physicsScale)) : cellSizeForPhysicsScale("MLS-MPM", physicsScale);
         const dims = gridCellsForSize(grid.size, dx);
         const minimum = gridBounds(grid.position, grid.size).min;
         const lo: [number, number, number] = [minimum[0] + dx * 2.5, minimum[1] + dx * 2.5, minimum[2] + dx * 2.5];
         const hi: [number, number, number] = [minimum[0] + (dims[0] - 3.5) * dx, minimum[1] + (dims[1] - 3.5) * dx, minimum[2] + (dims[2] - 3.5) * dx];
+        return { min: lo, max: hi };
+    }
+    function writeWhiteboardMlsContainer(buffer: GPUBuffer, byteOffset: number): void {
+        const { min: lo, max: hi } = whiteboardMlsContainerBounds();
         engine._device.queue.writeBuffer(buffer, byteOffset, new Float32Array([lo[0], lo[1], lo[2], 0, hi[0], hi[1], hi[2], 0]));
         canvas.dataset.mlsContainerLo = lo.join(",");
         canvas.dataset.mlsContainerHi = hi.join(",");
@@ -1801,6 +1837,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
                 limits: deviceLimits,
             }).steadyBytes;
         const gridRestartPending =
+            controlsBinding?.plan.restartRequired === true ||
             flipGridResolution !== builtFlipGridResolution ||
             !gridSettingsEqual(gridSettings, builtGridSettings) ||
             builtGridMethod !== methodName ||
@@ -1830,7 +1867,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     function applyFlow(): void {
         if (methodName === "FLIP") {
             const capacity = flipParticleCapacity(flipParticleCapacityRequest);
-            if (capacity !== particleCount) {
+            if (capacity !== activeSim.count) {
                 rebuildSims(flipParticleCapacityRequest, physicsScale);
                 return;
             }
@@ -1896,7 +1933,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
                 playAnimation(group);
             }
         }
-        updateImportedEmitterSources(imported, 0);
+        updateImportedSceneBindings(imported, 0, true);
     }
 
     function resetActiveFlow(clearHoles: boolean, preserveSceneAnimations = false): void {
@@ -1916,13 +1953,15 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
                 refreshParticleUsageStatus();
             }
         }
-        const pendingGridRebuild =
-            methodName === "FLIP" &&
-            (flipGridResolution !== builtFlipGridResolution ||
-                !gridSettingsEqual(gridSettings, builtGridSettings) ||
-                builtGridMethod !== methodName ||
-                flipMarkersPerCell !== builtFlipMarkersPerCell);
-        if (pendingGridRebuild) {
+        const pendingBackendRebuild =
+            controlsBinding?.plan.restartRequired === true ||
+            (methodName === "FLIP" &&
+                (flipParticleCapacity(flipParticleCapacityRequest) !== activeSim.count ||
+                    flipGridResolution !== builtFlipGridResolution ||
+                    !gridSettingsEqual(gridSettings, builtGridSettings) ||
+                    builtGridMethod !== methodName ||
+                    flipMarkersPerCell !== builtFlipMarkersPerCell));
+        if (pendingBackendRebuild) {
             syncImportedMeshAnimations(!preserveSceneAnimations);
             rebuildSims(requestedParticleCount(), physicsScale);
             if (resolutionAdjustment) {
@@ -1999,15 +2038,25 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         const demo = activeDemo;
         if (importedScene) {
             syncImportedSceneGridTransform(importedScene);
+            if (demo.key === "whiteboard" && methodName === "MLS-MPM") {
+                const bounds = whiteboardMlsContainerBounds();
+                updateFluidSceneSdfContainer(importedScene.sceneSdf, bounds);
+                canvas.dataset.mlsContainerLo = bounds.min.join(",");
+                canvas.dataset.mlsContainerHi = bounds.max.join(",");
+            } else {
+                updateFluidSceneSdfContainer(importedScene.sceneSdf, null);
+                delete canvas.dataset.mlsContainerLo;
+                delete canvas.dataset.mlsContainerHi;
+            }
+            return importedScene.sceneSdf;
         } else {
             demo.writeSdfParams();
         }
-        const sdf = importedScene?.sdf ?? demo.sdf;
+        const sdf = demo.sdf;
         let mlsSdf = sdf;
         if (demo.key === "whiteboard") {
-            const buffer = importedScene?.paramsBuffer ?? whiteboardMlsContainerBuffer;
-            writeWhiteboardMlsContainer(buffer, importedScene ? 32 : 0);
-            mlsSdf = importedScene?.mlsSdf ?? whiteboardMlsContainerSdf;
+            writeWhiteboardMlsContainer(whiteboardMlsContainerBuffer, 0);
+            mlsSdf = whiteboardMlsContainerSdf;
         } else {
             delete canvas.dataset.mlsContainerLo;
             delete canvas.dataset.mlsContainerHi;
@@ -2027,6 +2076,10 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             return;
         }
         importedScene = null;
+        refreshImportedCollisionControls(null);
+        if (externalSceneExportRow) {
+            externalSceneExportRow.style.display = "none";
+        }
         importedCollisionActive = false;
         canvas.dataset.importedBundle = "false";
         canvas.dataset.importedMeshCount = "0";
@@ -2037,6 +2090,8 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         delete canvas.dataset.importedAnimationCount;
         delete canvas.dataset.importedAnimationTime;
         delete canvas.dataset.importedPlayingAnimationCount;
+        delete canvas.dataset.importedAnimatedCollisionCount;
+        delete canvas.dataset.importedAnimatedCollisionPosition;
         delete canvas.dataset.importedBoundEmitterCount;
         delete canvas.dataset.importedEmitterPosition;
         delete canvas.dataset.importedEmitterSourceVelocity;
@@ -2055,11 +2110,9 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
                 scene._beforeRender.splice(index, 1);
             }
         }
+        setFluidSimulationSceneSdf(activeSim, null);
         removeFromScene(scene, previous.asset);
-        retireGpuResources(engine, () => {
-            previous.paramsBuffer.destroy();
-            previous.gridBuffer.destroy();
-        });
+        disposeFluidSceneSdf(previous.sceneSdf);
         restoreHostScenePresentation(restoreDemo);
         if (restoreDemo && activeDemo) {
             const usesGridFloor = activeDemo.useGridFloor === true;
@@ -2072,62 +2125,103 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     }
 
     function createImportedCollision(bundle: BlenderFluidScene): ImportedCollisionResources {
-        const paramsBuffer = engine._device.createBuffer({
-            label: "blender-fluid-sdf-params",
-            size: 64,
-            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-        });
-        let gridBuffer: GPUBuffer | undefined;
-        try {
-            gridBuffer = engine._device.createBuffer({
-                label: "blender-fluid-sdf-grid",
-                size: bundle.collision.distances.byteLength,
-                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-            });
-            const { origin, cellSize, dims, distances } = bundle.collision;
-            engine._device.queue.writeBuffer(paramsBuffer, 0, new Float32Array([origin[0], origin[1], origin[2], 1 / cellSize, dims[0], dims[1], dims[2], 0]));
-            engine._device.queue.writeBuffer(gridBuffer, 0, distances);
-            return {
-                paramsBuffer,
-                gridBuffer,
-                collisionOrigin: [...origin],
-                sdf: {
-                    struct: /* wgsl */ `
-struct SceneSdfParams {
-    grid: vec4<f32>,
-    dims: vec4<f32>,
-};`,
-                    sdf: /* wgsl */ `
-fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
-    return sampleSdfGrid(pt, sceneSdfParams.grid.xyz, sceneSdfParams.grid.w, vec3<i32>(sceneSdfParams.dims.xyz));
-}`,
-                    buffer: paramsBuffer,
-                    sdfGrid: gridBuffer,
+        return {
+            sceneSdf: createFluidCompositeSceneSdf(engine, {
+                staticSdf: {
+                    ...bundle.collision,
+                    enabled: bundle.collisionEnabled,
+                    trilinear: bundle.collisionTrilinear,
                 },
-                mlsSdf: {
-                    struct: /* wgsl */ `
-struct SceneSdfParams {
-    grid: vec4<f32>,
-    dims: vec4<f32>,
-    lo: vec4<f32>,
-    hi: vec4<f32>,
-};`,
-                    sdf: /* wgsl */ `
-fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
-    let collision = sampleSdfGrid(pt, sceneSdfParams.grid.xyz, sceneSdfParams.grid.w, vec3<i32>(sceneSdfParams.dims.xyz));
-    let fromLo = pt - sceneSdfParams.lo.xyz;
-    let fromHi = sceneSdfParams.hi.xyz - pt;
-    let container = min(min(min(fromLo.x, fromLo.y), fromLo.z), min(min(fromHi.x, fromHi.y), fromHi.z));
-    return min(collision, container);
-}`,
-                    buffer: paramsBuffer,
-                    sdfGrid: gridBuffer,
-                },
+                localSdfs: bundle.animatedCollisions.map((entry) => ({
+                    id: entry.id,
+                    ...entry.collision,
+                    enabled: entry.enabled,
+                    trilinear: entry.trilinear,
+                })),
+            }),
+            collisionOrigin: [...bundle.collision.origin],
+        };
+    }
+
+    function refreshImportedCollisionControls(imported: ImportedFluidScene | null): void {
+        if (!collisionControlsHost) {
+            return;
+        }
+        collisionControlsHost.replaceChildren();
+        controls.setSectionVisible("Collision", imported !== null);
+        if (!imported) {
+            return;
+        }
+        const payload = imported.bundle.preset.scene;
+        if (!payload) {
+            return;
+        }
+        const addGrid = (
+            title: string,
+            resolution: number,
+            dims: readonly [number, number, number],
+            settings: { enabled: boolean; trilinear: boolean },
+            apply: (settings: { enabled: boolean; trilinear: boolean }) => void
+        ): void => {
+            const row = document.createElement("div");
+            row.style.cssText = "padding:7px 0;border-bottom:1px solid #253247;";
+            const heading = document.createElement("div");
+            heading.style.cssText = "display:flex;justify-content:space-between;gap:8px;margin-bottom:5px;";
+            const name = document.createElement("strong");
+            name.textContent = title;
+            const info = document.createElement("span");
+            info.style.cssText = "color:#8fa4ba;font-size:11px;";
+            info.textContent = `${resolution} (${dims.join(" × ")})`;
+            heading.append(name, info);
+            const toggles = document.createElement("div");
+            toggles.style.cssText = "display:flex;gap:14px;flex-wrap:wrap;";
+            const checkbox = (label: string, checked: boolean, onchange: (checked: boolean) => void): HTMLLabelElement => {
+                const wrapper = document.createElement("label");
+                wrapper.style.cssText = "display:flex;align-items:center;gap:5px;cursor:pointer;";
+                const input = document.createElement("input");
+                input.type = "checkbox";
+                input.checked = checked;
+                input.onchange = () => onchange(input.checked);
+                wrapper.append(input, document.createTextNode(label));
+                return wrapper;
             };
-        } catch (error) {
-            paramsBuffer.destroy();
-            gridBuffer?.destroy();
-            throw error;
+            toggles.append(
+                checkbox("Enabled", settings.enabled, (enabled) => {
+                    settings.enabled = enabled;
+                    apply(settings);
+                }),
+                checkbox("Trilinear filtering", settings.trilinear, (trilinear) => {
+                    settings.trilinear = trilinear;
+                    apply(settings);
+                })
+            );
+            row.append(heading, toggles);
+            collisionControlsHost!.appendChild(row);
+        };
+
+        const staticSettings = {
+            enabled: payload.collisionEnabled ?? true,
+            trilinear: payload.collisionTrilinear ?? true,
+        };
+        addGrid("Static scene", Math.max(...imported.bundle.collision.dims), imported.bundle.collision.dims, staticSettings, (settings) => {
+            payload.collisionEnabled = settings.enabled;
+            payload.collisionTrilinear = settings.trilinear;
+            imported.bundle.collisionEnabled = settings.enabled;
+            imported.bundle.collisionTrilinear = settings.trilinear;
+            updateFluidSceneSdfGridSettings(imported.sceneSdf, [{ enabled: settings.enabled, trilinear: settings.trilinear }]);
+        });
+        for (const collision of imported.bundle.animatedCollisions) {
+            const manifest = payload.animatedCollisions?.find((entry) => entry.id === collision.id);
+            const settings = { enabled: collision.enabled, trilinear: collision.trilinear };
+            addGrid(collision.node, collision.resolution, collision.collision.dims, settings, (next) => {
+                collision.enabled = next.enabled;
+                collision.trilinear = next.trilinear;
+                if (manifest) {
+                    manifest.enabled = next.enabled;
+                    manifest.trilinear = next.trilinear;
+                }
+                updateFluidSceneSdfGridSettings(imported.sceneSdf, [{ id: collision.id, enabled: next.enabled, trilinear: next.trilinear }]);
+            });
         }
     }
 
@@ -2159,6 +2253,30 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         return nodes;
     }
 
+    function setImportedNodePresentation(node: SceneNode, visible: boolean): void {
+        for (const child of node.children) {
+            if ("_gpu" in child) {
+                setMeshVisible(child as Mesh, visible);
+            }
+            setImportedNodePresentation(child, visible);
+        }
+    }
+
+    function createImportedAnimatedCollisionBindings(asset: AssetContainer, bundle: BlenderFluidScene): ImportedAnimatedCollisionBinding[] {
+        const nodes = importedSceneNodes(asset);
+        return bundle.animatedCollisions.map((entry) => {
+            const matches = nodes.get(entry.node);
+            if (!matches || matches.length !== 1) {
+                throw new Error(`Animated fluid collision "${entry.id}" must resolve to exactly one GLB node named "${entry.node}".`);
+            }
+            const node = matches[0]!;
+            if (!entry.presentation) {
+                setImportedNodePresentation(node, false);
+            }
+            return { id: entry.id, node };
+        });
+    }
+
     function importedSourceTransform(node: SceneNode): ReturnType<typeof mat4Decompose> {
         return mat4Decompose(node.worldMatrix);
     }
@@ -2180,6 +2298,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             gridPosition[2] - imported.referenceGridPosition[2],
         ];
         const offsetDelta: [number, number, number] = [nextOffset[0] - imported.gridOffset[0], nextOffset[1] - imported.gridOffset[1], nextOffset[2] - imported.gridOffset[2]];
+        const moved = offsetDelta.some((component) => Math.abs(component) > 1e-8);
         imported.assetRoot.position.set(
             imported.assetRootPosition[0] + nextOffset[0],
             imported.assetRootPosition[1] + nextOffset[1],
@@ -2191,13 +2310,15 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             binding.lastPosition[2] += offsetDelta[2];
         }
         imported.gridOffset = nextOffset;
-        const { dims, cellSize } = imported.bundle.collision;
         const origin: [number, number, number] = [
             imported.collisionOrigin[0] + nextOffset[0],
             imported.collisionOrigin[1] + nextOffset[1],
             imported.collisionOrigin[2] + nextOffset[2],
         ];
-        engine._device.queue.writeBuffer(imported.paramsBuffer, 0, new Float32Array([origin[0], origin[1], origin[2], 1 / cellSize, dims[0], dims[1], dims[2], 0]));
+        if (moved) {
+            updateFluidSceneSdfStaticOffset(imported.sceneSdf, nextOffset, { resetMotion: true });
+            updateImportedCollisionTransforms(imported, 0, true);
+        }
         canvas.dataset.importedCollisionOrigin = origin.join(",");
         canvas.dataset.importedSceneOffset = nextOffset.join(",");
     }
@@ -2220,6 +2341,9 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                 throw new Error(`Fluid emitter "${emitter.id}" references ambiguous GLB source node "${emitter.sourceNode}".`);
             }
             const node = matches[0]!;
+            if (emitter.sourcePresentation === false) {
+                setImportedNodePresentation(node, false);
+            }
             const translation = importedSourceTransform(node).translation;
             bindings.push({ emitterId: emitter.id, node, lastPosition: [translation.x, translation.y, translation.z] });
         }
@@ -2348,6 +2472,28 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         }
     }
 
+    function updateImportedCollisionTransforms(imported: ImportedFluidScene, deltaMs: number, resetMotion = false): void {
+        updateFluidSceneSdfTransforms(
+            imported.sceneSdf,
+            imported.animatedCollisionBindings.map((binding) => ({
+                id: binding.id,
+                localToWorld: binding.node.worldMatrix as Mat4,
+            })),
+            deltaMs / 1000,
+            { resetMotion }
+        );
+        canvas.dataset.importedAnimatedCollisionCount = String(imported.animatedCollisionBindings.length);
+        const first = imported.animatedCollisionBindings[0]?.node.worldMatrix;
+        if (first) {
+            canvas.dataset.importedAnimatedCollisionPosition = [first[12], first[13], first[14]].join(",");
+        }
+    }
+
+    function updateImportedSceneBindings(imported: ImportedFluidScene, deltaMs: number, resetMotion = false): void {
+        updateImportedEmitterSources(imported, deltaMs);
+        updateImportedCollisionTransforms(imported, deltaMs, resetMotion);
+    }
+
     // ── Live tuning UI ───────────────────────────────────────────────
     // A combo box to switch method, per-method parameter sliders (applied live),
     // and a reset button. The per-method schema (each entry mirrors the sim's
@@ -2459,7 +2605,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         configureFluidSimulationRenderLayer(surfaceTask, { environmentRotationY: rad });
         configureFluidSimulationRenderLayer(polygonSurfaceTask, { environmentRotationY: rad });
     };
-    envRotInput.oninput = () => applyEnvRotation(parseFloat(envRotInput.value));
+    const applyEnvironmentRotationInput = applyLatestOnAnimationFrame(applyEnvRotation);
+    envRotInput.oninput = () => applyEnvironmentRotationInput(parseFloat(envRotInput.value));
     envRotRow.append(envRotHead, envRotInput);
     void envRotationDeg;
 
@@ -2526,7 +2673,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         envIntVal.textContent = `${v.toFixed(2)}\u00d7`;
         pushEnvIntensity();
     };
-    envIntInput.oninput = () => applyEnvIntensity(parseFloat(envIntInput.value));
+    const applyEnvironmentIntensityInput = applyLatestOnAnimationFrame(applyEnvIntensity);
+    envIntInput.oninput = () => applyEnvironmentIntensityInput(parseFloat(envIntInput.value));
     envIntRow.append(envIntHead, envIntInput);
 
     // Anti-aliasing toggle — applies to EVERY demo. Off by default: it is only worth its cost
@@ -2929,7 +3077,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     };
     const applyFluidControlHostState = (snapshot: Readonly<FluidControlValues>, changedKeys: readonly (keyof FluidControlValues)[]): void => {
         physicsScale = snapshot.physScale;
-        if (changedKeys.includes("gridPosition") || changedKeys.includes("gridSize")) {
+        if (!loadingPairState && (changedKeys.includes("gridPosition") || changedKeys.includes("gridSize"))) {
             gridSettings = { position: [...snapshot.gridPosition], size: [...snapshot.gridSize] };
         }
         flipGridResolution = snapshot.gridResolution;
@@ -2940,7 +3088,6 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         surfaceDebugActive = snapshot.debug !== "none";
         if (methodName === "FLIP") {
             flipParticleCapacityRequest = snapshot.count;
-            particleCount = flipParticleCapacity(snapshot.count, activeFlow, snapshot.gridResolution);
             flipPagedGrid = snapshot.pagedGrid;
             flipPagedGridMaxPages = snapshot.pagedGridMaxPages;
         } else {
@@ -3010,11 +3157,33 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     const emitterFlowHost = document.createElement("div");
     const sinkFlowHost = document.createElement("div");
     controls.root.append(...controls.makeSection("Emitters", [emitterFlowHost]), ...controls.makeSection("Sinks", [sinkFlowHost]));
+    collisionControlsHost = document.createElement("div");
+    controls.root.append(...controls.makeSection("Collision", [collisionControlsHost]));
+    controls.setSectionVisible("Collision", false);
 
     // ── Preset / self-contained JSON import and parameter export ─────────────
     const exportBtn = document.createElement("button");
     exportBtn.textContent = "Export parameters";
     exportBtn.style.cssText = "width:100%;padding:5px;cursor:pointer;background:#26415f;color:#eef3f8;border:1px solid #3a567a;border-radius:4px;";
+    externalSceneExportRow = document.createElement("label");
+    externalSceneExportRow.style.cssText = "display:none;align-items:center;gap:6px;margin:8px 0;cursor:pointer;";
+    embedExternalSceneChk = document.createElement("input");
+    embedExternalSceneChk.type = "checkbox";
+    const embedExternalSceneText = document.createElement("span");
+    embedExternalSceneText.textContent = "Embed external GLB/SDF in JSON";
+    externalSceneExportRow.append(embedExternalSceneChk, embedExternalSceneText);
+
+    function syncExternalSceneExportChoice(reset = false): void {
+        if (!externalSceneExportRow || !embedExternalSceneChk) {
+            return;
+        }
+        const external = importedScene?.bundle.preset.scene?.encoding === "external";
+        externalSceneExportRow.style.display = external ? "flex" : "none";
+        if (reset || !external) {
+            embedExternalSceneChk.checked = false;
+        }
+    }
+
     function exportParameters(): void {
         // Serialise the live UI into the shared grouped shape (the same format the on-disk
         // quality presets use), so an exported file can be dropped straight into presets/.
@@ -3023,8 +3192,9 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             (currentPairKey ? presetSessions.get(currentPairKey) : undefined) ?? importFluidPresetSession(exportJsonFromPairState(activeDemo!.key, methodName, state), state);
         const application: Parameters<typeof exportFluidPresetSession>[1]["application"] = {};
         if (importedScene) {
+            const preserveExternal = importedScene.bundle.preset.scene?.encoding === "external" && embedExternalSceneChk?.checked !== true;
             application.scene = {
-                ...scenePayloadFromBlenderFluidJson(importedScene.bundle),
+                ...scenePayloadFromBlenderFluidJson(importedScene.bundle, { preserveExternal }),
                 anchorPosition: [...importedScene.referenceGridPosition],
             };
             if (importedScene.bundle.preset.source) {
@@ -3126,6 +3296,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             groundWasVisible,
             bundle,
             sourceBindings: [],
+            animatedCollisionBindings: [],
         };
         const replacingImported = importedScene !== null;
         let assetAdded = false;
@@ -3149,7 +3320,11 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                 group.loopAnimation = true;
                 playAnimation(group);
             }
+            nextImported.animatedCollisionBindings = createImportedAnimatedCollisionBindings(asset, bundle);
+            updateImportedCollisionTransforms(nextImported, 0, true);
             importedScene = nextImported;
+            refreshImportedCollisionControls(nextImported);
+            syncExternalSceneExportChoice(true);
             importedCollisionActive = true;
             setMeshVisible(ground, false);
             canvas.dataset.importedHostGroundHidden = "true";
@@ -3174,9 +3349,9 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                 }
             }
             nextImported.sourceBindings = createImportedEmitterSourceBindings(asset);
-            updateImportedEmitterSources(nextImported, 0);
-            if (nextImported.sourceBindings.length > 0) {
-                const sourceBindingHook = (deltaMs: number): void => updateImportedEmitterSources(nextImported, deltaMs);
+            updateImportedSceneBindings(nextImported, 0, true);
+            if (nextImported.sourceBindings.length > 0 || nextImported.animatedCollisionBindings.length > 0) {
+                const sourceBindingHook = (deltaMs: number): void => updateImportedSceneBindings(nextImported, deltaMs);
                 nextImported.sourceBindingHook = sourceBindingHook;
                 const animationHook = asset._beforeRenderHook;
                 if (animationHook) {
@@ -3199,8 +3374,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                 if (assetAdded) {
                     removeFromScene(scene, asset);
                 }
-                nextImported.paramsBuffer.destroy();
-                nextImported.gridBuffer.destroy();
+                disposeFluidSceneSdf(nextImported.sceneSdf);
                 restoreHostScenePresentation(true);
             }
             throw error;
@@ -3208,10 +3382,11 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     }
     const importInput = document.createElement("input");
     importInput.type = "file";
-    importInput.accept = ".json,application/json";
+    importInput.accept = ".json,.glb,.sdf,application/json,model/gltf-binary,application/octet-stream";
+    importInput.multiple = true;
     importInput.hidden = true;
     const importBtn = document.createElement("button");
-    importBtn.textContent = "Import fluid JSON";
+    importBtn.textContent = "Import fluid files";
     importBtn.style.cssText = exportBtn.style.cssText;
     importBtn.onclick = () => importInput.click();
     const importedParticleCount = (count: number): number => {
@@ -3304,7 +3479,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         }
     };
     importInput.onchange = async () => {
-        const file = importInput.files?.[0];
+        const files = [...(importInput.files ?? [])];
+        const file = files.find((candidate) => candidate.name.toLowerCase().endsWith(".json")) ?? files[0];
         importInput.value = "";
         const targetDemo = activeDemo;
         if (!file || !targetDemo) {
@@ -3318,7 +3494,17 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             }
             const parsed = JSON.parse(contents) as Partial<FluidExportJson>;
             if (parsed.scene) {
-                const bundle = parseBlenderFluidJson(contents);
+                const externalResources = new Map<string, ArrayBuffer>();
+                if (parsed.scene.encoding === "external") {
+                    await Promise.all(
+                        files
+                            .filter((candidate) => candidate !== file)
+                            .map(async (candidate) => {
+                                externalResources.set(candidate.name.replaceAll("\\", "/"), await candidate.arrayBuffer());
+                            })
+                    );
+                }
+                const bundle = parseBlenderFluidJson(contents, externalResources);
                 applyImportedParticleWarning(bundle.preset);
                 await installImportedBundle(bundle, generation, targetDemo);
                 return;
@@ -3347,7 +3533,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             }
         }
     };
-    controls.root.append(...controls.makeSection("Presets", [importBtn, importInput, exportBtn]));
+    controls.root.append(...controls.makeSection("Presets", [importBtn, importInput, externalSceneExportRow, exportBtn]));
 
     // Mount the shared panel (right side) + the GPU-timing panel (top-left). The
     // `canvas.dataset.timing` flag lets tests read whether per-stage timing is active.
@@ -3406,10 +3592,11 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                 input.step = String(p.step);
                 input.value = String(p.value);
                 input.style.cssText = "width:100%;";
+                const applyInput = applyLatestOnAnimationFrame((value: number) => onChange(p.key, value));
                 input.oninput = () => {
                     const v = parseFloat(input.value);
                     val.textContent = String(v);
-                    onChange(p.key, v);
+                    applyInput(v);
                 };
                 row.append(head, input);
                 host.appendChild(row);
@@ -3433,15 +3620,19 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                 input.type = "color";
                 input.value = p.value;
                 input.style.cssText = "width:36px;height:22px;padding:0;border:1px solid #33415a;border-radius:4px;background:#1a2230;cursor:pointer;";
-                input.oninput = () => onChange(p.key, input.value);
+                const applyInput = applyLatestOnAnimationFrame((value: string) => onChange(p.key, value));
+                input.oninput = () => applyInput(input.value);
                 row.append(lab, input);
                 host.appendChild(row);
             }
         }
     }
+    let demoParamsGeneration = 0;
     function refreshDemoParams(): void {
-        const params = activeDemo!.demoParams();
-        const extras = activeDemo!.extraControls();
+        const generation = ++demoParamsGeneration;
+        const demo = activeDemo!;
+        const params = demo.demoParams();
+        const extras = demo.extraControls();
         if (!params.some((p) => !p.hidden) && extras.length === 0) {
             const none = document.createElement("div");
             none.textContent = "No tunable parameters for this demo.";
@@ -3449,7 +3640,11 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             demoParamsHost.replaceChildren(none);
             return;
         }
-        buildDemoParamsUI(demoParamsHost, params, (k, v) => activeDemo!.applyParam(k, v));
+        buildDemoParamsUI(demoParamsHost, params, (k, v) => {
+            if (generation === demoParamsGeneration && activeDemo === demo) {
+                demo.applyParam(k, v);
+            }
+        });
         for (const el of extras) {
             demoParamsHost.appendChild(el);
         }
@@ -4328,7 +4523,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     // Snapshot the current live UI/params for the given method into a PairState.
     function readLivePairState(method: string): PairState {
         const v = controls.getValues();
-        const demoParams: Record<string, number> = {};
+        const retainedState = currentPairKey ? pairStates.get(currentPairKey) : undefined;
+        const demoParams: Record<string, number> = { ...(retainedState?.demoParams ?? {}) };
         for (const p of activeDemo!.demoParams()) {
             if (p.type === "number") demoParams[p.key] = p.value;
         }
@@ -4377,7 +4573,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             pagedGridMaxPages: method === "MLS-MPM" || method === "FLIP" ? v.pagedGridMaxPages : undefined,
             fusedBlockDiscovery: method === "MLS-MPM" ? v.fusedBlockDiscovery : undefined,
             foam: v.foam,
-            demoState: activeDemo!.snapshotState?.() ?? {},
+            demoState: { ...(retainedState?.demoState ?? {}), ...(activeDemo!.snapshotState?.() ?? {}) },
             showContainer: v.showContainer,
             envIntensity,
             msaa: msaaOn,
@@ -4406,10 +4602,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         const pagedMethod = methodName === "MLS-MPM" || methodName === "FLIP";
         const nextPagedGrid = pagedMethod ? (st.pagedGrid ?? false) : methodName === "FLIP" ? flipPagedGrid : mpmPagedGrid;
         const nextActiveBlocks = methodName === "MLS-MPM" ? nextPagedGrid || (st.activeBlocks ?? false) : mpmActiveBlocks;
-        const pageCapacityLimit =
-            methodName === "FLIP"
-                ? maxFlipPagedGridPagesFor(nextGridSettings ?? effectiveGridSettings(), nextGridResolution)
-                : maxMlsPagedGridPagesFor(nextGridSettings ?? effectiveGridSettings(), nextPhysicsScale);
+        const targetGrid = nextGridSettings ?? defaultGridSettings(methodName, domainScale);
+        const pageCapacityLimit = methodName === "FLIP" ? maxFlipPagedGridPagesFor(targetGrid, nextGridResolution) : maxMlsPagedGridPagesFor(targetGrid, nextPhysicsScale);
         const defaultPageCapacity = methodName === "FLIP" ? FLIP_DEFAULT_PAGE_CAPACITY : mlsMpmDefaultPageCapacity(st.count);
         const nextPagedGridMaxPages = Math.min(
             pageCapacityLimit,
@@ -4436,15 +4630,21 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         if (typeof st.material === "number") {
             pbmpmMaterial = st.material;
         }
+        const previousGridSettings = gridSettings ? cloneGridSettings(gridSettings) : undefined;
         loadingPairState = true;
         try {
+            // Preserve the target pair's authored grid semantics while the shared binding
+            // resolves its allocation. A gridless preset scales both bounds and cell size
+            // through domainScale; publishing its displayed bounds as an explicit grid would
+            // incorrectly drop that cell-size scale.
+            gridSettings = nextGridSettings ? cloneGridSettings(nextGridSettings) : undefined;
             for (const k of Object.keys(st.demoParams)) {
                 demo.applyParam(k, st.demoParams[k]!);
             }
             if (st.demoState) {
                 demo.restoreState?.(st.demoState);
             }
-            const targetGrid = nextGridSettings ?? defaultGridSettings(methodName, domainScale);
+            demo.commitRestoredParams?.();
             const targetCellSize =
                 methodName === "FLIP"
                     ? flipDiscretizationForGrid(targetGrid, nextGridResolution).dx
@@ -4583,6 +4783,9 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                 controls.setShowGridBounds(showGridBounds);
                 controls.setShowGridBoundsSolid(showGridBoundsSolid);
             });
+        } catch (error) {
+            gridSettings = previousGridSettings;
+            throw error;
         } finally {
             loadingPairState = false;
         }
@@ -4734,6 +4937,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         canvas.dataset.qualityPresets = String(usesQualityPresets);
         controls.containerToggleRow!.style.display = nextDemo.setContainerVisible ? "" : "none";
         canvas.dataset.demo = nextDemo.key;
+        syncHelperText(nextDemo);
         // PB-MPM keeps a separate physics/render/colour pair per material for every fluid demo.
         const withMaterial = nextMethod === "PB-MPM";
         if (nextMethod === "PB-MPM") {
@@ -4748,6 +4952,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         currentPairKey = key;
         domainScale = typeof st.demoParams.meshScale === "number" ? st.demoParams.meshScale : (nextDemo.getDomainScale?.() ?? 1);
         loadPairState(st);
+        pairStates.set(key, structuredClone(st));
         if (demoChanged || leavingImportedScene) {
             const authoredCamera = defaultState.camera ?? DEFAULT_CAMERA;
             cam.alpha = authoredCamera.alpha;
@@ -4797,7 +5002,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         viewProjection: () => getViewProjectionMatrix(cam, getEffectiveAspectRatio(cam, canvas.width, canvas.height)),
         setDomainScale: (s: number) => {
             if (s === domainScale) {
-                return;
+                return false;
             }
             if (gridSettings) {
                 const scaleRatio = s / Math.max(domainScale, 1e-6);
@@ -4810,17 +5015,18 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                 const allocationError = gridAllocationError(nextGridSettings, methodName, nextPhysicsScale);
                 if (allocationError) {
                     controls.setGridStatus(allocationError);
-                    return;
+                    return false;
                 }
                 gridSettings = nextGridSettings;
                 domainScale = s;
                 rebuildSims(requestedParticleCount(), nextPhysicsScale);
-                return;
+                return true;
             }
             // Gridless presets retain the historical hidden scale on bounds, cell size,
             // particle radius and spawn so existing demos (notably Waterfall) are unchanged.
             domainScale = s;
             rebuildSims(requestedParticleCount(), physicsScale);
+            return true;
         },
         setBloom: (cfg: { enabled: boolean; intensity: number; threshold: number }) => {
             bloomEnabled = cfg.enabled;
@@ -5141,12 +5347,6 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     initializeFluidControlsBinding();
     if (captureMode) {
         setUiHidden(true);
-    }
-
-    const hint = document.querySelector(".hint");
-    if (hint) {
-        hint.textContent =
-            "Drag rotate · RMB slide · Shift+RMB push fluid · wheel zoom — Capsule: LMB on tank punches hole · Space random hole · R refill · M switch method · P pause · F8 hide UI";
     }
 
     // Ensure the environment finished loading (skybox builder registered + specular

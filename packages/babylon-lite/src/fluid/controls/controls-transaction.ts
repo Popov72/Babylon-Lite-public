@@ -67,7 +67,14 @@ function flushFluidControlsTransaction<TKey extends PropertyKey>(transaction: Fl
         transaction._committed = structuredClone(snapshot);
     } catch (error) {
         if (transaction._committed && transaction._restore) {
-            transaction._restore(structuredClone(transaction._committed));
+            transaction._applying = false;
+            try {
+                transaction._restore(structuredClone(transaction._committed));
+            } catch (restoreError) {
+                throw new AggregateError([error, restoreError], "Fluid controls application failed and its committed snapshot could not be restored.", { cause: restoreError });
+            } finally {
+                transaction._applying = true;
+            }
         }
         throw error;
     } finally {

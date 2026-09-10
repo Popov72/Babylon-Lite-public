@@ -51,7 +51,8 @@ const RECONFIGURATION_KEYS: readonly ControlKey[] = [
     "fusedBlockDiscovery",
 ];
 
-const FLIP_DEFERRED_RECONFIGURATION_KEYS: readonly ControlKey[] = ["count", "gridPosition", "gridSize", "gridResolution", "markersPerCell"];
+const FLIP_DEFERRED_RECONFIGURATION_KEYS: readonly ControlKey[] = ["count", "gridPosition", "gridSize", "gridResolution", "markersPerCell", "pagedGrid", "pagedGridMaxPages"];
+const MLS_MPM_DEFERRED_RECONFIGURATION_KEYS: readonly ControlKey[] = ["pagedGridMaxPages"];
 
 const RENDER_PROFILE_KEYS: readonly ControlKey[] = [
     "polygonShader",
@@ -174,6 +175,8 @@ interface FluidControlsRestartTarget {
     readonly particleCount: number;
     readonly gridResolution?: number;
     readonly markersPerCell?: number;
+    readonly pagedGrid: boolean;
+    readonly pagedGridMaxPages?: number;
     readonly bounds: FluidSimulationOptions["bounds"];
 }
 
@@ -347,15 +350,16 @@ export function deriveFluidControlsApplicationPlan(
         }
     }
     const has = (keys: readonly ControlKey[]): boolean => keys.some((key) => changed.includes(key));
-    const deferredKeys = next.method === "FLIP" ? FLIP_DEFERRED_RECONFIGURATION_KEYS : [];
+    const polygonSurfaceChanged = previous.schema.polygonSurface !== next.schema.polygonSurface;
+    const deferredKeys = next.method === "FLIP" ? FLIP_DEFERRED_RECONFIGURATION_KEYS : next.method === "MLS-MPM" ? MLS_MPM_DEFERRED_RECONFIGURATION_KEYS : [];
     const reconfigure = RECONFIGURATION_KEYS.some((key) => changed.includes(key) && !deferredKeys.includes(key));
     return {
         changedKeys: changed,
         reconfigure,
         restartRequired: has(deferredKeys) && !reconfigure,
         renderProfile: has(RENDER_PROFILE_KEYS),
-        renderMode: has(["method", "renderMode", "anisotropic", "schema", "foam", "debug"]),
-        foamRender: has(["foam", "schema", "renderMode", "debug"]),
+        renderMode: has(["method", "renderMode", "anisotropic", "foam", "debug"]) || polygonSurfaceChanged,
+        foamRender: has(["foam", "renderMode", "debug"]) || polygonSurfaceChanged,
         debugRender: has(["debug"]),
     };
 }
@@ -718,23 +722,32 @@ function restartTargetsFor(binding: FluidControlsBinding, snapshot: FluidControl
             particleCount: desired.particleCount,
             gridResolution: desired.gridResolution,
             markersPerCell: desired.markersPerCell,
+            pagedGrid: desired.pagedGrid ?? false,
+            pagedGridMaxPages: desired.pagedGridMaxPages,
             bounds: { min: [...desired.bounds.min], max: [...desired.bounds.max] },
         };
     });
 }
 
 function hasPendingRestartTargets(snapshot: FluidControlValues, targets: readonly FluidControlsRestartTarget[]): boolean {
-    if (snapshot.method !== "FLIP") {
+    if (snapshot.method !== "FLIP" && snapshot.method !== "MLS-MPM") {
         return false;
     }
     return targets.some((target) => {
         const current = target.simulation.options;
+        const pagedGridChanged = (current.pagedGrid ?? false) !== target.pagedGrid;
+        const pageCapacityChanged = target.pagedGrid && current.pagedGridMaxPages !== target.pagedGridMaxPages;
+        if (snapshot.method === "MLS-MPM") {
+            return pageCapacityChanged;
+        }
         return (
             current.method !== target.method ||
             current.particleCount !== target.particleCount ||
             current.gridResolution !== target.gridResolution ||
             current.markersPerCell !== target.markersPerCell ||
-            !equalBounds(current.bounds, target.bounds)
+            !equalBounds(current.bounds, target.bounds) ||
+            pagedGridChanged ||
+            pageCapacityChanged
         );
     });
 }
@@ -851,6 +864,7 @@ export function applyFluidControls(binding: FluidControlsBinding, values: Readon
     const previousMemory = binding.memory;
     const previousPageDiagnostics = binding.pageDiagnostics;
     const previousCapabilities = binding.capabilities;
+    const renderStateChanged = plan.renderProfile || plan.renderMode || plan.foamRender || plan.debugRender;
     const hostState = runtime.options.captureHostState?.();
     let prepared: PreparedFluidReconfiguration | PreparedFluidCollectionReconfiguration | null = null;
     let finalized = false;
@@ -883,7 +897,7 @@ export function applyFluidControls(binding: FluidControlsBinding, values: Readon
         }
         const projectedRestart = !plan.reconfigure && hasPendingRestart(binding, next, targets);
         const nextMemory = projectionFor(binding, next, targets, projectedRestart);
-        const nextRenderMode = applyRenderState(binding, next);
+        const nextRenderMode = renderStateChanged ? applyRenderState(binding, next) : previousRenderMode;
         if (prepared) {
             if ("reconfigurations" in prepared) {
                 commitFluidCollectionReconfiguration(prepared);
@@ -924,7 +938,9 @@ export function applyFluidControls(binding: FluidControlsBinding, values: Readon
         binding.memory = previousMemory;
         binding.pageDiagnostics = previousPageDiagnostics;
         binding.capabilities = previousCapabilities;
-        applyRenderState(binding, previousSnapshot);
+        if (renderStateChanged) {
+            applyRenderState(binding, previousSnapshot);
+        }
         throw error;
     } finally {
         runtime.applying = false;

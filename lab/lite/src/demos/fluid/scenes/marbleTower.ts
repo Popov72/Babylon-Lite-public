@@ -17,6 +17,7 @@ import {
     generateMeshSdf,
     loadGltf,
     readFluidWheelTorqueQuery,
+    retireGpuResources,
     sampleFluidWheelTorqueQuery,
     setMeshVisible,
 } from "babylon-lite";
@@ -453,7 +454,9 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         if (bakedActive) {
             sdf.sdfGrid = gridBuffer; // the sims rebind it on the next setSceneSdf
         }
-        old?.destroy();
+        if (old) {
+            retireGpuResources(engine, () => old.destroy());
+        }
         bakedData[8] = base.origin[0] * k;
         bakedData[9] = base.origin[1] * k;
         bakedData[10] = base.origin[2] * k;
@@ -693,7 +696,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     // final-scale literals, repack the UBO lengths/positions, rescale + re-upload the baked grid, and
     // grow the fluid-sim domain bounds. ctx.setDomainScale rebuilds both sims and re-injects the
     // regenerated scene SDF (recompiling the collision pipelines), which also refreshes emitters+spawn.
-    const rebuildScaledCollision = (): void => {
+    const rebuildScaledCollision = (synchronizeSimulation = true): void => {
         // 1) Repack every scale-dependent UBO value (domain floats + tower boxes + wheel block).
         packScaledCollision();
         // 2) Regenerate the collision WGSL + rescale/re-upload the baked grid (updates sdf.sdf / grid).
@@ -709,11 +712,16 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         if (!active) {
             return;
         }
-        // Push the freshly-packed UBO, then rebuild the sims at the new domain scale. setDomainScale →
-        // rebuildSims → applySceneSdf re-reads demo.sdf/writeSdfParams/emitters/spawn on both sims.
-        writeSdfParams();
-        ctx.setDomainScale(meshScale);
-        ctx.refreshFlow();
+        if (synchronizeSimulation) {
+            // Push the freshly-packed UBO, then rebuild the sims at the new domain scale.
+            // setDomainScale → rebuildSims → applySceneSdf re-reads demo.sdf,
+            // writeSdfParams, emitters and spawn on the active backend.
+            writeSdfParams();
+            if (!ctx.setDomainScale(meshScale)) {
+                ctx.rebindSceneSdf();
+            }
+            ctx.refreshFlow();
+        }
         // 5) Follow-up visual bits the core doesn't own: camera framing + the (optional) debug overlays.
         ctx.camera.target.y = TOWER_HEIGHT * 0.5 * meshScale;
         if (dbgActive) {
@@ -1788,6 +1796,11 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         key: "marbleTower",
         label: "Marble Tower",
         envUrl: ENV_STUDIO_URL,
+        // Keep first-visit behaviour independent from the previous demo. The tower's
+        // interactive profile is authored around the responsive MLS-MPM middle preset;
+        // later visits retain whichever method and quality the user selected.
+        defaultMethod: "MLS-MPM",
+        defaultQuality: "middle",
         sdf,
         writeSdfParams,
         flow() {
@@ -1841,7 +1854,12 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             writeSdfParams();
         },
         demoParams(): DemoParam[] {
-            return [{ key: "meshScale", label: "Mesh scale", type: "number", min: 0.25, max: 4, step: 0.05, value: meshScale }];
+            return [
+                { key: "meshScale", label: "Mesh scale", type: "number", min: 0.25, max: 4, step: 0.05, value: meshScale },
+                { key: "centralSpeed", label: "Top pour speed", type: "number", min: 0, max: 16, step: 0.25, value: marbleParams.centralSpeed, hidden: true },
+                { key: "nozzleRadius", label: "Nozzle radius", type: "number", min: 0.1, max: 0.8, step: 0.05, value: marbleParams.nozzleRadius, hidden: true },
+                { key: "emitRate", label: "Recirculation rate", type: "number", min: 0, max: 3, step: 0.02, value: marbleParams.emitRate, hidden: true },
+            ];
         },
         getDomainScale(): number {
             // The core reads this on every switchPair to size the fluid-sim bounds. A larger tower
@@ -1879,6 +1897,17 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             }
             if (key in marbleParams && typeof value === "number") {
                 (marbleParams as unknown as Record<string, number>)[key] = value;
+            }
+        },
+        commitRestoredParams(): void {
+            if (meshScaleTimer !== null) {
+                clearTimeout(meshScaleTimer);
+                meshScaleTimer = null;
+            }
+            if (meshScale !== builtMeshScale) {
+                // Pair switches restore all parameters atomically; do not let the target
+                // simulation start against the previous quality's collision scale.
+                rebuildScaledCollision(false);
             }
         },
         extraControls() {

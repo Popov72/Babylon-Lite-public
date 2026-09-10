@@ -650,13 +650,11 @@ export interface SceneSdfSpec {
     sdf: string;
     /** Uniform buffer holding the packed `SceneSdfParams`, owned by the demo. */
     buffer: GPUBuffer;
-    /** Optional baked SDF grid sampled by the scene's `sceneSdf` WGSL: a STORAGE buffer holding a
-     *  flat Float32Array of signed distances (NEGATIVE inside the solid, POSITIVE outside), x-fastest:
-     *  idx = i + dims.x*(j + dims.y*k). When present the sim binds it as `sceneSdfGrid` and injects the
-     *  shared `SCENE_SDF_GRID_WGSL` sampler; the scene packs the grid's origin/cellSize/dims into `buffer`
-     *  (the UBO) and calls `sampleSdfGrid(pt, origin, invCell, dims)` from its `sceneSdf`. Absent → the
-     *  analytic-only path (unchanged). */
+    /** Optional baked SDF storage buffer. Legacy/custom bindings use x-fastest f32 distances;
+     *  imported composite scenes use two cell-relative f16 distances packed per u32. */
     sdfGrid?: GPUBuffer;
+    /** Storage element format. Packed f16 stores two cell-relative distances per u32. Default f32. */
+    sdfGridFormat?: "f32" | "packed-f16";
     /** Confinement style — **MLS-MPM only** (the PBF/SPH backend ignores this and
      *  always confines per-particle against the SDF). For MLS-MPM: when true (default)
      *  the container is CLOSED — confined at the sim grid with a separating wall + a
@@ -700,6 +698,17 @@ fn sampleSdfGrid(pt: vec3<f32>, origin: vec3<f32>, invCell: f32, dims: vec3<i32>
     let x01 = mix(c001, c101, f.x); let x11 = mix(c011, c111, f.x);
     return mix(mix(x00, x10, f.y), mix(x01, x11, f.y), f.z);
 }`;
+
+/** @internal Storage declaration and legacy sampler injected at a solver-specific binding. */
+export function sceneSdfGridBindingWgsl(scene: SceneSdfSpec, binding: number): string {
+    if (!scene.sdfGrid) {
+        return "";
+    }
+    if (scene.sdfGridFormat === "packed-f16") {
+        return `\n@group(0) @binding(${binding}) var<storage, read> sceneSdfGrid: array<u32>;`;
+    }
+    return `\n@group(0) @binding(${binding}) var<storage, read> sceneSdfGrid: array<f32>;\n${SCENE_SDF_GRID_WGSL}`;
+}
 
 // Generic external force-field injection. The caller supplies a `struct
 // ForceFieldParams {…}` declaration and an `fn externalForce(pos, vel, dt) -> vec3`
@@ -749,6 +758,8 @@ export interface FluidEmitter {
     velocitySpace: "local" | "world";
     /** Optional imported scene-node name whose animated world transform drives this analytical emitter. */
     sourceNode?: string;
+    /** Whether the linked source mesh should remain visible after import. Defaults true for legacy files. */
+    sourcePresentation?: boolean;
     /** Optional world-space source-object velocity. Combined with velocity before GPU upload. */
     sourceVelocity?: FluidVec3;
     /** Multiplier applied only to sourceVelocity. Defaults to 1. */

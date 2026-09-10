@@ -74,6 +74,25 @@ test("PB-MPM liquid preset fallback keeps the selected material", async ({ page 
     await expect(page.getByText(/^Visco plasticity/)).toBeVisible();
 });
 
+test("FLIP restart applies a pending particle-capacity increase", async ({ page }) => {
+    test.setTimeout(120_000);
+    await page.goto("/demo-fluid.html");
+    await waitForCanvasReady(page, { timeout: 60_000, label: "Fluid demo" });
+
+    const canvas = page.locator("canvas");
+    await page.locator('select:has(option[value="PBF"]):has(option[value="FLIP"])').selectOption("FLIP");
+    await expect(canvas).toHaveAttribute("data-method", "FLIP");
+
+    const capacity = page.locator('[data-fluid-flip-particle-capacity="true"] input');
+    await capacity.fill("140000");
+    await capacity.press("Enter");
+    await expect(canvas).toHaveAttribute("data-restart-particle-capacity", "140000");
+
+    await page.keyboard.press("r");
+    await expect(canvas).toHaveAttribute("data-particle-count", "140000");
+    await expect(canvas).toHaveAttribute("data-flip-particle-capacity-request", "140000");
+});
+
 test("screen-space surface switches to Ocean PBR", async ({ page }) => {
     test.setTimeout(120_000);
     await page.goto("/demo-fluid.html");

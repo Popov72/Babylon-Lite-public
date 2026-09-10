@@ -1018,6 +1018,7 @@ export {
     createFluidRenderEnvironment,
     createFluidForceField,
     createFluidImpulseForce,
+    createFluidCompositeSceneSdf,
     createFluidSceneSdf,
     createFluidSimulation,
     createFluidSimulationCollection,
@@ -1090,16 +1091,26 @@ export {
     updateFluidForceField,
     updateFluidImpulseForce,
     updateFluidFloatingBodySystem,
+    updateFluidSceneSdfContainer,
+    updateFluidSceneSdfGridSettings,
+    updateFluidSceneSdfStaticOffset,
+    updateFluidSceneSdfTransforms,
     updateFluidSceneSdf,
 } from "./fluid/core/fluid-facade.js";
 export type {
+    FluidCompositeSceneSdfOptions,
     FluidFoamRenderSettings,
     FluidForceField,
     FluidForceFieldOptions,
     FluidImpulseForceOptions,
     FluidImpulseForceResolution,
     FluidSceneSdf,
+    FluidSceneSdfBounds,
+    FluidSceneSdfGridSettingsUpdate,
     FluidSceneSdfOptions,
+    FluidSceneSdfTransformUpdate,
+    FluidSdfGridData,
+    FluidLocalSdfData,
     FluidParticleChannel,
     FluidParticleChannelOptions,
     FluidParticleSpatialQuery,
@@ -1154,7 +1165,13 @@ export type {
     FluidRenderMode,
     FluidRenderModeInput,
 } from "./fluid/core/fluid-policy.js";
-export { createFluidTimestepScheduler, deferFluidTimestep, getFluidTimestepDiagnostics, resetFluidTimestepScheduler, scheduleFluidTimestep } from "./fluid/core/timestep-scheduler.js";
+export {
+    createFluidTimestepScheduler,
+    deferFluidTimestep,
+    getFluidTimestepDiagnostics,
+    resetFluidTimestepScheduler,
+    scheduleFluidTimestep,
+} from "./fluid/core/timestep-scheduler.js";
 export type { FluidTimestepDiagnostics, FluidTimestepSchedule, FluidTimestepScheduler, FluidTimestepSchedulerOptions } from "./fluid/core/timestep-scheduler.js";
 export { editFluidPresetSession, exportFluidPresetSession, importFluidPresetSession } from "./fluid/authoring/preset-session.js";
 export type { FluidPresetApplicationSections, FluidPresetSession, FluidPresetSessionEdit, FluidPresetSessionExport } from "./fluid/authoring/preset-session.js";
@@ -1203,7 +1220,13 @@ export type { CarryMethodIndependentStateOptions } from "./fluid/authoring/metho
 export { exportJsonFromPairState, presetFromExportJson } from "./fluid/authoring/preset-io.js";
 export type { FluidExportJson } from "./fluid/authoring/preset-io.js";
 export { parseBlenderFluidCollision, parseBlenderFluidJson, scenePayloadFromBlenderFluidJson } from "./fluid/authoring/blender-fluid-json.js";
-export type { BlenderFluidCollision, BlenderFluidScene } from "./fluid/authoring/blender-fluid-json.js";
+export type {
+    BlenderFluidAnimatedCollision,
+    BlenderFluidCollision,
+    BlenderFluidExternalResources,
+    BlenderFluidScene,
+    BlenderFluidScenePayloadOptions,
+} from "./fluid/authoring/blender-fluid-json.js";
 export { createSolidGridBounds } from "./fluid/controls/grid-bounds-visual.js";
 export {
     clearFluidFlowEditorSelection,

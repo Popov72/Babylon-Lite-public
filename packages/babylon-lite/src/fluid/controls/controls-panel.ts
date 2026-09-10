@@ -1191,6 +1191,22 @@ function hexToRgb(hex: string): [number, number, number] {
     return [parseInt(hex.slice(1, 3), 16) / 255, parseInt(hex.slice(3, 5), 16) / 255, parseInt(hex.slice(5, 7), 16) / 255];
 }
 
+function applyLatestOnAnimationFrame<T>(apply: (value: T) => void): (value: T) => void {
+    let scheduled = false;
+    let latest: T;
+    return (value: T): void => {
+        latest = value;
+        if (scheduled) {
+            return;
+        }
+        scheduled = true;
+        requestAnimationFrame(() => {
+            scheduled = false;
+            apply(latest);
+        });
+    };
+}
+
 export function createFluidControlsPanel(opts: FluidControlsOptions): FluidControlsHandle {
     let restoringControls = false;
     const controlsTransaction = createFluidControlsTransaction<FluidControlValues, keyof FluidControlValues>({
@@ -1279,10 +1295,11 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         input.step = String(step);
         input.value = String(value);
         input.style.cssText = "width:100%;";
+        const applyInput = applyLatestOnAnimationFrame(onInput);
         input.oninput = () => {
             const v = parseFloat(input.value);
             val.textContent = fmt(v);
-            onInput(v);
+            applyInput(v);
         };
         row.set = (v: number): void => {
             input.value = String(v);
@@ -1587,7 +1604,8 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     colorInput.value = init.color;
     colorInput.style.cssText = "width:36px;height:22px;padding:0;border:1px solid #33415a;border-radius:4px;background:#1a2230;cursor:pointer;";
     colorRow.append(colorLab, colorInput);
-    colorInput.oninput = () => on.onColor?.(hexToRgb(colorInput.value));
+    const applyColorInput = applyLatestOnAnimationFrame((value: string) => on.onColor?.(hexToRgb(value)));
+    colorInput.oninput = () => applyColorInput(colorInput.value);
 
     // Absorption slider (Beer-Lambert strength over thickness).
     const absorbRow = document.createElement("div");
@@ -1603,14 +1621,15 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     const absorbInput = document.createElement("input");
     absorbInput.type = "range";
     absorbInput.min = "0";
-    absorbInput.max = "40";
+    absorbInput.max = "150";
     absorbInput.step = "0.1";
     absorbInput.value = String(init.absorption);
     absorbInput.style.cssText = "width:100%;";
+    const applyAbsorptionInput = applyLatestOnAnimationFrame((value: number) => on.onAbsorption?.(value));
     absorbInput.oninput = () => {
         const v = parseFloat(absorbInput.value);
         absorbVal.textContent = v.toFixed(1);
-        on.onAbsorption?.(v);
+        applyAbsorptionInput(v);
     };
     absorbRow.append(absorbHead, absorbInput);
 
@@ -1632,10 +1651,11 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     sizeInput.step = "0.01";
     sizeInput.value = String(init.size);
     sizeInput.style.cssText = "width:100%;";
+    const applyParticleSizeInput = applyLatestOnAnimationFrame((value: number) => on.onParticleSize?.(value));
     sizeInput.oninput = () => {
         const s = parseFloat(sizeInput.value);
         sizeVal.textContent = `${s.toFixed(2)}\u00d7`;
-        on.onParticleSize?.(s);
+        applyParticleSizeInput(s);
     };
     sizeRow.append(sizeHead, sizeInput);
 
@@ -1877,10 +1897,11 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     anisoDampInput.step = "0.05";
     anisoDampInput.value = String(anisoDampInit);
     anisoDampInput.style.cssText = "width:100%;";
+    const applyAnisotropyDampingInput = applyLatestOnAnimationFrame((value: number) => on.onAnisotropySurfScale?.(value));
     anisoDampInput.oninput = () => {
         const v = parseFloat(anisoDampInput.value);
         anisoDampVal.textContent = v.toFixed(2);
-        on.onAnisotropySurfScale?.(v);
+        applyAnisotropyDampingInput(v);
     };
     anisoDampRow.append(anisoDampHead, anisoDampInput);
 
@@ -1902,10 +1923,11 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     thickDownInput.step = "1";
     thickDownInput.value = String(init.thicknessDownscale);
     thickDownInput.style.cssText = "width:100%;";
+    const applyThicknessDownscaleInput = applyLatestOnAnimationFrame((value: number) => on.onThicknessDownscale?.(value));
     thickDownInput.oninput = () => {
         const v = parseInt(thickDownInput.value, 10);
         thickDownVal.textContent = `${v}\u00d7`;
-        on.onThicknessDownscale?.(v);
+        applyThicknessDownscaleInput(v);
     };
     thickDownRow.append(thickDownHead, thickDownInput);
 
@@ -2231,7 +2253,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     );
     const [pagedGridRow, pagedGridChk] = makeActiveBlockOption(
         "Paged grid",
-        "Opt-in sparse storage for FLIP and MLS-MPM. Allocates only pages near active fluid instead of every cell in the full domain. The dense backend remains the default fast path. The simulation freezes and reports an error if capacity is exceeded.",
+        "Opt-in sparse storage for FLIP and MLS-MPM. Allocates only pages near active fluid instead of every cell in the full domain. FLIP changes are previewed and applied on Reset simulation. The simulation freezes and reports an error if capacity is exceeded.",
         init.pagedGrid ?? false,
         (enabled) => {
             applyActiveBlockDependencies();
@@ -2244,7 +2266,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     const pagedGridCapacityHead = document.createElement("div");
     const pagedGridCapacityLabel = labelWithInfo(
         "Page capacity",
-        "Maximum number of live grid pages (8×8×8 cells for FLIP, 4×4×4 for MLS-MPM). Higher values use more memory; exceeding the cap freezes the solver instead of integrating against a partial grid."
+        "Maximum number of live grid pages (8×8×8 cells for FLIP, 4×4×4 for MLS-MPM). Higher values use more memory; changes are previewed and allocated on Reset simulation."
     );
     const pagedGridCapacityValue = document.createElement("span");
     pagedGridCapacityValue.style.cssText = "display:block;text-align:center;font-variant-numeric:tabular-nums;margin-top:2px;";
@@ -2279,38 +2301,8 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         pagedGridCapacityPages = pagesFromPagedGridCapacityInput();
         updatePagedGridCapacityValue();
     };
-    let pagedGridCapacityApplyGeneration = 0;
     pagedGridCapacityInput.onchange = () => {
-        const apply = on.onPagedGridMaxPages;
-        if (!apply) {
-            return;
-        }
-        const pages = pagedGridCapacityPages;
-        if (!controlsTransaction.appliesSnapshots) {
-            apply(pages);
-            return;
-        }
-        const generation = ++pagedGridCapacityApplyGeneration;
-        setPageCapacityBusy(true);
-        // Buffer reallocation is synchronous, so defer it until the overlay has reached a paint.
-        const run = (): void => {
-            if (generation !== pagedGridCapacityApplyGeneration) {
-                return;
-            }
-            try {
-                apply(pages);
-            } finally {
-                if (generation === pagedGridCapacityApplyGeneration) {
-                    setPageCapacityBusy(false);
-                }
-            }
-        };
-        const view = pagedGridCapacityInput.ownerDocument.defaultView;
-        if (typeof view?.requestAnimationFrame === "function") {
-            view.requestAnimationFrame(() => view.setTimeout(run, 0));
-        } else {
-            setTimeout(run, 0);
-        }
+        on.onPagedGridMaxPages?.(pagedGridCapacityPages);
     };
     pagedGridCapacityRow.append(pagedGridCapacityHead, pagedGridCapacityValue, pagedGridCapacityInput);
     const pagedGridStatus = document.createElement("div");
@@ -2463,11 +2455,12 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             input.step = String(p.step);
             input.value = String(p.value);
             input.style.cssText = "width:100%;";
+            const applyPhysicsInput = applyLatestOnAnimationFrame((value: number) => on.onPhysicsParam?.(p.key, value));
             input.oninput = () => {
                 const v = parseFloat(input.value);
                 p.value = v;
                 val.textContent = String(v);
-                on.onPhysicsParam?.(p.key, v);
+                applyPhysicsInput(v);
             };
             row.append(head, input);
             groupHost.appendChild(row);
@@ -2806,7 +2799,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     const foamPoolRow = makeRenderSlider(
         "Pool size (\u00d7 fluid)",
         1,
-        6,
+        20,
         0.5,
         foamCfg.poolScale,
         (v) => `${v.toFixed(1)}\u00d7`,
@@ -2830,7 +2823,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     const foamDensityRow = makeRenderSlider(
         "Foam density",
         0.2,
-        200,
+        50,
         0.05,
         foamT1,
         (v) => v.toFixed(2),
@@ -2862,7 +2855,8 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     foamSubColorInput.value = init.foam.subsurfaceColor;
     foamSubColorInput.style.cssText = "width:36px;height:22px;padding:0;border:1px solid #33415a;border-radius:4px;background:#1a2230;cursor:pointer;";
     foamSubColorRow.append(foamSubColorLab, foamSubColorInput);
-    foamSubColorInput.oninput = () => on.onFoamSubColor?.(hexToRgb(foamSubColorInput.value));
+    const applyFoamSubColorInput = applyLatestOnAnimationFrame((value: string) => on.onFoamSubColor?.(hexToRgb(value)));
+    foamSubColorInput.oninput = () => applyFoamSubColorInput(foamSubColorInput.value);
 
     const foamSizeRow = makeRenderSlider(
         "Foam size",
@@ -3008,7 +3002,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         foamDebugTexTitle,
         foamDebugTexSel,
     ];
-    const foamAdvancedControls = [
+    const foamFlipOnlyControls = [
         foamAdvancedTitle,
         foamTurbulenceRateRow,
         foamEnergyMinRow,
@@ -3022,9 +3016,9 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     ];
     applyFoamMethodVisibility = (): void => {
         const flip = methodCaps().flipTuning;
-        for (const control of foamAdvancedControls) {
+        for (const control of foamFlipOnlyControls) {
             control.hidden = !flip;
-            control.style.display = flip ? "" : "none";
+            setRowVisible(control, flip);
         }
     };
     applyFoamMethodVisibility();
@@ -3036,39 +3030,6 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         root.style.resize = "both";
         root.style.overflow = "auto";
         root.style.boxSizing = "border-box";
-    }
-    const pageCapacityBusyOverlay = document.createElement("div");
-    pageCapacityBusyOverlay.dataset.fluidControlsBusy = "page-capacity";
-    pageCapacityBusyOverlay.setAttribute("role", "status");
-    pageCapacityBusyOverlay.setAttribute("aria-label", "Applying page capacity");
-    pageCapacityBusyOverlay.style.cssText =
-        "position:fixed;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;" +
-        "box-sizing:border-box;background:rgba(6,10,16,0.86);color:#dfe6ee;cursor:wait;pointer-events:auto;z-index:2147483647;";
-    const pageCapacityBusyStyle = document.createElement("style");
-    pageCapacityBusyStyle.textContent = "@keyframes fluid-controls-wait-spin{to{transform:rotate(360deg)}}";
-    const pageCapacityBusySpinner = document.createElement("div");
-    pageCapacityBusySpinner.style.cssText =
-        "width:30px;height:30px;box-sizing:border-box;border:3px solid rgba(223,230,238,0.25);border-top-color:#7fb0e0;border-radius:50%;" +
-        "animation:fluid-controls-wait-spin 0.8s linear infinite;will-change:transform;";
-    const pageCapacityBusyLabel = document.createElement("div");
-    pageCapacityBusyLabel.textContent = "Applying page capacity...";
-    pageCapacityBusyLabel.style.cssText = "font-weight:600;letter-spacing:0.02em;";
-    pageCapacityBusyOverlay.append(pageCapacityBusyStyle, pageCapacityBusySpinner, pageCapacityBusyLabel);
-    function setPageCapacityBusy(busy: boolean): void {
-        if (!busy) {
-            root.removeAttribute("aria-busy");
-            pageCapacityBusyOverlay.remove();
-            return;
-        }
-        root.setAttribute("aria-busy", "true");
-        const bounds = root.getBoundingClientRect();
-        const view = root.ownerDocument.defaultView;
-        pageCapacityBusyOverlay.style.left = `${bounds.left}px`;
-        pageCapacityBusyOverlay.style.top = `${bounds.top}px`;
-        pageCapacityBusyOverlay.style.width = `${bounds.width}px`;
-        pageCapacityBusyOverlay.style.height = `${bounds.height}px`;
-        pageCapacityBusyOverlay.style.borderRadius = view?.getComputedStyle(root).borderRadius ?? root.style.borderRadius;
-        root.ownerDocument.body.appendChild(pageCapacityBusyOverlay);
     }
     const demoSlot = document.createElement("div");
     root.appendChild(demoSlot);

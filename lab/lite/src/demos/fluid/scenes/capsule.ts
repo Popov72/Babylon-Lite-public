@@ -142,6 +142,7 @@ export function createCapsuleDemo(ctx: FluidCtx): FluidDemo {
     return {
         key: "capsule",
         label: "Capsule (drainable)",
+        helperText: "Capsule: LMB on tank punches hole · Space random hole",
         envUrl: ENV_STUDIO_URL,
         sdf,
         writeSdfParams(): void {

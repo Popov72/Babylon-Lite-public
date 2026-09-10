@@ -311,13 +311,48 @@ export interface FluidExportJson {
         foamDebug: string;
         foamSize: number;
     };
-    /** Self-contained imported scene payload. Omitted by parameter-only presets. */
+    /** Imported scene payload. Omitted by parameter-only presets. */
     scene?: {
-        encoding: "base64";
+        encoding: "base64" | "external";
+        /** Base64 GLB data or a relative external `.glb` filename, according to `encoding`. */
         glb: string;
+        /** Base64 collision data or a relative external `.sdf` filename, according to `encoding`. */
         collision: string;
+        /** Lossless compression applied to every SDF resource before external storage or base64 encoding. */
+        sdfCompression?: "zlib";
+        /** Whether the static collision grid participates in the scene union. Default true. */
+        collisionEnabled?: boolean;
+        /** Whether the static collision grid uses trilinear rather than nearest-neighbour sampling. Default true. */
+        collisionTrilinear?: boolean;
+        /** External mode only: byte length of the static BLSF payload at offset zero in the shared `.sdf` container. */
+        collisionByteLength?: number;
         /** Grid position at which the immutable GLB and collision coordinates were authored. */
         anchorPosition?: [number, number, number];
+        /** Rigid animated mesh collisions sampled in the linked glTF node's local space. */
+        animatedCollisions?: Array<{
+            /** Stable bundle-local collision identifier. */
+            id: string;
+            /** Exact glTF transform-node name whose world transform drives this collision. */
+            node: string;
+            /** Base64 collision data or a relative external `.sdf` filename, according to `encoding`. */
+            sdf: string;
+            /** External shared-container byte offset. Omitted for embedded and legacy separate-SDF entries. */
+            byteOffset?: number;
+            /** External shared-container BLSF payload length. */
+            byteLength?: number;
+            /** Animated collision grids are authored in the linked node's local coordinates. */
+            space: "node-local";
+            /** Authored longest-axis resolution retained for diagnostics. */
+            resolution: number;
+            /** Blender frame at which the rigid local geometry was sampled. */
+            bakeFrame: number;
+            /** Whether the linked mesh should remain visible in the imported scene. */
+            presentation: boolean;
+            /** Whether this collision participates in the scene union. Default true. */
+            enabled?: boolean;
+            /** Whether this collision uses trilinear rather than nearest-neighbour sampling. Default true. */
+            trilinear?: boolean;
+        }>;
     };
 }
 

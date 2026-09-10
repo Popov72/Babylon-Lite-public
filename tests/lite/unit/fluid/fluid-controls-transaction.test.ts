@@ -145,6 +145,30 @@ describe("fluid controls transaction", () => {
         expect(state).toEqual({ pages: 10, paged: false });
     });
 
+    it("allows committed snapshot restoration to use the controls transaction", () => {
+        let state = { foam: 0 };
+        let fail = false;
+        const tx = createFluidControlsTransaction({
+            read: () => ({ ...state }),
+            restore: (snapshot) => {
+                runFluidControlsTransaction(tx, () => {
+                    state = snapshot;
+                });
+            },
+            onApply: () => {
+                if (fail) {
+                    throw new Error("host failed");
+                }
+            },
+        });
+        initializeFluidControlsTransaction(tx);
+        state.foam = 1;
+        fail = true;
+
+        expect(() => markFluidControlsChanged(tx, "foam")).toThrow("host failed");
+        expect(state).toEqual({ foam: 0 });
+    });
+
     it("lets an external consumer implement only onApply while immediate validators keep returns", () => {
         type Values = { color: string; foam: number };
         type Callbacks = {

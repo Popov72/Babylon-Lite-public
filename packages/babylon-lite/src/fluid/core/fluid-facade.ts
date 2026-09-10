@@ -15,8 +15,17 @@ import { applyFluidRenderProfile, fluidRenderHexColor } from "../rendering/fluid
 import type { FluidRenderProfileSettings } from "../rendering/fluid-render-profile.js";
 import { createFoamRenderTask } from "../rendering/foam-render.js";
 import type { FoamDebugTexture } from "../rendering/foam-render.js";
-import { createForceFieldRuntimeBinding, createSceneSdfRuntimeBinding } from "./fluid-runtime-bindings.js";
-import type { ForceFieldRuntimeBinding, SceneSdfRuntimeBinding } from "./fluid-runtime-bindings.js";
+import { createCompositeSceneSdfRuntimeBinding, createForceFieldRuntimeBinding, createSceneSdfRuntimeBinding } from "./fluid-runtime-bindings.js";
+import type {
+    CompositeSceneSdfBounds,
+    CompositeSceneSdfGridData,
+    CompositeSceneSdfGridSettingsUpdate,
+    CompositeSceneSdfLocalGridData,
+    CompositeSceneSdfTransformUpdate,
+    ForceFieldRuntimeBinding,
+    SceneSdfRuntimeBinding,
+} from "./fluid-runtime-bindings.js";
+import type { Mat4 } from "../../math/types.js";
 import {
     adoptFluidParticleChannelRuntime,
     createFluidAggregateRuntime,
@@ -75,6 +84,35 @@ export interface FluidSceneSdfOptions {
     readonly sdfGrid?: Float32Array;
     /** Whether MLS-MPM should confine at grid nodes. */
     readonly gridConfine?: boolean;
+}
+
+export interface FluidSdfGridData extends CompositeSceneSdfGridData {}
+
+export interface FluidLocalSdfData extends CompositeSceneSdfLocalGridData {}
+
+export interface FluidSceneSdfBounds extends CompositeSceneSdfBounds {}
+
+export interface FluidCompositeSceneSdfOptions {
+    /** Optional static world-space collision grid. */
+    readonly staticSdf?: FluidSdfGridData;
+    /** Rigid local-space grids driven by transform updates. */
+    readonly localSdfs?: readonly FluidLocalSdfData[];
+    /** Optional closed container: positive inside, negative outside. */
+    readonly container?: FluidSceneSdfBounds;
+    /** Whether MLS-MPM should confine at grid nodes. */
+    readonly gridConfine?: boolean;
+}
+
+export interface FluidSceneSdfTransformUpdate {
+    readonly id: string;
+    readonly localToWorld: Mat4;
+}
+
+export interface FluidSceneSdfGridSettingsUpdate {
+    /** Omit for the static grid; use an animated/local grid ID otherwise. */
+    readonly id?: string;
+    readonly enabled?: boolean;
+    readonly trilinear?: boolean;
 }
 
 /** Opaque, pure-state scene collision binding. */
@@ -2114,6 +2152,21 @@ export function createFluidSceneSdf(engine: EngineContext, options: FluidSceneSd
     return sceneSdf;
 }
 
+/** Create one packed static-plus-animated collision binding shared by every fluid solver. */
+export function createFluidCompositeSceneSdf(engine: EngineContext, options: FluidCompositeSceneSdfOptions): FluidSceneSdf {
+    const binding = createCompositeSceneSdfRuntimeBinding(engine, options);
+    const sceneSdf = {
+        get disposed(): boolean {
+            return sceneSdf._disposed;
+        },
+        _disposed: false,
+        _engine: engine,
+        _binding: binding,
+        _owners: new Set<FluidSimulation>(),
+    } satisfies FluidSceneSdf;
+    return sceneSdf;
+}
+
 /** @internal Adopt a host-owned low-level scene SDF while migrating legacy scene orchestration. */
 export function adoptFluidSceneSdf(engine: EngineContext, spec: SceneSdfSpec): FluidSceneSdf {
     const binding: SceneSdfRuntimeBinding = {
@@ -2165,6 +2218,59 @@ export function updateFluidSceneSdf(sceneSdf: FluidSceneSdf, params: Float32Arra
     if (sdfGrid) {
         sceneSdfBindingOf(sceneSdf).updateSdfGrid(sdfGrid);
     }
+}
+
+/** Update every local collision transform after scene animation has advanced. */
+export function updateFluidSceneSdfTransforms(
+    sceneSdf: FluidSceneSdf,
+    updates: readonly FluidSceneSdfTransformUpdate[],
+    elapsedSeconds: number,
+    options: { readonly resetMotion?: boolean } = {}
+): void {
+    if (sceneSdf.disposed) {
+        throw new Error("[fluid] cannot update a disposed scene SDF.");
+    }
+    const updateTransforms = sceneSdfBindingOf(sceneSdf).updateTransforms;
+    if (!updateTransforms) {
+        throw new Error("[fluid] this scene SDF does not support transform updates.");
+    }
+    updateTransforms(updates as readonly CompositeSceneSdfTransformUpdate[], elapsedSeconds, options.resetMotion === true);
+}
+
+/** Translate the static collision grid without reallocating or rebuilding solver pipelines. */
+export function updateFluidSceneSdfStaticOffset(sceneSdf: FluidSceneSdf, offset: readonly [number, number, number], options: { readonly resetMotion?: boolean } = {}): void {
+    if (sceneSdf.disposed) {
+        throw new Error("[fluid] cannot update a disposed scene SDF.");
+    }
+    const updateStaticOffset = sceneSdfBindingOf(sceneSdf).updateStaticOffset;
+    if (!updateStaticOffset) {
+        throw new Error("[fluid] this scene SDF does not support static-grid offsets.");
+    }
+    updateStaticOffset(offset, options.resetMotion === true);
+}
+
+/** Update or disable the optional closed container used by a composite collision binding. */
+export function updateFluidSceneSdfContainer(sceneSdf: FluidSceneSdf, bounds: FluidSceneSdfBounds | null): void {
+    if (sceneSdf.disposed) {
+        throw new Error("[fluid] cannot update a disposed scene SDF.");
+    }
+    const updateContainer = sceneSdfBindingOf(sceneSdf).updateContainer;
+    if (!updateContainer) {
+        throw new Error("[fluid] this scene SDF does not support container updates.");
+    }
+    updateContainer(bounds);
+}
+
+/** Update static or local SDF enablement and filtering without rebuilding pipelines. */
+export function updateFluidSceneSdfGridSettings(sceneSdf: FluidSceneSdf, updates: readonly FluidSceneSdfGridSettingsUpdate[]): void {
+    if (sceneSdf.disposed) {
+        throw new Error("[fluid] cannot update a disposed scene SDF.");
+    }
+    const updateGridSettings = sceneSdfBindingOf(sceneSdf).updateGridSettings;
+    if (!updateGridSettings) {
+        throw new Error("[fluid] this scene SDF does not support per-grid settings.");
+    }
+    updateGridSettings(updates as readonly CompositeSceneSdfGridSettingsUpdate[]);
 }
 
 export function setFluidSimulationSceneSdf(simulation: FluidSimulation, sceneSdf: FluidSceneSdf | null): void {

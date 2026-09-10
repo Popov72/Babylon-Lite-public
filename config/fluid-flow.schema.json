@@ -1,11 +1,11 @@
 {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "$id": "https://babylon-lite.dev/schema/fluid-flow-v9.json",
+    "$id": "https://babylon-lite.dev/schema/fluid-flow-v15.json",
     "title": "Babylon Lite fluid flow objects",
     "type": "object",
     "required": ["formatVersion", "emitters", "sinks"],
     "properties": {
-        "formatVersion": { "enum": [5, 6, 7, 8, 9] },
+        "formatVersion": { "enum": [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15] },
         "simulationTimeScale": { "type": "number", "minimum": 0.01, "maximum": 100 },
         "source": {
             "type": "object",
@@ -21,10 +21,19 @@
             "type": "object",
             "required": ["encoding", "glb", "collision"],
             "properties": {
-                "encoding": { "const": "base64" },
-                "glb": { "type": "string", "minLength": 1, "contentEncoding": "base64" },
-                "collision": { "type": "string", "minLength": 1, "contentEncoding": "base64" },
-                "anchorPosition": { "$ref": "#/$defs/vec3" }
+                "encoding": { "enum": ["base64", "external"] },
+                "glb": { "type": "string", "minLength": 1 },
+                "collision": { "type": "string", "minLength": 1 },
+                "sdfCompression": { "const": "zlib" },
+                "collisionEnabled": { "type": "boolean" },
+                "collisionTrilinear": { "type": "boolean" },
+                "collisionByteLength": { "type": "integer", "minimum": 64 },
+                "anchorPosition": { "$ref": "#/$defs/vec3" },
+                "animatedCollisions": {
+                    "type": "array",
+                    "maxItems": 16,
+                    "items": { "$ref": "#/$defs/animatedCollision" }
+                }
             },
             "additionalProperties": false
         },
@@ -64,6 +73,28 @@
             "type": "array",
             "prefixItems": [{ "type": "number" }, { "type": "number" }, { "type": "number" }, { "type": "number" }],
             "items": false
+        },
+        "animatedCollision": {
+            "type": "object",
+            "required": ["id", "node", "sdf", "space", "resolution", "bakeFrame", "presentation"],
+            "properties": {
+                "id": { "type": "string", "minLength": 1 },
+                "node": { "type": "string", "minLength": 1 },
+                "sdf": { "type": "string", "minLength": 1 },
+                "byteOffset": { "type": "integer", "minimum": 0 },
+                "byteLength": { "type": "integer", "minimum": 64 },
+                "space": { "const": "node-local" },
+                "resolution": { "type": "integer", "minimum": 1, "maximum": 2048 },
+                "bakeFrame": { "type": "number" },
+                "presentation": { "type": "boolean" },
+                "enabled": { "type": "boolean" },
+                "trilinear": { "type": "boolean" }
+            },
+            "dependentRequired": {
+                "byteOffset": ["byteLength"],
+                "byteLength": ["byteOffset"]
+            },
+            "additionalProperties": false
         },
         "transform": {
             "type": "object",
@@ -159,6 +190,7 @@
                 "velocity": { "$ref": "#/$defs/vec3" },
                 "velocitySpace": { "enum": ["local", "world"] },
                 "sourceNode": { "type": "string", "minLength": 1 },
+                "sourcePresentation": { "type": "boolean" },
                 "sourceVelocity": { "$ref": "#/$defs/vec3" },
                 "sourceVelocityFactor": { "type": "number" },
                 "normalVelocity": { "type": "number" },

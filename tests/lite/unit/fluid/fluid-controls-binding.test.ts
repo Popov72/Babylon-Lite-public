@@ -275,13 +275,49 @@ describe("shared fluid controls binding", () => {
         expect(plan.changedKeys).toContain("method");
     });
 
+    it.each(["FLIP", "MLS-MPM"] as const)("defers %s page-capacity allocation until restart", (method) => {
+        const previous = values({ method, pagedGrid: true, pagedGridMaxPages: 2_000 });
+        const next = values({ method, pagedGrid: true, pagedGridMaxPages: 4_000 });
+
+        expect(deriveFluidControlsApplicationPlan(previous, next, ["pagedGridMaxPages"])).toMatchObject({
+            reconfigure: false,
+            restartRequired: true,
+        });
+    });
+
+    it("defers switching FLIP paged storage until restart", () => {
+        const previous = values({ method: "FLIP", pagedGrid: false });
+        const next = values({ method: "FLIP", pagedGrid: true });
+
+        expect(deriveFluidControlsApplicationPlan(previous, next, ["pagedGrid"])).toMatchObject({
+            reconfigure: false,
+            restartRequired: true,
+        });
+    });
+
     it("keeps live physics and foam edits out of structural reconfiguration", () => {
         const previous = values();
         const physics = values({ schema: { ...previous.schema, pressureIterations: 60 } });
         const foam = values({ foam: { ...previous.foam, blurRadius: 8 } });
 
-        expect(deriveFluidControlsApplicationPlan(previous, physics, ["schema"]).reconfigure).toBe(false);
+        expect(deriveFluidControlsApplicationPlan(previous, physics, ["schema"])).toMatchObject({
+            reconfigure: false,
+            renderProfile: false,
+            renderMode: false,
+            foamRender: false,
+        });
         expect(deriveFluidControlsApplicationPlan(previous, foam, ["foam"]).reconfigure).toBe(false);
+    });
+
+    it("updates render mode only for the polygon-surface schema field", () => {
+        const previous = values();
+        const polygon = values({ schema: { ...previous.schema, polygonSurface: 1 } });
+
+        expect(deriveFluidControlsApplicationPlan(previous, polygon, ["schema"])).toMatchObject({
+            reconfigure: false,
+            renderMode: true,
+            foamRender: true,
+        });
     });
 
     it("keeps FLIP discretization and capacity changes pending until reset", () => {

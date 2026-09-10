@@ -101,10 +101,10 @@ export interface FluidCtx {
     readonly simHalfExtentXZ: number;
     /** View-projection matrix for screen picking / rays. */
     viewProjection(): Mat4;
-    /** Scale the active simulation domain and rebuild both backends. Explicit grids scale their
+    /** Scale the active simulation domain and rebuild the active backend. Explicit grids scale their
      *  world-space position/size and Physics particle size together; gridless legacy demos retain
-     *  their historical hidden domain multiplier. */
-    setDomainScale(s: number): void;
+     *  their historical hidden domain multiplier. Returns whether a rebuild occurred. */
+    setDomainScale(s: number): boolean;
 
     /** Configure the shared bloom post-process. The whole fluid chain composites into an
      *  offscreen target, which is then presented to the swapchain either through bloom or a
@@ -122,6 +122,8 @@ export interface FluidDemo {
     readonly key: string;
     /** Dropdown label. */
     readonly label: string;
+    /** Demo-specific interaction text appended to the shared camera and simulation controls. */
+    readonly helperText?: string;
     /** HDR environment this demo shows as its skybox background AND reflects in the
      *  fluid surface (one of {@link ENV_STUDIO_URL} / the waterfall's own
      *  `WATERFALL_ENV_URL`). The
@@ -180,6 +182,9 @@ export interface FluidDemo {
     demoParams(): DemoParam[];
     /** Apply a live demo-param change. */
     applyParam(key: string, value: number | boolean | string): void;
+    /** Commit deferred work after a complete pair-state parameter restore and before the
+     *  target simulation is resolved. Omit when every parameter applies synchronously. */
+    commitRestoredParams?(): void;
     /** Demo-specific panel controls appended under "Physics simulation". */
     extraControls(): HTMLElement[];
     /** Meshes this demo casts shadows from. Informational: the core does not call it during

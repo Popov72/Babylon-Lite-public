@@ -63,8 +63,13 @@ type FoamSurfaceDepthMode = "unfiltered" | "screen" | "polygon";
 const FOAM_SURFACE_DEPTH_MODES: readonly FoamSurfaceDepthMode[] = ["unfiltered", "screen", "polygon"];
 
 function buildSplatWgsl(activeParticles: boolean, surfaceDepthMode: FoamSurfaceDepthMode): string {
-    const activeDecl = activeParticles ? "\n@group(0) @binding(5) var<storage, read> activeIndices: array<u32>;" : "";
-    const diffuseIndex = activeParticles ? "activeIndices[ii]" : "ii";
+    const activeDecl = activeParticles
+        ? `
+@group(0) @binding(5) var<storage, read> activeState: array<u32>;
+fn activeStride(cap: u32) -> u32 { return ((cap + 63u) / 64u) * 64u; }
+fn activeListBase(side: u32, cap: u32) -> u32 { return 64u + side * activeStride(cap); }`
+        : "";
+    const diffuseIndex = activeParticles ? "activeState[activeListBase(activeState[3], arrayLength(&diffuse)) + ii]" : "ii";
     const sprayClassification =
         surfaceDepthMode === "unfiltered"
             ? `if (inFront) { outc.b = w; }`
@@ -699,7 +704,7 @@ export function createFoamRenderTask(
             if (activeParticles) {
                 entries.push({
                     binding: 5,
-                    resource: { buffer: pool.activeIndices!, offset: pool.activeIndicesOffset ?? 0, size: pool.capacity * 4 },
+                    resource: { buffer: pool.activeIndices! },
                 });
             }
             const bg = device.createBindGroup({

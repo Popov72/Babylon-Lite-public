@@ -23,7 +23,10 @@ export function parseGlbContainer(buffer: ArrayBuffer): { json: any; binChunk: D
     const json = JSON.parse(jsonStr);
     offset += 8 + jsonLength;
 
-    // BIN chunk
+    // The BIN chunk is optional when the document has no binary resources.
+    if (offset === view.byteLength) {
+        return { json, binChunk: new DV(new ArrayBuffer(0)) };
+    }
     const binLength = view.getUint32(offset, true);
     const binType = view.getUint32(offset + 4, true);
     if (binType !== 0x004e4942) {

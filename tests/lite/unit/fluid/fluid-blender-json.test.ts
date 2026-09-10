@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
+import { unzlibSync, zlibSync } from "fflate";
 
 import { parseBlenderFluidCollision, parseBlenderFluidJson, scenePayloadFromBlenderFluidJson } from "../../../../packages/babylon-lite/src/fluid/authoring/blender-fluid-json";
 import type { FluidExportJson } from "../../../../packages/babylon-lite/src/fluid/authoring/preset-io";
@@ -33,16 +34,26 @@ function glbBytes(): Uint8Array {
     return bytes;
 }
 
+function concatenateBytes(...entries: Uint8Array[]): Uint8Array {
+    const bytes = new Uint8Array(entries.reduce((sum, entry) => sum + entry.byteLength, 0));
+    let offset = 0;
+    for (const entry of entries) {
+        bytes.set(entry, offset);
+        offset += entry.byteLength;
+    }
+    return bytes;
+}
+
 describe("Blender FLIP Fluids exporter", () => {
     it("does not allocate mutable Sets at module import time", () => {
         const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/authoring/blender-fluid-json.ts"), "utf8");
         expect(source.slice(0, source.indexOf("function "))).not.toContain("new Set(");
     });
 
-    it("exports the format-13 quality-comparison settings", () => {
+    it("exports the format-15 quality-comparison settings", () => {
         const source = readFileSync(resolve(process.cwd(), "scripts/blender-fluid-addon.py"), "utf8");
-        expect(source).toContain('"version": (3, 2, 0)');
-        expect(source).toContain('"formatVersion": 13');
+        expect(source).toContain('"version": (3, 9, 0)');
+        expect(source).toContain('"formatVersion": 15');
         for (const key of [
             "pressureSolver",
             "multigridCycles",
@@ -66,12 +77,114 @@ describe("Blender FLIP Fluids exporter", () => {
         }
     });
 
+    it("limits imported FLIP Fluids resolution to a runtime-compatible grid", () => {
+        const source = readFileSync(resolve(process.cwd(), "scripts/blender-fluid-addon.py"), "utf8");
+        expect(source).toContain("MAX_GRID_CELL_COUNT = 8 * 1024 * 1024");
+        expect(source).toContain("resolution = compatible_flip_resolution(grid_size, raw_resolution)");
+        expect(source).toContain("to fit Babylon Lite grid allocation limits");
+    });
+
+    it("exports Blender lights in Babylon Lite's unitless lighting mode", () => {
+        const source = readFileSync(resolve(process.cwd(), "scripts/blender-fluid-addon.py"), "utf8");
+        expect(source).toContain('export_import_convert_lighting_mode="COMPAT"');
+    });
+
+    it("maps native Mantaflow liquid domains to FLIP discretization", () => {
+        const source = readFileSync(resolve(process.cwd(), "scripts/blender-fluid-addon.py"), "utf8");
+        expect(source).toContain("marker_axis = max(1, int(settings.particle_number))");
+        expect(source).toContain("markers_per_cell = int(clamp(marker_axis**3, 1, 64))");
+        expect(source).toContain('"flipRatio": flip_ratio');
+        expect(source).not.toContain('"method": "PBF"');
+    });
+
+    it("offers explicit external-resource, light, decimation, and 2048-SDF options", () => {
+        const source = readFileSync(resolve(process.cwd(), "scripts/blender-fluid-addon.py"), "utf8");
+        expect(source).toContain("max=2048");
+        expect(source).toContain('"encoding": "external"');
+        expect(source).toContain("export_lights=export_lights");
+        expect(source).toContain('obj.modifiers.new("Babylon Lite export decimation", "DECIMATE")');
+        expect(source).toContain("target_triangles - fixed_triangles");
+        expect(source).toContain("MIN_DECIMATABLE_TRIANGLES = 256");
+        expect(source).not.toContain("MAX_EXPORT_FLIP_PARTICLES");
+        expect(source).not.toContain("MAX_EXPORT_SUBDIVISION_LEVEL");
+        expect(source).toContain("FLIP_FLUIDS_GENERATED_OBJECTS");
+        expect(source).toContain("blitefluid_animated_sdf_resolution");
+        expect(source).toContain("def bake_local_collision(");
+        expect(source).toContain('"animatedCollisions"');
+        expect(source).toContain('"collisionByteLength": len(collision)');
+        expect(source).toContain('"sourcePresentation": bool(not obj.hide_render and obj.visible_get())');
+        expect(source).toContain("def is_emitter_source_object(obj):");
+        expect(source).toContain("blitefluid_target_initial_particles");
+        expect(source).toContain("blitefluid_target_inflow_particles");
+        expect(source).toContain("def flow_emitter_counts(scene):");
+        expect(source).toContain("def target_flip_resolution(");
+        expect(source).toContain("def clipped_initial_particle_count(");
+        expect(source).toContain("def particle_target_preview(");
+        expect(source).toContain("def authored_object_transform(obj):");
+        expect(source).toContain('zlib.compress(sdf_container, level=6)');
+        expect(source).toContain('"sdfCompression": "zlib"');
+        expect(source).toContain("particle_count = max(1, initial_markers + target_inflow_particles)");
+        expect(source).toContain("initial_row.enabled = initial_count > 0");
+        expect(source).toContain("inflow_row.enabled = inflow_count > 0");
+        expect(source).toContain("Resolution Divisions:");
+        expect(source).toContain("total_particles:,} total");
+        expect(source).toContain("def add_export_checker_textures(objects):");
+        expect(source).toContain('"waterColor": fluid_render_color(scene, domain)');
+        expect(source).toContain('"polygonSurface": 0');
+        expect(source).toContain('"surfaceDepthBlur": 18');
+        expect(source).toContain('"surfaceThicknessBlur": 6');
+        expect(source).toContain('"narrowRangeDelta": 10');
+    });
+
+    it("builds collision unions without nearest-triangle sign ambiguity", () => {
+        const source = readFileSync(resolve(process.cwd(), "scripts/blender-fluid-addon.py"), "utf8");
+        expect(source).toContain("def build_collision_bvhs(objects):");
+        expect(source).toContain("def point_inside_bvh(point, bvh, minimum, maximum, epsilon):");
+        expect(source).toContain("return -nearest_distance if inside else nearest_distance");
+    });
+
+    it("exposes per-grid collision enablement and filtering in the Fluid host", () => {
+        const runtime = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/core/fluid-runtime-bindings.ts"), "utf8");
+        const demo = readFileSync(resolve(process.cwd(), "lab/lite/src/demos/fluid.ts"), "utf8");
+        expect(runtime).toContain("updateGridSettings");
+        expect(runtime).toContain("entry.options.y > 0.5");
+        expect(runtime).toContain("fn sampleNearestSdfGrid");
+        expect(runtime).toContain("entry.options.y > 0.5 && elapsed > 1.0e-6");
+        expect(runtime).toContain("new Uint32Array(Math.ceil(totalVoxels / 2))");
+        expect(runtime).toContain("unpack2x16float");
+        expect(runtime).toContain('sdfGridFormat: "packed-f16"');
+        expect(demo).toContain('controls.makeSection("Collision"');
+        expect(demo).toContain('checkbox("Trilinear filtering"');
+        expect(demo).toContain('checkbox("Enabled"');
+    });
+
+    it("gives planar Blender flow objects one simulation-cell thickness", () => {
+        const source = readFileSync(resolve(process.cwd(), "scripts/blender-fluid-addon.py"), "utf8");
+        expect(source).toContain("def ensure_flow_shape_thickness(shape, transform, cell_size):");
+        expect(source).toContain('ensure_flow_shape_thickness(shape, transform, derived["cell_size"])');
+    });
+
+    it("preserves offset prism emitter geometry instead of using an origin-centered box", () => {
+        const source = readFileSync(resolve(process.cwd(), "scripts/blender-fluid-addon.py"), "utf8");
+        expect(source).toContain('return {"type": "polygonPrism", "points": points, "thickness": float(size[axis])}');
+        expect(source).toContain("position = obj.matrix_world @ (local_center or Vector((0, 0, 0)))");
+        expect(source).toContain("shape, transform = flow_shape_transform_for(obj, grid_position)");
+    });
+
     it("accepts format-13 self-contained exports", () => {
         const preset = validPreset();
         const json = JSON.parse(selfContainedJson(preset)) as FluidExportJson;
         json.formatVersion = 13;
 
         expect(parseBlenderFluidJson(JSON.stringify(json)).preset.formatVersion).toBe(13);
+    });
+
+    it("preserves hidden emitter source-node presentation metadata", () => {
+        const preset = validPreset();
+        preset.emitters![0]!.sourceNode = "Water";
+        preset.emitters![0]!.sourcePresentation = false;
+
+        expect(parseBlenderFluidJson(selfContainedJson(preset)).preset.emitters?.[0]?.sourcePresentation).toBe(false);
     });
 
     it("accepts explicit format-14 semantics and rejects a missing semantics record", () => {
@@ -254,6 +367,113 @@ describe("Blender fluid JSON", () => {
         expect(bundle.collision.dims).toEqual([2, 2, 2]);
     });
 
+    it("loads external GLB and SDF resources and re-embeds them for UI export", () => {
+        const preset = validPreset();
+        preset.formatVersion = 13;
+        preset.scene = {
+            encoding: "external",
+            glb: "external-scene.glb",
+            collision: "external-scene.sdf",
+            anchorPosition: [1, 2, 3],
+        };
+        const resources = new Map<string, ArrayBufferLike>([
+            ["external-scene.glb", glbBytes().buffer],
+            ["external-scene.sdf", collisionBytes().buffer],
+        ]);
+
+        const parsed = parseBlenderFluidJson(JSON.stringify(preset), resources);
+        const embedded = scenePayloadFromBlenderFluidJson(parsed);
+        const external = scenePayloadFromBlenderFluidJson(parsed, { preserveExternal: true });
+
+        expect(parsed.sceneGlb.byteLength).toBe(glbBytes().byteLength);
+        expect(parsed.collision.dims).toEqual([2, 2, 2]);
+        expect(external).toEqual({ ...preset.scene, collisionEnabled: true, collisionTrilinear: true });
+        expect(embedded.encoding).toBe("base64");
+        expect(embedded.sdfCompression).toBe("zlib");
+        expect(Buffer.from(embedded.glb, "base64")).toEqual(Buffer.from(glbBytes()));
+        expect(Buffer.from(unzlibSync(Buffer.from(embedded.collision, "base64")))).toEqual(Buffer.from(collisionBytes()));
+    });
+
+    it("loads and re-exports format-15 animated collision SDF resources", () => {
+        const preset = validPreset();
+        preset.formatVersion = 15;
+        preset.simulationSemantics = { version: 1, profile: "normalized-v1", pbfPhysics: "scale-adjusted" };
+        const staticSdf = collisionBytes();
+        const animatedSdf = collisionBytes();
+        const sdfContainer = concatenateBytes(staticSdf, animatedSdf);
+        preset.scene = {
+            encoding: "external",
+            glb: "animated.glb",
+            collision: "animated.sdf",
+            sdfCompression: "zlib",
+            collisionEnabled: false,
+            collisionTrilinear: false,
+            collisionByteLength: staticSdf.byteLength,
+            animatedCollisions: [
+                {
+                    id: "animated-collision-0001",
+                    node: "WaveMaker",
+                    sdf: "animated.sdf",
+                    byteOffset: staticSdf.byteLength,
+                    byteLength: animatedSdf.byteLength,
+                    space: "node-local",
+                    resolution: 64,
+                    bakeFrame: 150,
+                    presentation: false,
+                    enabled: false,
+                    trilinear: false,
+                },
+            ],
+        };
+        const resources = new Map<string, ArrayBufferLike>([
+            ["animated.glb", glbBytes().buffer],
+            ["animated.sdf", zlibSync(sdfContainer).buffer],
+        ]);
+
+        const parsed = parseBlenderFluidJson(JSON.stringify(preset), resources);
+        const embedded = scenePayloadFromBlenderFluidJson(parsed);
+        const external = scenePayloadFromBlenderFluidJson(parsed, { preserveExternal: true });
+
+        expect(parsed.animatedCollisions).toHaveLength(1);
+        expect(parsed.animatedCollisions[0]?.node).toBe("WaveMaker");
+        expect(parsed.collisionEnabled).toBe(false);
+        expect(parsed.collisionTrilinear).toBe(false);
+        expect(parsed.animatedCollisions[0]?.enabled).toBe(false);
+        expect(parsed.animatedCollisions[0]?.trilinear).toBe(false);
+        expect(parsed.animatedCollisions[0]?.collision.dims).toEqual([2, 2, 2]);
+        expect(external).toEqual(preset.scene);
+        expect(Buffer.from(unzlibSync(Buffer.from(embedded.animatedCollisions?.[0]?.sdf ?? "", "base64")))).toEqual(Buffer.from(collisionBytes()));
+        expect(embedded.collisionByteLength).toBeUndefined();
+        expect(embedded.animatedCollisions?.[0]?.byteOffset).toBeUndefined();
+        expect(embedded.animatedCollisions?.[0]?.byteLength).toBeUndefined();
+    });
+
+    it("rejects duplicate animated collision nodes", () => {
+        const preset = validPreset();
+        preset.formatVersion = 15;
+        preset.simulationSemantics = { version: 1, profile: "normalized-v1", pbfPhysics: "scale-adjusted" };
+        const sdf = Buffer.from(collisionBytes()).toString("base64");
+        preset.scene = {
+            encoding: "base64",
+            glb: Buffer.from(glbBytes()).toString("base64"),
+            collision: sdf,
+            animatedCollisions: [
+                { id: "first", node: "WaveMaker", sdf, space: "node-local", resolution: 64, bakeFrame: 1, presentation: true },
+                { id: "second", node: "WaveMaker", sdf, space: "node-local", resolution: 64, bakeFrame: 1, presentation: true },
+            ],
+        };
+
+        expect(() => parseBlenderFluidJson(JSON.stringify(preset))).toThrow(/node must be unique/);
+    });
+
+    it("reports missing external scene resources", () => {
+        const preset = validPreset();
+        preset.formatVersion = 13;
+        preset.scene = { encoding: "external", glb: "scene.glb", collision: "scene.sdf" };
+
+        expect(() => parseBlenderFluidJson(JSON.stringify(preset), new Map())).toThrow('external resource "scene.glb" was not provided');
+    });
+
     it("parses format-7 delete sinks and requires an explicit mode", () => {
         const preset = validPreset();
         preset.formatVersion = 7;
@@ -348,6 +568,7 @@ describe("Blender fluid JSON", () => {
             sheetingStrength: 0.5,
             sheetingInterval: 5,
             polygonSurface: 1,
+            polygonReconstructionMultiplier: 1.75,
             viscosityIterations: 12,
             maxSubDtMs: 8.4,
         };
@@ -359,6 +580,32 @@ describe("Blender fluid JSON", () => {
         expect(parsed.gridResolution).toBe(160);
         expect(parsed.markersPerCell).toBe(8);
         expect(parsed.physicsParticleSize).toBeUndefined();
+    });
+
+    it("rejects an out-of-range FLIP polygon reconstruction multiplier", () => {
+        const preset = validPreset();
+        preset.meta.method = "FLIP";
+        preset.gridResolution = 160;
+        preset.markersPerCell = 8;
+        delete preset.physicsParticleSize;
+        preset.physics = {
+            gravity: 9.8,
+            flipRatio: 0.95,
+            kinematicViscosity: 0,
+            surfaceTension: 0,
+            minSubsteps: 2,
+            maxSubsteps: 8,
+            cflNumber: 2,
+            restitution: 0,
+            velocityDamping: 0,
+            pressureIterations: 40,
+            pressureRelaxation: 0.8,
+            polygonReconstructionMultiplier: 2.25,
+            viscosityIterations: 12,
+            maxSubDtMs: 8.4,
+        };
+
+        expect(() => parseBlenderFluidJson(selfContainedJson(preset))).toThrow("polygonReconstructionMultiplier");
     });
 
     it("parses advanced FLIP whitewater controls", () => {

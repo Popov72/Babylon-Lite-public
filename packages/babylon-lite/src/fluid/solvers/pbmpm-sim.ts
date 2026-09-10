@@ -45,7 +45,7 @@ import {
     foamActiveListOffset,
     foamActiveStateBytes,
     SCENE_NORMAL_WGSL,
-    SCENE_SDF_GRID_WGSL,
+    sceneSdfGridBindingWgsl,
     setFluidFlowConfig,
     updateFluidFlowEmitter,
 } from "../core/sim-common.js";
@@ -288,7 +288,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
 }`;
 
 function buildGridUpdateWgsl(scene: SceneSdfSpec | null): string {
-    const gridInject = scene?.sdfGrid ? `\n@group(0) @binding(3) var<storage, read> sceneSdfGrid: array<f32>;\n${SCENE_SDF_GRID_WGSL}` : "";
+    const gridInject = scene ? sceneSdfGridBindingWgsl(scene, 3) : "";
     const decls = scene ? `${scene.struct}\n@group(0) @binding(2) var<uniform> sceneSdfParams: SceneSdfParams;${gridInject}\n${scene.sdf}\n${SCENE_NORMAL_WGSL}` : "";
     const sceneResolve = scene
         ? `
@@ -384,7 +384,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
 }`;
 
 function buildIntegrateWgsl(scene: SceneSdfSpec | null): string {
-    const gridInject = scene?.sdfGrid ? `\n@group(0) @binding(3) var<storage, read> sceneSdfGrid: array<f32>;\n${SCENE_SDF_GRID_WGSL}` : "";
+    const gridInject = scene ? sceneSdfGridBindingWgsl(scene, 3) : "";
     const decls = scene ? `${scene.struct}\n@group(0) @binding(2) var<uniform> sceneSdfParams: SceneSdfParams;${gridInject}\n${scene.sdf}\n${SCENE_NORMAL_WGSL}` : "";
     const lifecycleBinding = scene ? (scene.sdfGrid ? 4 : 3) : 2;
     const sceneResolve = scene

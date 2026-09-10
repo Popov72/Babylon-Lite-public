@@ -37,7 +37,7 @@ import {
     FOAM_BYTES,
     FOAM_COMMON_WGSL,
     SCENE_NORMAL_WGSL,
-    SCENE_SDF_GRID_WGSL,
+    sceneSdfGridBindingWgsl,
     SPAWN_ACCEPT_TRIES,
     createDiffuseCountTracker,
     createGpuBuffersAtomically,
@@ -86,6 +86,34 @@ const RESEED_HEADER_BYTES = RESEED_HEADER_WORDS * 4;
 const RESEED_MIN_WORK_BUDGET = 256;
 const RESEED_WORK_BUDGET_DIVISOR = 1000;
 const SHEETING_HEADER_WORDS = 4;
+const FLIP_PIPELINE_CACHE_LIMIT = 256;
+
+let flipComputePipelineCaches: WeakMap<GPUDevice, Map<string, GPUComputePipeline>> | null = null;
+
+function cachedFlipComputePipeline(device: GPUDevice, label: string, code: string): GPUComputePipeline {
+    flipComputePipelineCaches ??= new WeakMap();
+    let cache = flipComputePipelineCaches.get(device);
+    if (!cache) {
+        cache = new Map();
+        flipComputePipelineCaches.set(device, cache);
+    }
+    let pipeline = cache.get(code);
+    if (pipeline) {
+        cache.delete(code);
+        cache.set(code, pipeline);
+        return pipeline;
+    }
+    pipeline = device.createComputePipeline({
+        label,
+        layout: "auto",
+        compute: { module: device.createShaderModule({ label, code }), entryPoint: "main" },
+    });
+    cache.set(code, pipeline);
+    if (cache.size > FLIP_PIPELINE_CACHE_LIMIT) {
+        cache.delete(cache.keys().next().value!);
+    }
+    return pipeline;
+}
 const SHEETING_HEADER_BYTES = SHEETING_HEADER_WORDS * 4;
 const SHEETING_MIN_WORK_BUDGET = 64;
 const SHEETING_WORK_BUDGET_DIVISOR = 1000;
@@ -964,7 +992,7 @@ function buildClassifyWgsl(scene: SceneSdfSpec | null, fractionalSolids = false)
     const sceneDecl = scene
         ? `${scene.struct}
 @group(0) @binding(3) var<uniform> sceneSdfParams: SceneSdfParams;
-${scene.sdfGrid ? `@group(0) @binding(4) var<storage, read> sceneSdfGrid: array<f32>;\n${SCENE_SDF_GRID_WGSL}` : ""}
+${sceneSdfGridBindingWgsl(scene, 4)}
 ${scene.sdf}`
         : "fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 { return 1.0e30; }";
     return /* wgsl */ `
@@ -1129,7 +1157,6 @@ function buildPolygonSdfUpsampleWgsl(layout: FlipPageLayout | null): string {
 const POLYGON_PAGE_SIZE: u32 = ${FLIP_PAGE_SIZE}u;
 const POLYGON_PAGE_CELLS: u32 = ${FLIP_PAGE_CELLS}u;
 const POLYGON_PAGE_BLOCK_DIM: vec3<u32> = vec3<u32>(${layout.blockDim[0]}u, ${layout.blockDim[1]}u, ${layout.blockDim[2]}u);
-const POLYGON_PAGE_MAX_PAGES: u32 = ${layout.maxPages}u;
 const POLYGON_PAGE_MAP_OFFSET: u32 = 2u;
 const POLYGON_PAGE_LOOKUP_WIDTH: u32 = ${layout.lookupWidth}u;
 
@@ -1144,7 +1171,8 @@ fn coarseAt(c: vec3<i32>) -> f32 {
     let block = cell / vec3<u32>(POLYGON_PAGE_SIZE);
     let blockIndex = block.x + POLYGON_PAGE_BLOCK_DIM.x * (block.y + POLYGON_PAGE_BLOCK_DIM.y * block.z);
     let page = polygonPageWord(POLYGON_PAGE_MAP_OFFSET + blockIndex);
-    if (page == 0u || page > POLYGON_PAGE_MAX_PAGES) {
+    let maxPages = (arrayLength(&coarseSdf) - 1u) / POLYGON_PAGE_CELLS;
+    if (page == 0u || page > maxPages) {
         return f32(${LIQUID_SDF_LAYERS}) * p.originDx.w * p.solve.w;
     }
     let local = cell % vec3<u32>(POLYGON_PAGE_SIZE);
@@ -1199,7 +1227,7 @@ function buildSolidFaceGeometryWgsl(scene: SceneSdfSpec | null): string {
     const sceneDecl = scene
         ? `${scene.struct}
 @group(0) @binding(2) var<uniform> sceneSdfParams: SceneSdfParams;
-${scene.sdfGrid ? `@group(0) @binding(3) var<storage, read> sceneSdfGrid: array<f32>;\n${SCENE_SDF_GRID_WGSL}` : ""}
+${sceneSdfGridBindingWgsl(scene, 3)}
 ${scene.sdf}
 ${SCENE_NORMAL_WGSL}`
         : `fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 { return 1.0e30; }
@@ -1602,7 +1630,7 @@ function buildDivergenceWgsl(scene: SceneSdfSpec | null, fractionalSolids = fals
     const sceneDecl = scene
         ? `${scene.struct}
 @group(0) @binding(5) var<uniform> sceneSdfParams: SceneSdfParams;
-${scene.sdfGrid ? `@group(0) @binding(6) var<storage, read> sceneSdfGrid: array<f32>;\n${SCENE_SDF_GRID_WGSL}` : ""}
+${sceneSdfGridBindingWgsl(scene, 6)}
 ${scene.sdf}`
         : "fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 { return 1.0e30; }";
     return /* wgsl */ `
@@ -2104,11 +2132,17 @@ function buildPagedMultigridAddressingWgsl(layout: FlipPageLayout): string {
 const PAGE_SIZE: u32 = ${FLIP_PAGE_SIZE}u;
 const PAGE_CELLS: u32 = ${FLIP_PAGE_CELLS}u;
 const PAGE_BLOCK_DIM: vec3<u32> = vec3<u32>(${layout.blockDim[0]}u, ${layout.blockDim[1]}u, ${layout.blockDim[2]}u);
-const PAGE_MAX_PAGES: u32 = ${layout.maxPages}u;
 const PAGE_MAP_OFFSET: u32 = ${mapOffset}u;
 const PAGE_COORD_OFFSET: u32 = ${coordOffset}u;
-const PAGE_STORAGE_CELLS: u32 = ${layout.storageCells}u;
 const PAGE_LOOKUP_WIDTH: u32 = ${layout.lookupWidth}u;
+
+fn pageStorageCells() -> u32 {
+    return arrayLength(&fineTypes) - 1u;
+}
+
+fn pageMaxPages() -> u32 {
+    return pageStorageCells() / PAGE_CELLS;
+}
 
 fn pageWord(index: u32) -> u32 {
     return textureLoad(pageLookup, vec2<i32>(i32(index % PAGE_LOOKUP_WIDTH), i32(index / PAGE_LOOKUP_WIDTH)), 0).x;
@@ -2116,14 +2150,14 @@ fn pageWord(index: u32) -> u32 {
 
 fn pagedFineIndex(c: vec3<i32>, d: vec3<i32>) -> u32 {
     if (!inGrid(c, d)) {
-        return PAGE_STORAGE_CELLS;
+        return pageStorageCells();
     }
     let cell = vec3<u32>(c);
     let block = cell / vec3<u32>(PAGE_SIZE);
     let blockIndex = block.x + PAGE_BLOCK_DIM.x * (block.y + PAGE_BLOCK_DIM.y * block.z);
     let page = pageWord(PAGE_MAP_OFFSET + blockIndex);
-    if (page == 0u || page > PAGE_MAX_PAGES) {
-        return PAGE_STORAGE_CELLS;
+    if (page == 0u || page > pageMaxPages()) {
+        return pageStorageCells();
     }
     let local = cell % vec3<u32>(PAGE_SIZE);
     let localIndex = local.x + PAGE_SIZE * (local.y + PAGE_SIZE * local.z);
@@ -2405,7 +2439,7 @@ function buildG2pWgsl(scene: SceneSdfSpec | null): string {
     const sceneDecl = scene
         ? `${scene.struct}
 @group(0) @binding(${sceneBinding}) var<uniform> sceneSdfParams: SceneSdfParams;
-${scene.sdfGrid ? `@group(0) @binding(${gridBinding}) var<storage, read> sceneSdfGrid: array<f32>;\n${SCENE_SDF_GRID_WGSL}` : ""}
+${sceneSdfGridBindingWgsl(scene, gridBinding)}
 ${scene.sdf}
 ${SCENE_NORMAL_WGSL}`
         : `fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 { return 1.0e30; }
@@ -2695,7 +2729,7 @@ function buildReseedEmitWgsl(scene: SceneSdfSpec | null): string {
     const sceneDecl = scene
         ? `${scene.struct}
 @group(0) @binding(7) var<uniform> sceneSdfParams: SceneSdfParams;
-${scene.sdfGrid ? `@group(0) @binding(8) var<storage, read> sceneSdfGrid: array<f32>;\n${SCENE_SDF_GRID_WGSL}` : ""}
+${sceneSdfGridBindingWgsl(scene, 8)}
 ${scene.sdf}
 ${SCENE_NORMAL_WGSL}`
         : `fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 { return 1.0e30; }
@@ -2863,7 +2897,7 @@ function buildSheetingEmitWgsl(scene: SceneSdfSpec | null): string {
     const sceneDecl = scene
         ? `${scene.struct}
 @group(0) @binding(7) var<uniform> sceneSdfParams: SceneSdfParams;
-${scene.sdfGrid ? `@group(0) @binding(8) var<storage, read> sceneSdfGrid: array<f32>;\n${SCENE_SDF_GRID_WGSL}` : ""}
+${sceneSdfGridBindingWgsl(scene, 8)}
 ${scene.sdf}
 ${SCENE_NORMAL_WGSL}`
         : `fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 { return 1.0e30; }
@@ -3909,11 +3943,9 @@ function buildPagedFlipAllocationWgsl(layout: FlipPageLayout): string {
     return /* wgsl */ `
 const PAGE_SIZE_I: i32 = ${FLIP_PAGE_SIZE};
 const BLOCK_DIM: vec3<i32> = vec3<i32>(${layout.blockDim[0]}, ${layout.blockDim[1]}, ${layout.blockDim[2]});
-const PAGE_CAPACITY: u32 = ${layout.maxPages}u;
 const PAGE_MAP_OFFSET: u32 = 2u;
 const PAGE_COORD_OFFSET: u32 = ${2 + layout.numBlocks}u;
 const PAGE_LOCK: u32 = 0xffffffffu;
-const PAGE_OVERFLOW: u32 = ${layout.maxPages + 1}u;
 
 fn blockIndex(block: vec3<i32>) -> u32 {
     return u32(block.x + BLOCK_DIM.x * (block.y + BLOCK_DIM.y * block.z));
@@ -3934,12 +3966,12 @@ fn assignPage(block: vec3<i32>) {
         }
     }
     let page = atomicAdd(&pageData[0], 1u);
-    if (page < PAGE_CAPACITY) {
+    if (page < config.pageCapacity) {
         atomicStore(&pageData[PAGE_COORD_OFFSET + page], blockIndex(block));
         atomicStore(&pageData[address], page + 1u);
     } else {
         atomicStore(&pageData[1], 1u);
-        atomicStore(&pageData[address], PAGE_OVERFLOW);
+        atomicStore(&pageData[address], config.pageCapacity + 1u);
     }
 }`;
 }
@@ -3953,7 +3985,7 @@ struct DispatchConfig {
     sweepDistance: f32,
     polygonCellItems: u32,
     polygonCubeItems: u32,
-    reserved2: u32,
+    pageCapacity: u32,
 };`;
 
 const FLIP_PAGE_SWEPT_ASSIGNMENT_WGSL = /* wgsl */ `
@@ -4095,8 +4127,7 @@ ${FLIP_PAGE_DISPATCH_CONFIG_WGSL}
 @group(0) @binding(3) var<uniform> config: DispatchConfig;
 @group(0) @binding(4) var<storage, read_write> statusData: array<atomic<u32>>;
 const LOOKUP_WIDTH: u32 = ${layout.lookupWidth}u;
-const LOOKUP_WORDS: u32 = ${layout.lookupWords}u;
-const PAGE_CAPACITY: u32 = ${layout.maxPages}u;
+const PAGE_COORD_OFFSET: u32 = ${2 + layout.numBlocks}u;
 
 fn writeDispatch(offset: u32, itemCount: u32) {
     let groups = (itemCount + ${WORKGROUP_SIZE - 1}u) / ${WORKGROUP_SIZE}u;
@@ -4110,7 +4141,7 @@ fn writeDispatch(offset: u32, itemCount: u32) {
 fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) groups: vec3<u32>) {
     let i = gid.x + gid.y * groups.x * ${WORKGROUP_SIZE}u;
     if (i == 0u) {
-        let pages = min(atomicLoad(&pageData[0]), PAGE_CAPACITY);
+        let pages = min(atomicLoad(&pageData[0]), config.pageCapacity);
         let overflow = atomicLoad(&pageData[1]) != 0u || atomicLoad(&statusData[2]) != 0u;
         writeDispatch(0u, select(pages * ${FLIP_PAGE_CELLS}u, 0u, overflow));
         writeDispatch(3u, select(pages * ${FLIP_PAGE_CELLS * 3}u, 0u, overflow));
@@ -4121,7 +4152,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
         writeDispatch(18u, select(config.polygonCellItems, 0u, overflow));
         writeDispatch(21u, select(config.polygonCubeItems, 0u, overflow));
     }
-    if (i >= LOOKUP_WORDS) {
+    if (i >= PAGE_COORD_OFFSET + config.pageCapacity) {
         return;
     }
     textureStore(pageLookup, vec2<i32>(i32(i % LOOKUP_WIDTH), i32(i / LOOKUP_WIDTH)), vec4<u32>(atomicLoad(&pageData[i]), 0u, 0u, 0u));
@@ -4151,7 +4182,7 @@ fn main() {
 }`;
 }
 
-function buildPagedFlipClearWgsl(layout: FlipPageLayout, faces: boolean): string {
+function buildPagedFlipClearWgsl(_layout: FlipPageLayout, faces: boolean): string {
     const itemsPerPage = faces ? FLIP_PAGE_CELLS * 3 : FLIP_PAGE_CELLS;
     const bindings = faces
         ? "@group(0) @binding(1) var<storage, read_write> values: array<vec2<u32>>;"
@@ -4166,11 +4197,11 @@ function buildPagedFlipClearWgsl(layout: FlipPageLayout, faces: boolean): string
     return /* wgsl */ `
 @group(0) @binding(0) var<storage, read_write> pageData: array<atomic<u32>>;
 ${bindings}
-const PAGE_CAPACITY: u32 = ${layout.maxPages}u;
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) groups: vec3<u32>) {
     let i = gid.x + gid.y * groups.x * ${WORKGROUP_SIZE}u;
-    let itemCount = min(atomicLoad(&pageData[0]), PAGE_CAPACITY) * ${itemsPerPage}u;
+    let bufferCapacity = (arrayLength(&${faces ? "values" : "marks"}) - 1u) / ${itemsPerPage}u;
+    let itemCount = min(atomicLoad(&pageData[0]), bufferCapacity) * ${itemsPerPage}u;
     if (i >= itemCount) {
         return;
     }
@@ -4199,12 +4230,21 @@ export function rewriteFlipWgslForPagedStorage(code: string, layout: FlipPageLay
 const FLIP_PAGE_SIZE_U: u32 = ${FLIP_PAGE_SIZE}u;
 const FLIP_PAGE_CELLS_U: u32 = ${FLIP_PAGE_CELLS}u;
 const FLIP_PAGE_BLOCK_DIM: vec3<u32> = vec3<u32>(${layout.blockDim[0]}u, ${layout.blockDim[1]}u, ${layout.blockDim[2]}u);
-const FLIP_PAGE_MAX_PAGES: u32 = ${layout.maxPages}u;
 const FLIP_PAGE_MAP_OFFSET: u32 = ${mapOffset}u;
 const FLIP_PAGE_COORD_OFFSET: u32 = ${coordOffset}u;
-const FLIP_PAGE_STORAGE_CELLS: u32 = ${layout.storageCells}u;
-const FLIP_PAGE_STORAGE_FACES: u32 = ${layout.storageFaces}u;
 const FLIP_PAGE_LOOKUP_WIDTH: u32 = ${layout.lookupWidth}u;
+
+fn flipPageMaxPages(p: Params) -> u32 {
+    return u32(p.sheeting.z);
+}
+
+fn flipPageStorageCells(p: Params) -> u32 {
+    return flipPageMaxPages(p) * FLIP_PAGE_CELLS_U;
+}
+
+fn flipPageStorageFaces(p: Params) -> u32 {
+    return flipPageStorageCells(p) * 3u;
+}
 
 fn flipPageWord(index: u32) -> u32 {
     return textureLoad(pageLookup, vec2<i32>(i32(index % FLIP_PAGE_LOOKUP_WIDTH), i32(index / FLIP_PAGE_LOOKUP_WIDTH)), 0).x;
@@ -4245,11 +4285,11 @@ const FIXED_POINT:`
         "inCellGrid",
         `fn cellIndex(c: vec3<i32>, p: Params) -> u32 {
     if (!inCellGrid(c, p)) {
-        return FLIP_PAGE_STORAGE_CELLS;
+                return flipPageStorageCells(p);
     }
     let page = flipPageWord(FLIP_PAGE_MAP_OFFSET + flipPageBlockIndex(c));
-    if (page == 0u || page > FLIP_PAGE_MAX_PAGES) {
-        return FLIP_PAGE_STORAGE_CELLS;
+            if (page == 0u || page > flipPageMaxPages(p)) {
+                return flipPageStorageCells(p);
     }
     return (page - 1u) * FLIP_PAGE_CELLS_U + flipPageLocalIndex(c);
 }`
@@ -4263,7 +4303,7 @@ const FIXED_POINT:`
         return false;
     }
     let page = flipPageWord(FLIP_PAGE_MAP_OFFSET + flipPageBlockIndex(c));
-    return page != 0u && page <= FLIP_PAGE_MAX_PAGES;
+    return page != 0u && page <= flipPageMaxPages(p);
 }`
     );
     source = replaceWgslFunction(
@@ -4271,7 +4311,7 @@ const FIXED_POINT:`
         "totalFaceCount",
         "localFaceIndex",
         `fn totalFaceCount(p: Params) -> u32 {
-    return FLIP_PAGE_STORAGE_FACES;
+            return flipPageStorageFaces(p);
 }`
     );
     source = replaceWgslFunction(
@@ -4280,11 +4320,11 @@ const FIXED_POINT:`
         "faceCoord",
         `fn globalFaceIndex(kind: u32, c: vec3<i32>, p: Params) -> u32 {
     if (!inCellGrid(c, p)) {
-        return FLIP_PAGE_STORAGE_FACES;
+                return flipPageStorageFaces(p);
     }
     let page = flipPageWord(FLIP_PAGE_MAP_OFFSET + flipPageBlockIndex(c));
-    if (page == 0u || page > FLIP_PAGE_MAX_PAGES) {
-        return FLIP_PAGE_STORAGE_FACES;
+            if (page == 0u || page > flipPageMaxPages(p)) {
+                return flipPageStorageFaces(p);
     }
     let cell = (page - 1u) * FLIP_PAGE_CELLS_U + flipPageLocalIndex(c);
     return cell * 3u + kind;
@@ -4953,6 +4993,7 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
         paramsU32[35] = reseedMaxParticles;
         paramsF32[36] = particleSheetingEnabled ? 1 : 0;
         paramsF32[37] = sheetingStrength;
+        paramsF32[38] = pageLayout?.maxPages ?? 0;
         device.queue.writeBuffer(paramsBuffer, 0, paramsData);
     }
 
@@ -5074,11 +5115,7 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
     const pagedPipelines = new WeakSet<GPUComputePipeline>();
     const pageLookupBindGroups = new WeakMap<GPUComputePipeline, GPUBindGroup>();
     function rawPipeline(label: string, code: string): GPUComputePipeline {
-        return device.createComputePipeline({
-            label,
-            layout: "auto",
-            compute: { module: device.createShaderModule({ label, code }), entryPoint: "main" },
-        });
+        return cachedFlipComputePipeline(device, label, code);
     }
     function pipeline(label: string, code: string): GPUComputePipeline {
         const pipe = rawPipeline(label, pageLayout ? rewriteFlipWgslForPagedStorage(code, pageLayout) : code);
@@ -7103,6 +7140,7 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
                 configF32[4] = sweepDistance;
                 configU32[5] = polygonResources?.cellCount ?? 0;
                 configU32[6] = polygonResources?.cubeCount ?? 0;
+                configU32[7] = pageLayout!.maxPages;
                 device.queue.writeBuffer(pageDispatchConfigBuffer, 0, configData);
             }
             const relaunchActive =
@@ -7316,6 +7354,7 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
                 configU32[3] = statusFrame;
                 configU32[5] = resources.cellCount;
                 configU32[6] = resources.cubeCount;
+                configU32[7] = pageLayout!.maxPages;
                 device.queue.writeBuffer(pageDispatchConfigBuffer!, 0, configData);
                 encodePagedGridLookup(encoder, activeParticleGroups, 0, true, 0, statusFrame);
             }

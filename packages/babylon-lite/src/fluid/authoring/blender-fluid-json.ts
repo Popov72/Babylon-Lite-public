@@ -1,4 +1,5 @@
 import type { FluidExportJson } from "./preset-io.js";
+import { Unzlib, zlibSync } from "fflate";
 import {
     MAX_FLUID_EMITTERS,
     MAX_FLUID_POLYGON_POINTS,
@@ -26,6 +27,7 @@ const MAX_RATE = 1_000_000_000_000;
 const MAX_DELAY = 86_400;
 const MAX_TEXT_LENGTH = 256;
 const MAX_TARGETS = MAX_FLUID_EMITTERS;
+const MAX_ANIMATED_COLLISIONS = 16;
 const HEX_COLOR = /^#[0-9a-f]{6}$/i;
 const METHODS = ["PBF", "FLIP", "MLS-MPM", "PB-MPM"] as const;
 const PHYSICS_LIMITS: Record<string, Record<string, readonly [number, number]>> = {
@@ -67,6 +69,7 @@ const PHYSICS_LIMITS: Record<string, Record<string, readonly [number, number]>> 
         sheetingStrength: [0.05, 1],
         sheetingInterval: [1, 30],
         polygonSurface: [0, 1],
+        polygonReconstructionMultiplier: [1, 2],
         viscosityIterations: [1, 40],
         maxSubDtMs: [1, 20],
     },
@@ -116,6 +119,7 @@ const OPTIONAL_PHYSICS_KEYS: Record<string, readonly string[]> = {
         "sheetingStrength",
         "sheetingInterval",
         "polygonSurface",
+        "polygonReconstructionMultiplier",
     ],
 };
 
@@ -123,7 +127,12 @@ export interface BlenderFluidScene {
     preset: FluidExportJson;
     sceneGlb: ArrayBuffer;
     collision: BlenderFluidCollision;
+    collisionEnabled: boolean;
+    collisionTrilinear: boolean;
+    animatedCollisions: BlenderFluidAnimatedCollision[];
 }
+
+export type BlenderFluidExternalResources = ReadonlyMap<string, ArrayBufferLike>;
 
 export interface BlenderFluidCollision {
     dims: [number, number, number];
@@ -132,21 +141,168 @@ export interface BlenderFluidCollision {
     distances: Float32Array;
 }
 
-export function scenePayloadFromBlenderFluidJson(scene: BlenderFluidScene): NonNullable<FluidExportJson["scene"]> {
+export interface BlenderFluidAnimatedCollision {
+    id: string;
+    node: string;
+    space: "node-local";
+    resolution: number;
+    bakeFrame: number;
+    presentation: boolean;
+    enabled: boolean;
+    trilinear: boolean;
+    collision: BlenderFluidCollision;
+}
+
+export interface BlenderFluidScenePayloadOptions {
+    /** Preserve external filenames instead of embedding the already-resolved bytes. Default false. */
+    preserveExternal?: boolean;
+}
+
+export function scenePayloadFromBlenderFluidJson(scene: BlenderFluidScene, options: BlenderFluidScenePayloadOptions = {}): NonNullable<FluidExportJson["scene"]> {
     const payload = scene.preset.scene;
     if (!payload) {
         fail("self-contained fluid JSON is missing scene data");
+    }
+    if (payload.encoding === "external") {
+        if (options.preserveExternal) {
+            return {
+                encoding: "external",
+                glb: payload.glb,
+                collision: payload.collision,
+                ...(payload.sdfCompression ? { sdfCompression: payload.sdfCompression } : {}),
+                ...(payload.collisionEnabled !== undefined ? { collisionEnabled: payload.collisionEnabled } : {}),
+                ...(payload.collisionTrilinear !== undefined ? { collisionTrilinear: payload.collisionTrilinear } : {}),
+                ...(payload.collisionByteLength !== undefined ? { collisionByteLength: payload.collisionByteLength } : {}),
+                ...(payload.anchorPosition ? { anchorPosition: [...payload.anchorPosition] as [number, number, number] } : {}),
+                ...(payload.animatedCollisions
+                    ? {
+                          animatedCollisions: payload.animatedCollisions.map((entry) => ({
+                              id: entry.id,
+                              node: entry.node,
+                              sdf: entry.sdf,
+                              ...(entry.byteOffset !== undefined ? { byteOffset: entry.byteOffset } : {}),
+                              ...(entry.byteLength !== undefined ? { byteLength: entry.byteLength } : {}),
+                              space: entry.space,
+                              resolution: entry.resolution,
+                              bakeFrame: entry.bakeFrame,
+                              presentation: entry.presentation,
+                              ...(entry.enabled !== undefined ? { enabled: entry.enabled } : {}),
+                              ...(entry.trilinear !== undefined ? { trilinear: entry.trilinear } : {}),
+                          })),
+                      }
+                    : {}),
+            };
+        }
+        return {
+            encoding: "base64",
+            glb: encodeBase64(new Uint8Array(scene.sceneGlb)),
+            collision: encodeBase64(compressSdfBytes(encodeBlenderFluidCollision(scene.collision))),
+            sdfCompression: "zlib",
+            collisionEnabled: scene.collisionEnabled,
+            collisionTrilinear: scene.collisionTrilinear,
+            ...(payload.anchorPosition ? { anchorPosition: [...payload.anchorPosition] as [number, number, number] } : {}),
+            ...(scene.animatedCollisions.length
+                ? {
+                      animatedCollisions: scene.animatedCollisions.map((entry) => ({
+                          id: entry.id,
+                          node: entry.node,
+                          sdf: encodeBase64(compressSdfBytes(encodeBlenderFluidCollision(entry.collision))),
+                          space: entry.space,
+                          resolution: entry.resolution,
+                          bakeFrame: entry.bakeFrame,
+                          presentation: entry.presentation,
+                          enabled: entry.enabled,
+                          trilinear: entry.trilinear,
+                      })),
+                  }
+                : {}),
+        };
     }
     return {
         encoding: "base64",
         glb: payload.glb,
         collision: payload.collision,
+        ...(payload.sdfCompression ? { sdfCompression: payload.sdfCompression } : {}),
+        ...(payload.collisionEnabled !== undefined ? { collisionEnabled: payload.collisionEnabled } : {}),
+        ...(payload.collisionTrilinear !== undefined ? { collisionTrilinear: payload.collisionTrilinear } : {}),
         ...(payload.anchorPosition ? { anchorPosition: [...payload.anchorPosition] as [number, number, number] } : {}),
+        ...(payload.animatedCollisions
+            ? {
+                  animatedCollisions: payload.animatedCollisions.map((entry) => ({ ...entry })),
+              }
+            : {}),
     };
 }
 
 function fail(message: string): never {
     throw new Error(`Invalid fluid export: ${message}`);
+}
+
+function encodeBase64(bytes: Uint8Array): string {
+    let binary = "";
+    for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+        binary += String.fromCharCode(...bytes.subarray(offset, Math.min(bytes.length, offset + 0x8000)));
+    }
+    return btoa(binary);
+}
+
+function encodeBlenderFluidCollision(collision: BlenderFluidCollision): Uint8Array {
+    const bytes = new Uint8Array(SDF_HEADER_BYTES + collision.distances.length * 4);
+    const view = new DataView(bytes.buffer);
+    view.setUint32(0, SDF_MAGIC, true);
+    view.setUint32(4, 1, true);
+    view.setUint32(8, collision.dims[0], true);
+    view.setUint32(12, collision.dims[1], true);
+    view.setUint32(16, collision.dims[2], true);
+    view.setFloat32(24, collision.origin[0], true);
+    view.setFloat32(28, collision.origin[1], true);
+    view.setFloat32(32, collision.origin[2], true);
+    view.setFloat32(36, collision.cellSize, true);
+    for (let index = 0; index < collision.distances.length; index++) {
+        view.setFloat32(SDF_HEADER_BYTES + index * 4, collision.distances[index]!, true);
+    }
+    return bytes;
+}
+
+function compressSdfBytes(bytes: Uint8Array): Uint8Array {
+    return zlibSync(bytes, { level: 6 });
+}
+
+function decompressSdfBytes(bytes: Uint8Array, path: string, compressed: boolean): Uint8Array {
+    if (!compressed) {
+        return bytes;
+    }
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    let complete = false;
+    let limitExceeded = false;
+    try {
+        const decoder = new Unzlib((chunk, final) => {
+            total += chunk.byteLength;
+            if (total > MAX_ENTRY_BYTES) {
+                limitExceeded = true;
+                throw new RangeError("SDF decompression limit exceeded");
+            }
+            chunks.push(chunk);
+            complete = final;
+        });
+        decoder.push(bytes, true);
+    } catch {
+        if (limitExceeded) {
+            fail(`${path} decompressed data exceeds the 512 MiB limit`);
+        }
+        fail(`${path} is not valid zlib data`);
+    }
+    if (!complete) {
+        fail(`${path} zlib stream is truncated`);
+    }
+    const output = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+        output.set(chunk, offset);
+        offset += chunk.byteLength;
+    }
+    return output;
 }
 
 function record(value: unknown, path: string): Record<string, unknown> {
@@ -342,6 +498,12 @@ function validateEmitter(value: unknown, path: string): FluidEmitter {
     };
     if (emitter.sourceNode !== undefined) {
         result.sourceNode = text(emitter.sourceNode, `${path}.sourceNode`);
+    }
+    if (emitter.sourcePresentation !== undefined) {
+        if (typeof emitter.sourcePresentation !== "boolean") {
+            fail(`${path}.sourcePresentation must be a boolean`);
+        }
+        result.sourcePresentation = emitter.sourcePresentation;
     }
     if (emitter.sourceVelocity !== undefined) {
         result.sourceVelocity = vector(emitter.sourceVelocity, `${path}.sourceVelocity`, 3, -MAX_VELOCITY, MAX_VELOCITY) as [number, number, number];
@@ -570,11 +732,12 @@ function validatePreset(value: unknown): FluidExportJson {
         preset.formatVersion !== 11 &&
         preset.formatVersion !== 12 &&
         preset.formatVersion !== 13 &&
-        preset.formatVersion !== 14
+        preset.formatVersion !== 14 &&
+        preset.formatVersion !== 15
     ) {
-        fail("manifest preset must use formatVersion 5, 6, 7, 8, 9, 10, 11, 12, 13, or 14");
+        fail("manifest preset must use formatVersion 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, or 15");
     }
-    if (preset.formatVersion === 14) {
+    if (preset.formatVersion >= 14) {
         const semantics = record(preset.simulationSemantics, "manifest.preset.simulationSemantics");
         if (semantics.version !== 1) {
             fail("manifest.preset.simulationSemantics.version must be 1");
@@ -732,13 +895,40 @@ function decodeBase64(value: unknown, path: string): Uint8Array {
     return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
 
+function externalResourceName(value: unknown, path: string): string {
+    const name = text(value, path).replaceAll("\\", "/");
+    if (name.startsWith("/") || /^[a-z][a-z0-9+.-]*:/i.test(name) || name.split("/").includes("..")) {
+        fail(`${path} must be a relative resource path without parent traversal`);
+    }
+    return name;
+}
+
+function externalResourceBytes(resources: BlenderFluidExternalResources | undefined, value: unknown, path: string): Uint8Array {
+    const name = externalResourceName(value, path);
+    const resource = resources?.get(name);
+    if (!resource) {
+        fail(`external resource "${name}" was not provided; select the JSON, GLB, and SDF files together`);
+    }
+    if (resource.byteLength > MAX_ENTRY_BYTES) {
+        fail(`external resource "${name}" exceeds the 512 MiB limit`);
+    }
+    return new Uint8Array(resource);
+}
+
+function resourceSlice(bytes: Uint8Array, path: string, byteOffset: number, byteLength: number): Uint8Array {
+    if (byteOffset > bytes.byteLength || byteLength > bytes.byteLength - byteOffset) {
+        fail(`${path} byte range exceeds the provided external resource`);
+    }
+    return bytes.subarray(byteOffset, byteOffset + byteLength);
+}
+
 export function parseBlenderFluidCollision(bytes: Uint8Array): BlenderFluidCollision {
     if (bytes.byteLength < SDF_HEADER_BYTES) {
-        fail("collision.blsdf is truncated");
+        fail("collision.sdf is truncated");
     }
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     if (view.getUint32(0, true) !== SDF_MAGIC) {
-        fail("collision.blsdf has invalid magic");
+        fail("collision.sdf has invalid magic");
     }
     if (view.getUint32(4, true) !== 1) {
         fail("unsupported collision version");
@@ -778,8 +968,8 @@ export function parseBlenderFluidCollision(bytes: Uint8Array): BlenderFluidColli
     return { dims, origin, cellSize, distances };
 }
 
-/** Parse a self-contained format-6 through format-10 fluid JSON export. */
-export function parseBlenderFluidJson(contents: string): BlenderFluidScene {
+/** Parse an embedded or external-resource format-6 through format-15 fluid JSON export. */
+export function parseBlenderFluidJson(contents: string, externalResources?: BlenderFluidExternalResources): BlenderFluidScene {
     if (contents.length > MAX_JSON_BYTES) {
         fail("JSON export exceeds the 768 MiB limit");
     }
@@ -799,18 +989,128 @@ export function parseBlenderFluidJson(contents: string): BlenderFluidScene {
         preset.formatVersion !== 11 &&
         preset.formatVersion !== 12 &&
         preset.formatVersion !== 13 &&
-        preset.formatVersion !== 14
+        preset.formatVersion !== 14 &&
+        preset.formatVersion !== 15
     ) {
-        fail("self-contained fluid JSON must use formatVersion 6, 7, 8, 9, 10, 11, 12, 13, or 14");
+        fail("self-contained fluid JSON must use formatVersion 6, 7, 8, 9, 10, 11, 12, 13, 14, or 15");
     }
     const scene = record(preset.scene, "manifest.preset.scene");
-    if (scene.encoding !== "base64") {
-        fail('manifest.preset.scene.encoding must be "base64"');
+    if (scene.sdfCompression !== undefined && scene.sdfCompression !== "zlib") {
+        fail('manifest.preset.scene.sdfCompression must be "zlib"');
     }
+    const sdfCompressed = scene.sdfCompression === "zlib";
+    const collisionEnabled = scene.collisionEnabled === undefined ? true : bool(scene.collisionEnabled, "manifest.preset.scene.collisionEnabled");
+    const collisionTrilinear = scene.collisionTrilinear === undefined ? true : bool(scene.collisionTrilinear, "manifest.preset.scene.collisionTrilinear");
+    scene.collisionEnabled = collisionEnabled;
+    scene.collisionTrilinear = collisionTrilinear;
     if (scene.anchorPosition !== undefined) {
         vector(scene.anchorPosition, "manifest.preset.scene.anchorPosition", 3, -MAX_ABS_POSITION, MAX_ABS_POSITION);
     }
-    const sceneGlb = parseGlb(decodeBase64(scene.glb, "manifest.preset.scene.glb"));
-    const collision = parseBlenderFluidCollision(decodeBase64(scene.collision, "manifest.preset.scene.collision"));
-    return { preset, sceneGlb, collision };
+    const animatedEntries = scene.animatedCollisions === undefined ? [] : array(scene.animatedCollisions, "manifest.preset.scene.animatedCollisions");
+    if (animatedEntries.length > MAX_ANIMATED_COLLISIONS) {
+        fail(`manifest.preset.scene.animatedCollisions supports at most ${MAX_ANIMATED_COLLISIONS} entries`);
+    }
+    const ids = new Set<string>();
+    const nodes = new Set<string>();
+    const animatedCollisions: BlenderFluidAnimatedCollision[] = [];
+    let glbBytes: Uint8Array;
+    let collisionBytes: Uint8Array;
+    const externalSdfResources = new Map<string, Uint8Array>();
+    const readExternalSdf = (value: unknown, path: string): Uint8Array => {
+        const name = externalResourceName(value, path);
+        let bytes = externalSdfResources.get(name);
+        if (!bytes) {
+            bytes = decompressSdfBytes(externalResourceBytes(externalResources, name, path), path, sdfCompressed);
+            externalSdfResources.set(name, bytes);
+        }
+        return bytes;
+    };
+    if (scene.encoding === "base64") {
+        if (scene.collisionByteLength !== undefined) {
+            fail("manifest.preset.scene.collisionByteLength is only valid for external resources");
+        }
+        glbBytes = decodeBase64(scene.glb, "manifest.preset.scene.glb");
+        collisionBytes = decompressSdfBytes(decodeBase64(scene.collision, "manifest.preset.scene.collision"), "manifest.preset.scene.collision", sdfCompressed);
+    } else if (scene.encoding === "external") {
+        glbBytes = externalResourceBytes(externalResources, scene.glb, "manifest.preset.scene.glb");
+        const collisionResource = readExternalSdf(scene.collision, "manifest.preset.scene.collision");
+        collisionBytes =
+            scene.collisionByteLength === undefined
+                ? collisionResource
+                : resourceSlice(
+                      collisionResource,
+                      "manifest.preset.scene.collision",
+                      0,
+                      integer(scene.collisionByteLength, "manifest.preset.scene.collisionByteLength", SDF_HEADER_BYTES, MAX_ENTRY_BYTES)
+                  );
+    } else {
+        fail('manifest.preset.scene.encoding must be "base64" or "external"');
+    }
+    const sceneGlb = parseGlb(glbBytes);
+    const collision = parseBlenderFluidCollision(collisionBytes);
+    let totalVoxels = collision.distances.length;
+    for (let index = 0; index < animatedEntries.length; index++) {
+        const path = `manifest.preset.scene.animatedCollisions[${index}]`;
+        const entry = record(animatedEntries[index], path);
+        const id = text(entry.id, `${path}.id`);
+        const node = text(entry.node, `${path}.node`);
+        if (ids.has(id)) {
+            fail(`${path}.id must be unique`);
+        }
+        if (nodes.has(node)) {
+            fail(`${path}.node must be unique`);
+        }
+        ids.add(id);
+        nodes.add(node);
+        if (entry.space !== "node-local") {
+            fail(`${path}.space must be "node-local"`);
+        }
+        const resolution = integer(entry.resolution, `${path}.resolution`, 1, 2048);
+        const bakeFrame = finiteNumber(entry.bakeFrame, `${path}.bakeFrame`, -1_000_000, 1_000_000);
+        if (typeof entry.presentation !== "boolean") {
+            fail(`${path}.presentation must be a boolean`);
+        }
+        const enabled = entry.enabled === undefined ? true : bool(entry.enabled, `${path}.enabled`);
+        const trilinear = entry.trilinear === undefined ? true : bool(entry.trilinear, `${path}.trilinear`);
+        entry.enabled = enabled;
+        entry.trilinear = trilinear;
+        const hasByteOffset = entry.byteOffset !== undefined;
+        const hasByteLength = entry.byteLength !== undefined;
+        if (hasByteOffset !== hasByteLength) {
+            fail(`${path}.byteOffset and byteLength must be provided together`);
+        }
+        let animatedBytes: Uint8Array;
+        if (scene.encoding === "base64") {
+            if (hasByteOffset) {
+                fail(`${path} byte ranges are only valid for external resources`);
+            }
+            animatedBytes = decompressSdfBytes(decodeBase64(entry.sdf, `${path}.sdf`), `${path}.sdf`, sdfCompressed);
+        } else if (hasByteOffset) {
+            animatedBytes = resourceSlice(
+                readExternalSdf(entry.sdf, `${path}.sdf`),
+                `${path}.sdf`,
+                integer(entry.byteOffset, `${path}.byteOffset`, 0, MAX_ENTRY_BYTES),
+                integer(entry.byteLength, `${path}.byteLength`, SDF_HEADER_BYTES, MAX_ENTRY_BYTES)
+            );
+        } else {
+            animatedBytes = readExternalSdf(entry.sdf, `${path}.sdf`);
+        }
+        const animatedCollision = parseBlenderFluidCollision(animatedBytes);
+        totalVoxels += animatedCollision.distances.length;
+        if (totalVoxels > MAX_SDF_VOXELS) {
+            fail("combined static and animated collision grids exceed the 16M-voxel limit");
+        }
+        animatedCollisions.push({
+            id,
+            node,
+            space: "node-local",
+            resolution,
+            bakeFrame,
+            presentation: entry.presentation,
+            enabled,
+            trilinear,
+            collision: animatedCollision,
+        });
+    }
+    return { preset, sceneGlb, collision, collisionEnabled, collisionTrilinear, animatedCollisions };
 }
