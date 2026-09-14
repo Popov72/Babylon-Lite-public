@@ -96,7 +96,7 @@ describe("Aquanova fluid electricity", () => {
     });
 
     it("declares opt-in domains and both behavior event surfaces in metadata", () => {
-        const metadata = JSON.parse(readFileSync("lab/lite/src/demos/aquanova/editor/tool/public/data/behavior-definitions.json", "utf8")) as {
+        const metadata = JSON.parse(readFileSync("lab/public/aquanova/behaviors.json", "utf8")) as {
             behaviors: Record<string, { eventsRaised: Array<{ name: string }>; properties: Record<string, { default?: unknown; integer?: boolean }> }>;
         };
 

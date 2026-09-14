@@ -5,7 +5,7 @@
 // to the chunk where they were authored.
 //
 // ── Where the records come from ───────────────────────────────────────────────────────────────
-// The editor authors one record per lamp and the exporter writes it BOTH into `ship_manifest.json`
+// The editor authors one record per lamp and the exporter writes it BOTH into `scene.json`
 // and onto a `LIGHT_<id>` node in the glb, as `extras = { id, kind: "light", owner, chunk,
 // runtime }`. The glb node supplies the transform because it is parented under the placement that
 // owns the lamp: its world matrix already carries the placement transform AND the loader's
@@ -15,7 +15,7 @@
 // ── The emission axis is local −Y ─────────────────────────────────────────────────────────────
 // Not −Z. A rotation of [0,0,0] then means a ceiling panel shining at the floor, which is where
 // almost every lamp in the kit points, so the common case needs no rotation at all.
-// See the header of `editor/tool/public/js/lights.js`.
+// See the standalone Babylon Scene Editor's authored light schema.
 //
 // ── Clustered vs. not ─────────────────────────────────────────────────────────────────────────
 // `runtime.clustered` decides which of Lite's two lighting paths a lamp takes:

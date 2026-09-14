@@ -2,7 +2,7 @@
 //
 // It visualizes the effective records consumed by `lights.ts`, not merely the JSON source:
 // transforms come from the exported glTF's LIGHT_* nodes and runtime parameters can be overridden by
-// ship_manifest.json. Coverage is deliberately wireframe so it does not obscure the scene:
+// scene.json. Coverage is deliberately wireframe so it does not obscure the scene:
 // point-light ranges are three great-circle rings, and spot lights are a base ring plus radial ribs.
 
 import {
@@ -178,7 +178,7 @@ export function createLightOverlay({ engine, scene, canvas, lights, roomAt }: Li
         panel.style.display = "block";
         panel.textContent =
             `RUNTIME LIGHTS (L)   Chunk: ${room}   ${roomLights.length} light(s)\n` +
-            "Transforms: ship.glb   Parameters: ship_manifest.json override\n" +
+            "Transforms: scene.glb   Parameters: scene.json override\n" +
             (roomLights.length
                 ? roomLights
                       .map(({ light }) => {

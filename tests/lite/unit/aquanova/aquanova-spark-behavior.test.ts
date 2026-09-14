@@ -38,7 +38,7 @@ describe("Aquanova spark behavior", () => {
     });
 
     it("exposes matching editor defaults", () => {
-        const metadata = JSON.parse(readFileSync("lab/lite/src/demos/aquanova/editor/tool/public/data/behavior-definitions.json", "utf8")) as {
+        const metadata = JSON.parse(readFileSync("lab/public/aquanova/behaviors.json", "utf8")) as {
             behaviors: Record<string, { properties: Record<string, { default?: unknown }> }>;
         };
 

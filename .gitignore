@@ -113,8 +113,8 @@ lab/public/waterfall/rock-heightmap-high.bin
 # intermediates, kept on disk for re-exports and likewise skipped by copyDemoRuntimeAssets.
 lab/public/waterfall/oasis.glb
 lab/public/waterfall/oasis-heightmap.bin
-lab/public/aquanova/ship-*.glb
-lab/public/aquanova/ship-*.glb.stamp
+lab/public/aquanova/scene.glb.stamp
+lab/lite/src/demos/aquanova/editor/
 lab/public/aquanova/*.hdr
 # Skybox cube faces (~4.5 MB of PNG). Public domain (Space 3D, Unlicense — see ASSET-LICENSES.md),
 # so this is a size decision only: committing them would not make a fresh clone runnable anyway,

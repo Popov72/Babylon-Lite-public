@@ -93,15 +93,12 @@ describe("Aquanova action sounds", () => {
         expect(sounds.load).toHaveBeenCalledWith("weaponPistol:customShot", "/aquanova/sounds/customShot.mp3?v=20260813-1", { preloadCount: 1 });
         expect(sounds.load).toHaveBeenCalledWith("explode:customExplosion", "/aquanova/sounds/customExplosion.mp3?v=20260813-1", { preloadCount: 1 });
 
-        const metadata = JSON.parse(readFileSync("lab/lite/src/demos/aquanova/editor/tool/public/data/behavior-definitions.json", "utf8")) as {
-            behaviors: Record<
-                string,
-                { properties: Record<string, { default?: unknown; minimum?: number; exclusiveMinimum?: boolean; optionsSource?: string }> }
-            >;
+        const metadata = JSON.parse(readFileSync("lab/public/aquanova/behaviors.json", "utf8")) as {
+            behaviors: Record<string, { properties: Record<string, { default?: unknown; minimum?: number; exclusiveMinimum?: boolean; optionsSource?: string }> }>;
         };
-        expect(metadata.behaviors.weaponPistol?.properties.sound).toMatchObject({ default: "pistolShot", optionsSource: "sounds" });
+        expect(metadata.behaviors.weaponPistol?.properties.sound).toMatchObject({ default: "pistolShot", optionsSource: "Sound List" });
         expect(metadata.behaviors.weaponPistol?.properties.bulletHoleSize).toMatchObject({ default: 1, minimum: 0, exclusiveMinimum: true });
-        expect(metadata.behaviors.explode?.properties.sound).toMatchObject({ default: "bigExplosion", optionsSource: "sounds" });
+        expect(metadata.behaviors.explode?.properties.sound).toMatchObject({ default: "bigExplosion", optionsSource: "Sound List" });
     });
 
     it.each([
@@ -140,8 +137,6 @@ describe("Aquanova action sounds", () => {
     });
 
     it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])("rejects the invalid bullet-hole size %s", (bulletHoleSize) => {
-        expect(() => new WeaponPistolBehavior("pistol", [], { bulletHoleSize }, {} as never)).toThrow(
-            "weaponPistol.bulletHoleSize must be a finite positive number"
-        );
+        expect(() => new WeaponPistolBehavior("pistol", [], { bulletHoleSize }, {} as never)).toThrow("weaponPistol.bulletHoleSize must be a finite positive number");
     });
 });

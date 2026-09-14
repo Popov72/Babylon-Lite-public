@@ -38,7 +38,7 @@ weights are intentionally omitted because final influence is fragment-dependent.
 
 ## Typed behavior model
 
-`behavior-definitions.json` is the catalog of executable base behaviors and
+The published `behaviors.json` is the catalog of executable base behaviors and
 their typed parameters. Entities may attach a base behavior directly. The
 manifest's optional `behaviorPresets` object defines named parameter profiles
 derived from one base behavior:
@@ -793,7 +793,7 @@ wire base ring and ribs show a spot-light cone and a directional light uses an
 arrow. The panel reports colour, intensity,
 clustered/scoped mode, range, direction, and actual/requested shadow state.
 Transforms come from the baked glTF `LIGHT_*` nodes, while matching
-`ship_manifest.json` records override runtime parameters by light id.
+`scene.json` records override runtime parameters by light id.
 Bake-only values such as lamp watts still require rebaking the lightmaps.
 Runtime lamps are material-gated to meshes carrying the literal `dynamic`
 behavior. Liquefiable-only meshes do not receive them.

@@ -1,0 +1,1046 @@
+{
+  "version": 1,
+  "derivedOptionSources": {
+    "soundCategories": {
+      "behavior": "weaponLiquefactor",
+      "path": "sounds",
+      "collect": "keys"
+    }
+  },
+  "behaviors": {
+    "dynamic": {
+      "label": "Dynamic body",
+      "description": "Makes the owner a movable rigid body.",
+      "eventsRaised": [],
+      "properties": {
+        "dynamic": {
+          "type": "constant",
+          "value": true,
+          "label": "Dynamic"
+        },
+        "mass": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMinimum": true,
+          "default": 10,
+          "label": "Mass (kg)"
+        },
+        "lockedRotationAxes": {
+          "type": "array",
+          "items": {
+            "type": "enum",
+            "values": [
+              "x",
+              "y",
+              "z"
+            ]
+          },
+          "label": "Locked rotation axes",
+          "description": "Prevents the rigid body from rotating around the selected local axes."
+        }
+      }
+    },
+    "liquefaction": {
+      "label": "Liquefaction",
+      "description": "Allows a configured fluid simulation to liquefy the owner.",
+      "eventsRaised": [
+        {
+          "name": "startLiquefaction"
+        },
+        {
+          "name": "cancelLiquefaction"
+        },
+        {
+          "name": "endLiquefaction"
+        }
+      ],
+      "properties": {
+        "liquefiable": {
+          "type": "constant",
+          "value": true,
+          "label": "Liquefiable",
+          "definition": false
+        },
+        "fluidSim": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "optionsSource": "Fluid Simulations"
+          },
+          "label": "Fluid simulations"
+        },
+        "electrifiable": {
+          "type": "boolean",
+          "default": false,
+          "label": "Electrifiable",
+          "description": "Allows the resulting liquid domain to retain electrical charge."
+        },
+        "linked": {
+          "type": "array",
+          "items": {
+            "type": "entity",
+            "optionsSource": "nearbyEntities"
+          },
+          "definition": false,
+          "label": "Linked entities",
+          "description": "Entities that melt and recover as one group with this owner."
+        },
+        "sound": {
+          "type": "string",
+          "optionsSource": "soundCategories",
+          "label": "Splash sound category",
+          "description": "One of the categories the Liquefactor weapon defines.",
+          "emptyHint": "No categories yet - give the Liquefactor weapon its sound categories first."
+        }
+      }
+    },
+    "probeExcluded": {
+      "label": "Exclude from reflections",
+      "description": "Excludes the owner from generated local environment probes.",
+      "eventsRaised": [],
+      "properties": {
+        "reflectionProbe": {
+          "type": "constant",
+          "value": "exclude",
+          "label": "Reflection probe"
+        }
+      }
+    },
+    "player": {
+      "label": "Player",
+      "description": "Configures the first-person player start and controller.",
+      "eventsRaised": [
+        {
+          "name": "electricalContact"
+        },
+        {
+          "name": "electricalContactEnded"
+        }
+      ],
+      "properties": {
+        "direction": {
+          "type": "vector3",
+          "label": "Facing direction"
+        },
+        "characterStrength": {
+          "type": "number",
+          "minimum": 0,
+          "default": 10000,
+          "label": "Push strength"
+        },
+        "maxGrabDistance": {
+          "type": "number",
+          "minimum": 0.01,
+          "default": 8,
+          "label": "Maximum grab distance"
+        },
+        "maxHeldObjectDistance": {
+          "type": "number",
+          "minimum": 0.01,
+          "default": 8,
+          "label": "Maximum held-object distance"
+        },
+        "submergedParticleCount": {
+          "type": "number",
+          "minimum": 1,
+          "default": 100,
+          "label": "Submerged particle count",
+          "description": "Visible particles above the player's head required to consider the player submerged."
+        },
+        "electrifiedParticleCount": {
+          "type": "number",
+          "integer": true,
+          "minimum": 1,
+          "default": 8,
+          "label": "Electrified particle count",
+          "description": "Electrified particle centres inside the live player capsule required to enter electrical contact."
+        }
+      }
+    },
+    "weaponLiquefactor": {
+      "label": "Liquefactor weapon",
+      "description": "Configures the Liquefactor weapon and its sound categories.",
+      "eventsRaised": [
+        {
+          "name": "startLiquefaction"
+        },
+        {
+          "name": "cancelLiquefaction"
+        },
+        {
+          "name": "endLiquefaction"
+        }
+      ],
+      "properties": {
+        "range": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMinimum": true,
+          "default": 100,
+          "label": "Beam range"
+        },
+        "sounds": {
+          "type": "record",
+          "values": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "optionsSource": "Sound List"
+            }
+          },
+          "keyLabel": "Category",
+          "label": "Sound categories",
+          "description": "Names the categories a liquefiable element may ask for, and the MP3s each one picks from."
+        }
+      }
+    },
+    "pickEntity": {
+      "label": "Pick up entity",
+      "description": "Rotates and collects the owner when the player intersects it.",
+      "eventsRaised": [
+        {
+          "property": "raiseEvent.event"
+        }
+      ],
+      "properties": {
+        "boundingBoxScale": {
+          "type": "vector3",
+          "minimum": 0,
+          "default": [
+            1,
+            1,
+            1
+          ],
+          "label": "Pickup bounds scale"
+        },
+        "raiseEvent": {
+          "type": "object",
+          "label": "Event to raise",
+          "properties": {
+            "target": {
+              "type": "entity",
+              "optionsSource": "eventEntities",
+              "label": "Target",
+              "description": "Defaults to the behavior owner."
+            },
+            "event": {
+              "type": "event",
+              "optionsSource": "events",
+              "allowNew": true,
+              "required": true,
+              "label": "Event"
+            }
+          }
+        },
+        "sound": {
+          "type": "string",
+          "optionsSource": "Sound List",
+          "default": "pickItem",
+          "label": "Sound"
+        },
+        "rotationAxis": {
+          "type": "enum",
+          "values": [
+            "x",
+            "y",
+            "z"
+          ],
+          "default": "y",
+          "label": "Rotation axis",
+          "description": "Local owner axis used for the pickup's idle rotation."
+        },
+        "speed": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMinimum": true,
+          "default": 1,
+          "label": "Rotation speed"
+        }
+      }
+    },
+    "enableEntity": {
+      "extends": "entityAction",
+      "label": "Enable entity",
+      "eventsRaised": [
+        {
+          "name": "enable"
+        }
+      ]
+    },
+    "disableEntity": {
+      "extends": "entityAction",
+      "label": "Disable entity",
+      "eventsRaised": [
+        {
+          "name": "disable"
+        }
+      ]
+    },
+    "showEntity": {
+      "extends": "entityAction",
+      "label": "Show entity",
+      "eventsRaised": [
+        {
+          "name": "show"
+        }
+      ]
+    },
+    "hideEntity": {
+      "extends": "entityAction",
+      "label": "Hide entity",
+      "eventsRaised": [
+        {
+          "name": "hide"
+        }
+      ]
+    },
+    "removeEntity": {
+      "extends": "entityAction",
+      "label": "Remove entity",
+      "eventsRaised": [
+        {
+          "name": "remove"
+        }
+      ]
+    },
+    "enableCollision": {
+      "extends": "entityAction",
+      "label": "Enable collision",
+      "eventsRaised": [
+        {
+          "name": "enableCollision"
+        }
+      ]
+    },
+    "disableCollision": {
+      "extends": "entityAction",
+      "label": "Disable collision",
+      "eventsRaised": [
+        {
+          "name": "disableCollision"
+        },
+        {
+          "name": "disableFluidSimulationCollision"
+        }
+      ],
+      "properties": {
+        "fluidSimulationOnly": {
+          "type": "boolean",
+          "default": false,
+          "label": "Fluid simulation only",
+          "description": "Keep physics and weapon collision enabled, but exclude this entity from every fluid simulation collision field."
+        }
+      }
+    },
+    "playAnimation": {
+      "label": "Play animation",
+      "description": "Plays an animation targeting the owner.",
+      "eventsRaised": [],
+      "properties": {
+        "animation": {
+          "type": "string",
+          "optionsSource": "animations",
+          "allowNew": true,
+          "label": "Animation name",
+          "description": "Defaults to the first animation targeting the owner.",
+          "emptyHint": "The clips are read off the element this rides, so a behaviour in the library - which has no owner yet - has to name one."
+        },
+        "loop": {
+          "type": "boolean",
+          "default": true,
+          "label": "Loop"
+        }
+      }
+    },
+    "sound": {
+      "label": "Sound",
+      "description": "Runs one or more independently triggered sound actions.",
+      "eventsRaised": [],
+      "properties": {
+        "radius": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0,
+          "label": "Hearing radius (m)",
+          "description": "Volume falls linearly with player distance and reaches zero at this radius. Zero disables distance attenuation."
+        },
+        "cues": {
+          "type": "array",
+          "minItems": 1,
+          "required": true,
+          "label": "Sound actions",
+          "items": {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "enum",
+                "values": [
+                  "play",
+                  "stop"
+                ],
+                "default": "play",
+                "required": true,
+                "label": "Action"
+              },
+              "events": {
+                "type": "array",
+                "minItems": 1,
+                "label": "Event subscriptions",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "source": {
+                      "type": "entitySource",
+                      "optionsSource": "eventEntities",
+                      "required": true,
+                      "label": "Sources",
+                      "description": "Whose events are watched. One source is written as a string; several are written as an array."
+                    },
+                    "name": {
+                      "type": "event",
+                      "optionsSource": "eventsOfSources",
+                      "optionsFrom": "source",
+                      "required": true,
+                      "label": "Event",
+                      "description": "Only the events every one of the sources raises can be chosen.",
+                      "emptyHint": "Choose the sources first - this offers what they all raise."
+                    }
+                  }
+                }
+              },
+              "id": {
+                "type": "string",
+                "required": true,
+                "when": {
+                  "property": "action",
+                  "values": [
+                    "play"
+                  ]
+                },
+                "label": "Sound ID",
+                "description": "Globally unique playback channel ID referenced by stop actions."
+              },
+              "sound": {
+                "type": "string",
+                "optionsSource": "Sound List",
+                "required": true,
+                "when": {
+                  "property": "action",
+                  "values": [
+                    "play"
+                  ]
+                },
+                "label": "Sound"
+              },
+              "soundId": {
+                "type": "string",
+                "optionsSource": "soundIds",
+                "optionsByChunk": "soundIdsByChunk",
+                "required": true,
+                "when": {
+                  "property": "action",
+                  "values": [
+                    "stop"
+                  ]
+                },
+                "label": "Sound ID",
+                "description": "Playback channel defined by a sound play action."
+              },
+              "delay": {
+                "type": "number",
+                "minimum": 0,
+                "default": 0,
+                "label": "Delay (s)"
+              },
+              "fade": {
+                "type": "number",
+                "minimum": 0,
+                "default": 0,
+                "label": "Fade (s)",
+                "description": "Fade-in duration for play, or fade-out duration for stop."
+              },
+              "volume": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "default": 1,
+                "when": {
+                  "property": "action",
+                  "values": [
+                    "play"
+                  ]
+                },
+                "label": "Volume"
+              },
+              "loop": {
+                "type": "boolean",
+                "default": false,
+                "when": {
+                  "property": "action",
+                  "values": [
+                    "play"
+                  ]
+                },
+                "label": "Loop"
+              }
+            }
+          }
+        }
+      }
+    },
+    "fluidSimulation": {
+      "label": "Fluid simulation",
+      "description": "Runs an authored fluid simulation at the owner's world position and maps external events to simulation, player-collision, emitter, and sink actions.",
+      "eventsRaised": [
+        {
+          "name": "startSimulation"
+        },
+        {
+          "name": "emissionComplete"
+        },
+        {
+          "name": "endSimulation"
+        }
+      ],
+      "properties": {
+        "fluidSim": {
+          "type": "string",
+          "optionsSource": "Fluid Simulations",
+          "required": true,
+          "label": "Fluid simulation"
+        },
+        "electrifiable": {
+          "type": "boolean",
+          "default": false,
+          "label": "Electrifiable",
+          "description": "Allows this simulation's liquid domain to retain electrical charge."
+        },
+        "shutdownDuration": {
+          "type": "number",
+          "minimum": 0,
+          "default": 10,
+          "label": "Shutdown duration (s)"
+        },
+        "shutdownAlphaDecay": {
+          "type": "number",
+          "minimum": 0,
+          "default": 2,
+          "label": "Shutdown alpha decay (s)"
+        },
+        "eventActions": {
+          "type": "array",
+          "minItems": 1,
+          "required": true,
+          "label": "Event actions",
+          "description": "External events that control the simulation, player collision, or one of its named flow objects.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "source": {
+                "type": "entitySource",
+                "optionsSource": "eventEntities",
+                "required": true,
+                "label": "Sources",
+                "description": "Whose event is watched. One source is written as a string; several equivalent sources are written as an array."
+              },
+              "event": {
+                "type": "event",
+                "optionsSource": "eventsOfSources",
+                "optionsFrom": "source",
+                "required": true,
+                "label": "Event",
+                "emptyHint": "Choose at least one source first."
+              },
+              "action": {
+                "type": "enum",
+                "values": [
+                  "enableSimulation",
+                  "disableSimulation",
+                  "pauseSimulation",
+                  "unpauseSimulation",
+                  "shutdownSimulation",
+                  "enablePlayerCollision",
+                  "disablePlayerCollision",
+                  "enableEmitter",
+                  "disableEmitter",
+                  "enableSink",
+                  "disableSink"
+                ],
+                "default": "enableSimulation",
+                "required": true,
+                "label": "Action"
+              },
+              "emitter": {
+                "type": "string",
+                "optionsSource": "fluidEmitters",
+                "optionsFromRoot": "fluidSim",
+                "required": true,
+                "when": {
+                  "property": "action",
+                  "values": [
+                    "enableEmitter",
+                    "disableEmitter"
+                  ]
+                },
+                "label": "Emitter",
+                "emptyHint": "The selected fluid simulation has no named emitters."
+              },
+              "sink": {
+                "type": "string",
+                "optionsSource": "fluidSinks",
+                "optionsFromRoot": "fluidSim",
+                "required": true,
+                "when": {
+                  "property": "action",
+                  "values": [
+                    "enableSink",
+                    "disableSink"
+                  ]
+                },
+                "label": "Sink",
+                "emptyHint": "The selected fluid simulation has no named sinks."
+              }
+            }
+          }
+        }
+      }
+    },
+    "fluidElectrifier": {
+      "label": "Fluid electrifier",
+      "description": "Permanently electrifies an eligible liquid domain when enough particle centres enter the owner's world AABB.",
+      "eventsRaised": [
+        {
+          "name": "fluidElectrified"
+        }
+      ],
+      "properties": {
+        "particleThreshold": {
+          "type": "number",
+          "integer": true,
+          "minimum": 1,
+          "default": 24,
+          "label": "Particle threshold"
+        },
+        "propagationSpeed": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMinimum": true,
+          "default": 8,
+          "label": "Propagation speed (m/s)"
+        }
+      }
+    },
+    "electricalDetonator": {
+      "label": "Electrical detonator",
+      "description": "Raises explode once enough propagated electrified particle centres enter the owner's world AABB.",
+      "eventsRaised": [
+        {
+          "name": "explode"
+        }
+      ],
+      "properties": {
+        "particleThreshold": {
+          "type": "number",
+          "integer": true,
+          "minimum": 1,
+          "default": 4,
+          "label": "Particle threshold"
+        }
+      }
+    },
+    "explode": {
+      "label": "Explosion",
+      "description": "Fractures and ejects nearby liquefiable and dynamic entities. Without explicit subscriptions, the owner's explode event triggers it once.",
+      "eventsRaised": [],
+      "properties": {
+        "events": {
+          "type": "array",
+          "minItems": 1,
+          "label": "Event subscriptions",
+          "description": "Optional replacement triggers. When omitted, the behavior listens for the owner's explode event.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "source": {
+                "type": "entitySource",
+                "optionsSource": "eventEntities",
+                "required": true,
+                "label": "Sources",
+                "description": "Whose events are watched. One source is written as a string; several are written as an array."
+              },
+              "name": {
+                "type": "event",
+                "optionsSource": "eventsOfSources",
+                "optionsFrom": "source",
+                "required": true,
+                "label": "Event",
+                "description": "Only the events every one of the sources raises can be chosen.",
+                "emptyHint": "Choose the sources first - this offers what they all raise."
+              }
+            }
+          }
+        },
+        "sound": {
+          "type": "string",
+          "optionsSource": "Sound List",
+          "default": "bigExplosion",
+          "label": "Sound"
+        },
+        "radius": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMinimum": true,
+          "default": 10,
+          "label": "Radius (m)"
+        },
+        "fragmentCount": {
+          "type": "number",
+          "integer": true,
+          "minimum": 2,
+          "maximum": 32,
+          "default": 8,
+          "label": "Fragments per mesh"
+        },
+        "strength": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMinimum": true,
+          "default": 12,
+          "label": "Debris speed (m/s)"
+        },
+        "debrisLifetime": {
+          "type": "number",
+          "minimum": 0,
+          "default": 15,
+          "label": "Visible lifetime (s)"
+        },
+        "fadeDuration": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMinimum": true,
+          "default": 2,
+          "label": "Fade duration (s)"
+        }
+      }
+    },
+    "spark": {
+      "label": "Sparks",
+      "description": "Continuously emits sparks from the owner's live world position.",
+      "eventsRaised": [],
+      "properties": {
+        "rate": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMinimum": true,
+          "default": 30,
+          "label": "Emission rate (/s)"
+        },
+        "speed": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMinimum": true,
+          "default": 2.5,
+          "label": "Initial speed (m/s)"
+        },
+        "lifetime": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMinimum": true,
+          "default": 0.45,
+          "label": "Particle lifetime (s)",
+          "description": "How long each emitted spark remains visible. Emission continues for as long as the owner mesh is displayed."
+        },
+        "size": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMinimum": true,
+          "default": 0.035,
+          "label": "Spark width (m)"
+        },
+        "spread": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0.08,
+          "label": "Spawn spread (m)"
+        },
+        "gravity": {
+          "type": "number",
+          "minimum": 0,
+          "default": 9.81,
+          "label": "Gravity (m/s²)"
+        }
+      }
+    },
+    "weaponAntiGravityGun": {
+      "label": "Anti-gravity gun",
+      "description": "Configures the anti-gravity weapon.",
+      "eventsRaised": [],
+      "properties": {
+        "maxMass": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMinimum": true,
+          "default": 100,
+          "label": "Maximum mass (kg)"
+        }
+      }
+    },
+    "weaponPistol": {
+      "label": "Pistol",
+      "description": "Fires visible bullets, marks every mesh impact, and pushes dynamic entities at the hit point.",
+      "eventsRaised": [],
+      "properties": {
+        "sound": {
+          "type": "string",
+          "optionsSource": "Sound List",
+          "default": "pistolShot",
+          "label": "Sound"
+        },
+        "range": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMinimum": true,
+          "default": 100,
+          "label": "Range (m)"
+        },
+        "bulletSpeed": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMinimum": true,
+          "default": 80,
+          "label": "Bullet speed (m/s)"
+        },
+        "impactImpulse": {
+          "type": "number",
+          "minimum": 0,
+          "default": 10,
+          "label": "Impact impulse (kg m/s)"
+        },
+        "bulletHoleSize": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMinimum": true,
+          "default": 1,
+          "label": "Bullet hole size factor"
+        }
+      }
+    },
+    "setCollisionShape": {
+      "label": "Set collision shape",
+      "description": "Selects the collision shape used by the owner.",
+      "eventsRaised": [],
+      "properties": {
+        "type": {
+          "type": "enum",
+          "values": [
+            "mesh"
+          ],
+          "defaultLabel": "AABB (default)",
+          "label": "Shape"
+        },
+        "fluidSimShape": {
+          "type": "object",
+          "label": "Fluid simulation shape",
+          "description": "Optional mesh-local collision shape used only by fluid simulations.",
+          "properties": {
+            "type": {
+              "type": "constant",
+              "value": "hollowCylinder",
+              "label": "Shape"
+            },
+            "start": {
+              "type": "vector3",
+              "required": true,
+              "label": "Start",
+              "description": "Base-center in mesh-local space. The cylinder extends along local +Y."
+            },
+            "height": {
+              "type": "number",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "required": true,
+              "label": "Height"
+            },
+            "innerRadius": {
+              "type": "number",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "required": true,
+              "label": "Inner radius"
+            },
+            "outerRadius": {
+              "type": "number",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "greaterThan": "innerRadius",
+              "required": true,
+              "label": "Outer radius"
+            }
+          }
+        }
+      }
+    },
+    "trigger": {
+      "label": "Intersection trigger",
+      "description": "Raises owner events when another physics body enters or exits.",
+      "eventsRaised": [
+        {
+          "property": "onIntersection.enterEvent"
+        },
+        {
+          "property": "onIntersection.exitEvent"
+        }
+      ],
+      "properties": {
+        "onIntersection": {
+          "type": "object",
+          "required": true,
+          "label": "Intersection",
+          "properties": {
+            "enterEvent": {
+              "type": "event",
+              "optionsSource": "events",
+              "allowNew": true,
+              "label": "Enter event"
+            },
+            "exitEvent": {
+              "type": "event",
+              "optionsSource": "events",
+              "allowNew": true,
+              "label": "Exit event"
+            },
+            "playerOnly": {
+              "type": "boolean",
+              "default": false,
+              "label": "Player only"
+            }
+          }
+        }
+      }
+    }
+  },
+  "templates": {
+    "entityAction": {
+      "description": "Acts on its owner immediately, or when one of the subscribed source events is raised.",
+      "properties": {
+        "events": {
+          "type": "array",
+          "minItems": 1,
+          "label": "Event subscriptions",
+          "items": {
+            "type": "object",
+            "properties": {
+              "source": {
+                "type": "entitySource",
+                "optionsSource": "eventEntities",
+                "required": true,
+                "label": "Sources",
+                "description": "Whose events are watched. One source is written as a string; several are written as an array."
+              },
+              "name": {
+                "type": "event",
+                "optionsSource": "eventsOfSources",
+                "optionsFrom": "source",
+                "required": true,
+                "label": "Event",
+                "description": "Only the events every one of the sources raises can be chosen.",
+                "emptyHint": "Choose the sources first - this offers what they all raise."
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "options": {
+    "Sound List": [
+      "bigExplosion",
+      "cisternFilling",
+      "electricField",
+      "liquefactorLiquefy",
+      "liquefactorStartShot",
+      "pickItem",
+      "pistolShot",
+      "spark",
+      "splashCisternWater",
+      "stepMetallic",
+      "trSecret",
+      "waterBigSplash",
+      "waterLongSplash",
+      "waterQuickSplash"
+    ],
+    "Fluid Simulations": [
+      "capsule-filling",
+      "capsule-filling-mpm",
+      "capsule-tank",
+      "capsule-tank2",
+      "flip-test",
+      "flip-test-high",
+      "flip-test-ultra-high",
+      "liquid-crate",
+      "liquid-slow",
+      "viscosity-inplace"
+    ],
+    "fluidEmitters": {
+      "capsule-filling-mpm": [
+        "Manual source"
+      ],
+      "capsule-filling": [
+        "Manual source"
+      ],
+      "capsule-tank": [
+        "Inflow recycle",
+        "Manual source"
+      ],
+      "capsule-tank2": [
+        "Inflow recycle",
+        "Manual source"
+      ],
+      "flip-test-high": [
+        "Manual source"
+      ],
+      "flip-test-ultra-high": [
+        "Manual source"
+      ],
+      "flip-test": [
+        "Manual source"
+      ],
+      "liquid-crate": [
+        "Manual source"
+      ],
+      "liquid-slow": [
+        "Manual source"
+      ],
+      "viscosity-inplace": [
+        "Manual source"
+      ]
+    },
+    "fluidSinks": {
+      "capsule-filling-mpm": [],
+      "capsule-filling": [],
+      "capsule-tank": [
+        "BubbleEffect",
+        "Recycle",
+        "Recycle2"
+      ],
+      "capsule-tank2": [
+        "BubbleEffect",
+        "Recycle",
+        "Recycle2"
+      ],
+      "flip-test-high": [
+        "New sink"
+      ],
+      "flip-test-ultra-high": [
+        "New sink"
+      ],
+      "flip-test": [
+        "New sink"
+      ],
+      "liquid-crate": [],
+      "liquid-slow": [],
+      "viscosity-inplace": []
+    }
+  }
+}

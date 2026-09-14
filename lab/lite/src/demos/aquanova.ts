@@ -2,8 +2,8 @@
 //
 // The player traverses a confined spaceship wielding the "Liquefactor": melt flying alien foes and
 // ship props into GPU fluid. The ship is a chunked modular interior authored in Blender from the CC0
-// Quaternius "Modular SciFi MegaKit" and exported to a single glTF (ship.glb) with a companion
-// ship_manifest.json describing chunks, portals, doors, behaviours and spawns (see
+// Quaternius "Modular SciFi MegaKit" and exported to a single glTF (scene.glb) with a companion
+// scene.json describing chunks, portals, doors, behaviours and spawns (see
 // lab/public/aquanova/ASSET-LICENSES.md and SciFiShip/README.md).
 //
 // This file is only the BUNDLE ENTRY — the bundler resolves each demo from
@@ -11,7 +11,7 @@
 //
 //   aquanova/main.ts          scene build, player, liquefaction, fluid, debug overlays
 //   aquanova/constants.ts     asset URLs, room heights, glTF -> Lite conversion
-//   aquanova/manifest.ts      ship_manifest.json types + loading
+//   aquanova/manifest.ts      scene.json types + loading
 //   aquanova/fluid-setting.ts fluidSim/*.json parsing (shared shape with the Liquefactor export)
 //   aquanova/colliders.ts     Havok box shell built from the manifest chunks
 //   aquanova/sdf-bake.ts      world-space SDF bake used for the fluid's collision

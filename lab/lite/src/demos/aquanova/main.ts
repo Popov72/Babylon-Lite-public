@@ -3,11 +3,11 @@
 // The player traverses a confined spaceship wielding the "Liquefactor": melt flying alien foes
 // and ship props into GPU fluid. This slice LOADS THE SHIP: a chunked modular interior authored
 // in the Aquanova ship editor from the CC0 Quaternius "Modular SciFi MegaKit" and exported to a
-// single glTF (ship.glb) with a companion ship_manifest.json describing chunks, portals, doors
+// single glTF (scene.glb) with a companion scene.json describing chunks, portals, doors
 // and gameplay placements (see lab/public/aquanova/ASSET-LICENSES.md and SciFiShip/README.md).
 //
 // What this slice does:
-//   • loads ship.glb and lights it with authored runtime lights + bounded local environment probes;
+//   • loads scene.glb and lights it with authored runtime lights + bounded local environment probes;
 //   • builds one static trimesh collider from the whole ship so the player collides with every
 //     wall, floor and prop — no hand-authored boxes;
 //   • spawns a Havok first-person character-controller capsule at the manifest player behavior, the
@@ -186,7 +186,7 @@ import {
     MAX_WALKABLE_SLOPE_COSINE,
     PLAYER_CAPSULE_HEIGHT,
     PLAYER_CAPSULE_RADIUS,
-    resolveShipUrl,
+    SCENE_URL,
     SKYBOX_EXT,
     SKYBOX_SIZE,
     SKYBOX_URL,
@@ -290,14 +290,13 @@ export async function main(): Promise<void> {
         canvas.style.transform = scale === 1 ? "" : `scale(${1 / scale})`;
         canvas.dataset.ssaa = String(scale);
     };
-    // Fetch the ship manifest up front — it drives the IBL strength, tone mapping, the authored
-    // Specular AA default, the reflection-roughness multiplier, colliders, and spawn.
+    // Fetch the scene metadata up front — it drives IBL strength, tone mapping, colliders, and spawn.
     const manifest = await fetchManifest();
 
     // Player-tunable graphics (ship's authored defaults ← localStorage ← ?msaa= query override).
     // Resolved before the engine so a future setting that has to be chosen at engine-creation time
     // can be read here too.
-    const graphics = loadGraphicsSettings({ specularAA: manifest?.environment?.specularAA });
+    const graphics = loadGraphicsSettings();
     applySsaa(graphics.ssaa);
     // msaaSamples: 1 — the ship renders into an offscreen target the fluid surface samples, never
     // straight to the swapchain, so the engine's own MSAA would never apply. The scene pass does its
@@ -330,7 +329,13 @@ export async function main(): Promise<void> {
     // `fluidSim: ["liquid-slow"]`) missed the map at liquefy time and silently fell back to
     // DEFAULT_SAMPLE_RADIUS + FLUID_SETTING: the crates sampled at 0.03 instead of the file's 0.08,
     // giving ~19x the particles (6260 vs 330) and default physics instead of the file's.
-    const fluidSettingNames = manifest?.fluidSim ?? [];
+    const publishedBehaviors = await fetch("/aquanova/behaviors.json")
+        .then((response) => (response.ok ? (response.json() as Promise<{ options?: Record<string, unknown> }>) : undefined))
+        .catch(() => undefined);
+    const publishedFluidSettings = publishedBehaviors?.options?.["Fluid Simulations"];
+    const fluidSettingNames = Array.isArray(publishedFluidSettings)
+        ? publishedFluidSettings.filter((name): name is string => typeof name === "string")
+        : (manifest?.fluidSim ?? []);
     const behaviorSettingNames = new Set<string>();
     for (const b of Object.values(manifest?.behaviorPresets ?? {})) {
         if ("fluidSim" in b && Array.isArray(b.fluidSim)) {
@@ -355,7 +360,7 @@ export async function main(): Promise<void> {
     // ── Load the ship ──────────────────────────────────────────────────────────────────────
     // Authored runtime lamps provide direct lighting. Bounded local probes loaded below provide
     // diffuse SH and specular radiance; there is deliberately no scene-global environment.
-    const ship = await loadGltf(engine, resolveShipUrl());
+    const ship = await loadGltf(engine, SCENE_URL);
     const shipRoot = ship.entities[0] as SceneNode;
     for (const animation of ship.animationGroups ?? []) {
         stopAnimation(animation);
@@ -3620,7 +3625,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
 
     const WRIGGLE_AMP = 0.016; // per-frame "pain" jitter amplitude (world units)    // Dissolve-front growth (world units / s). Matched to Liquefactor's SHIP-mode front (its gallery
     // speed of 6 divided by 3): ship modules read as architecture rather than a single prop, so a faster
-    // sweep pops instead of melting. Liquefactor loads this same ship.glb to audition liquefaction, so
+    // sweep pops instead of melting. Liquefactor loads this same scene.glb to audition liquefaction, so
     // the two must agree or what the audition shows is not what the game does.
     const LIQUEFY_SPEED = 1;
     const DEFAULT_SAMPLE_RADIUS = 0.03; // volume-sampling spacing when a fluidSim setting omits demoParams.particleRadius

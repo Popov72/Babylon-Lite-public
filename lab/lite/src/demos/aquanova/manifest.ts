@@ -1,4 +1,4 @@
-// Loading and typing of `ship_manifest.json` — the ship editor's companion to `ship.glb`.
+// Loading and typing of `scene.json` — the scene editor's companion to `scene.glb`.
 //
 // The manifest is the single source of truth for the ship's structure: chunk AABBs and their glTF
 // root nodes, portals, per-entity behaviours and gameplay placements. Anything that needs to know "which room is

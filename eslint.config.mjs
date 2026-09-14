@@ -25,7 +25,6 @@ export default tseslint.config(
             // The Aquanova layout editor is a standalone Node/browser tool that happens to live beside
             // the demo it authors for. It has its own conventions and its own test runner; linting it
             // with the engine's TypeScript config only produces noise.
-            "lab/lite/src/demos/aquanova/editor/**",
             "playground/scripts/**",
             "**/public/**",
             "**/*.md",

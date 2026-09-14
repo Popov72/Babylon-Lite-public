@@ -2,7 +2,7 @@
 //
 // Useful with the mouse released (not pointer-locked): hovering a surface GPU-picks the mesh under
 // the cursor, highlights the whole owning NODE with a translucent box sized to its world AABB, and
-// reports that node's name — the name the Babylon sandbox shows and the key `ship_manifest.json`'s
+// reports that node's name — the name the Babylon sandbox shows and the key `scene.json`'s
 // `entities` are written against — plus its glTF mesh name and every room touched by the player
 // capsule.
 //

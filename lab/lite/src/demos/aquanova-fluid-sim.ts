@@ -270,8 +270,8 @@ const MODEL_TARGET_SIZE = 7; // auto-fit: scale each model so its largest dimens
 
 // Use the exact Aquanova ship, manifest, and authored scale so results can be compared directly
 // with the game runtime.
-const SHIP_URL = "/aquanova/ship.glb";
-const SHIP_MANIFEST_URL = "/aquanova/ship_manifest.json";
+const SCENE_URL = "/aquanova/scene.glb";
+const SCENE_MANIFEST_URL = "/aquanova/scene.json";
 function hexToRgb(hex: string): [number, number, number] {
     return [parseInt(hex.slice(1, 3), 16) / 255, parseInt(hex.slice(3, 5), 16) / 255, parseInt(hex.slice(5, 7), 16) / 255];
 }
@@ -761,10 +761,10 @@ async function main(): Promise<void> {
     let shipBehaviorManager: AquanovaBehaviorManager | null = null;
 
     // ── Aquanova ship meshes ─────────────────────────────────────────────────
-    // Load the FULL ship.glb exactly as Aquanova does and make every ship mesh a foe, IN PLACE inside
+    // Load the full scene.glb exactly as Aquanova does and make every scene mesh a foe, in place inside
     // the ship. Geometry, materials, trim atlas, world transforms and the particle-fill path are all
     // identical to Aquanova, so the only variables left are this demo's lighting, camera and fluid
-    // controls. ship_manifest.json's `entities` names are used only to pick which room to frame.
+    // controls. scene.json's `entities` names are used only to pick which room to frame.
     async function loadShipFoes(): Promise<void> {
         await shipManifestReady;
         const chunkFocus = (c: { aabb: { min: number[]; max: number[] } }): [number, number, number] => [
@@ -795,10 +795,10 @@ async function main(): Promise<void> {
         let focus: [number, number, number] = chunks[0] ? chunkFocus(chunks[0]) : [0, 1.5, 0];
         let asset;
         try {
-            asset = await loadGltf(engine, SHIP_URL);
+            asset = await loadGltf(engine, SCENE_URL);
         } catch (err) {
             // eslint-disable-next-line no-console
-            console.warn("[aquanova-fluid-sim] ship.glb load failed", err);
+            console.warn("[aquanova-fluid-sim] scene.glb load failed", err);
             return;
         }
         const shipRoot = createTransformNode("ship_root", 0, 0, 0, 0, 0, 0, 1, 1, 1);
@@ -882,7 +882,7 @@ async function main(): Promise<void> {
         walk(shipRoot, shipRoot, undefined);
         if (!found.length) {
             // eslint-disable-next-line no-console
-            console.warn("[aquanova-fluid-sim] ship.glb contained no sampleable meshes");
+            console.warn("[aquanova-fluid-sim] scene.glb contained no sampleable meshes");
             return;
         }
 
@@ -1601,7 +1601,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         lights?: ShipLight[];
     }
     let shipManifest: ShipManifestData | null = null;
-    const shipManifestReady = fetch(SHIP_MANIFEST_URL)
+    const shipManifestReady = fetch(SCENE_MANIFEST_URL)
         .then((r) => {
             if (!r.ok) throw new Error(`HTTP ${r.status}`);
             return r.json() as Promise<ShipManifestData>;
@@ -1611,7 +1611,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         })
         .catch((err: unknown) => {
             // eslint-disable-next-line no-console
-            console.warn("[aquanova-fluid-sim] ship manifest load failed", err);
+            console.warn("[aquanova-fluid-sim] scene metadata load failed", err);
+        });
+    let publishedFluidSimNames: string[] = [];
+    const behaviorOptionsReady = fetch("/aquanova/behaviors.json")
+        .then((response) => {
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            return response.json() as Promise<{ options?: Record<string, unknown> }>;
+        })
+        .then((metadata) => {
+            const names = metadata.options?.["Fluid Simulations"];
+            publishedFluidSimNames = Array.isArray(names) ? names.filter((name): name is string => typeof name === "string") : [];
+        })
+        .catch((err: unknown) => {
+            // eslint-disable-next-line no-console
+            console.warn("[aquanova-fluid-sim] behavior options load failed", err);
         });
 
     // Audition backdrops for the fluid-surface reflections + skybox. Switching environments updates
@@ -5214,9 +5228,9 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     refreshFlowControls();
     setSimulationType(simulationType);
     document.body.append(controls.root);
-    await shipManifestReady;
+    await Promise.all([shipManifestReady, behaviorOptionsReady]);
     const loadedShipManifest = shipManifest as ShipManifestData | null;
-    setFluidSimNames(loadedShipManifest?.fluidSim ?? []);
+    setFluidSimNames(publishedFluidSimNames.length ? publishedFluidSimNames : (loadedShipManifest?.fluidSim ?? []));
     if (fluidSimSelect.value) {
         await runFluidSimAction(() => loadFluidSim(fluidSimSelect.value));
     } else {
