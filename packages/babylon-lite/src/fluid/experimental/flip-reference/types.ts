@@ -61,7 +61,7 @@ export interface FlipReferenceOptions {
     collisionMode?: "project" | "sweep";
     /** Six-neighbor velocity-extension layers, before and after projection. Baseline: 8; reference preset: 12. */
     extrapolationLayers?: number;
-    /** Bound on trajectory segments or swept-collision intervals per marker per step. Default: 256. */
+    /** Per-marker trial/interval budget. Sweeps share at most this many + 1 samples per step. Default: 256; maximum: 16777215. */
     maxAdvectionSubsteps?: number;
     /** Delete markers still inside the supplied solid SDF after collision handling. Default: false. */
     removeInsideSolids?: boolean;

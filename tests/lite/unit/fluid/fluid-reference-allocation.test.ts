@@ -38,7 +38,8 @@ describe("Reference UI allocation projection", () => {
     it("matches the actual exact-seed working and publication allocations", () => {
         const config = resolveFluidSimulationConfig("fluid", options);
         const plan = planFlipReferenceFluidAllocation({ ...options, initialPositions: new Float32Array(64 * 3) }, config);
-        expect(plan.steadyBytes).toBe(3725948);
+        expect(plan.steadyBytes).toBe(3725948 + plan.dimensions.cellCount! * 4);
+        expect(plan.resources.find((resource) => resource.name === "Reference pressure low components")!.bytes).toBe(plan.dimensions.cellCount! * 4);
         expect(plan.resources.reduce((sum, resource) => sum + resource.bytes, 0)).toBe(plan.steadyBytes);
         expect(plan.foamCapacity).toBe(0);
         expect(plan.polygonTriangleCapacity).toBe(0);

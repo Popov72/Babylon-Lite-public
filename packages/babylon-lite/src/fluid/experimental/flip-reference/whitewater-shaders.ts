@@ -18,6 +18,8 @@ struct WhitewaterField {
 @group(0) @binding(20) var<storage, read_write> publishedDispatch: array<u32>;
 
 var<workgroup> publicationCounts: array<atomic<u32>, 4>;
+var<workgroup> emissionCount: atomic<u32>;
+var<workgroup> emissionAllocation: vec3<u32>;
 
 fn wwActiveStride(capacity: u32) -> u32 {
     return ((capacity + 63u) / 64u) * 64u;
@@ -229,18 +231,19 @@ fn wwPushFree(slot: u32) {
         atomicAdd(&workingState[7], 1u);
     }
 }
-fn wwPopFree() -> u32 {
+fn wwReserveFree(requested: u32) -> vec2<u32> {
+    if (requested == 0u) { return vec2<u32>(0u); }
+    var available = atomicLoad(&workingState[5]);
     loop {
-        let available = atomicLoad(&workingState[5]);
         if (available == 0u) {
-            atomicAdd(&workingState[7], 1u);
-            return 0xffffffffu;
+            return vec2<u32>(0u);
         }
-        let result = atomicCompareExchangeWeak(&workingState[5], available, available - 1u);
+        let granted = min(available, requested);
+        let result = atomicCompareExchangeWeak(&workingState[5], available, available - granted);
         if (result.exchanged) {
-            let capacity = atomicLoad(&workingState[4]);
-            return atomicLoad(&workingState[wwFreeBase(capacity) + available - 1u]);
+            return vec2<u32>(available - granted, granted);
         }
+        available = result.old_value;
     }
 }
 fn wwAppend(slot: u32, side: u32) -> bool {
@@ -303,7 +306,6 @@ fn prepareFlipReferenceWhitewater() {
     wwWriteDispatch(0u, arrayLength(&whitewaterField));
     wwWriteDispatch(3u, updateCount);
     wwWriteDispatch(6u, atomicLoad(&runtime[0]));
-    wwWritePublishedDispatch(atomicLoad(&workingState[4]));
 }
 
 @compute @workgroup_size(64)
@@ -409,30 +411,41 @@ fn updateFlipReferenceWhitewater(@builtin(global_invocation_id) gid: vec3<u32>, 
     }
 }
 
-@compute @workgroup_size(64)
-fn emitFlipReferenceWhitewater(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) groups: vec3<u32>) {
-    let index = wwInvocationIndex(gid, groups);
+struct WhitewaterEmission {
+    position: vec3<f32>,
+    velocity: vec3<f32>,
+    axis: vec3<f32>,
+    tangent: vec3<f32>,
+    bitangent: vec3<f32>,
+    travel: f32,
+    lifetime: f32,
+    births: u32,
+    particleIndex: u32,
+    frameSeed: u32,
+}
+fn wwEmission(index: u32) -> WhitewaterEmission {
+    var emission: WhitewaterEmission;
     if (!wwFrameValid() || index >= atomicLoad(&runtime[0])) {
-        return;
+        return emission;
     }
     if (foam.generateSpray == 0u && foam.generateFoam == 0u && foam.generateBubbles == 0u) {
-        return;
+        return emission;
     }
     let position = positions[index].xyz;
     let velocity = velocities[index].xyz;
     let speed = length(velocity);
     if (speed < 1.0e-4) {
-        return;
+        return emission;
     }
     let surface = wwSampleField(position);
     let interfaceStrength = surface.phiTurbulenceInterfaceOpen.z;
     if (interfaceStrength < 0.05) {
-        return;
+        return emission;
     }
     let outward = -wwSafeNormal(surface.normalCurvature.xyz, vec3<f32>(0.0, 1.0, 0.0));
     let topWeight = smoothstep(0.15, 0.65, outward.y);
     if (topWeight <= 0.0) {
-        return;
+        return emission;
     }
     let normalSpeed = dot(velocity, outward);
     let trappedAir = max(0.0, -normalSpeed);
@@ -445,14 +458,14 @@ fn emitFlipReferenceWhitewater(@builtin(global_invocation_id) gid: vec3<u32>, @b
     }
     let energy = phi(speed, foam.energySpeedMin, foam.energySpeedMax);
     if (energy <= 0.0) {
-        return;
+        return emission;
     }
     let expected = min(8.0, topWeight * energy * (foam.kTa * trappedPotential + foam.kWc * crestPotential + foam.kTurb * turbulencePotential) * wwFrameDt());
     let whole = floor(expected);
     let frameSeed = atomicLoad(&workingState[0]);
     let births = i32(whole) + select(0, 1, fRnd((index * 2246822519u) ^ (frameSeed * 22695477u)) < expected - whole);
     if (births <= 0) {
-        return;
+        return emission;
     }
     let potential = max(trappedPotential, max(crestPotential, turbulencePotential));
     let lifetime = mix(foam.tMin, foam.tMax, potential);
@@ -463,33 +476,69 @@ fn emitFlipReferenceWhitewater(@builtin(global_invocation_id) gid: vec3<u32>, @b
     }
     tangent = normalize(tangent);
     let bitangent = cross(axis, tangent);
-    let oldSide = atomicLoad(&workingState[3]);
-    let nextSide = 1u - oldSide;
     let travel = speed * wwFrameDt();
-    for (var sample = 0; sample < births; sample++) {
-        let seed = (index * 2654435761u) ^ (frameSeed * 40503u) ^ (u32(sample) * 2246822519u);
-        let radius = foam.rv * sqrt(fRnd(seed));
-        let angle = 6.28318530718 * fRnd(seed * 3u + 1u);
-        let offset = tangent * (radius * cos(angle)) + bitangent * (radius * sin(angle));
-        let candidate = position + offset + axis * (fRnd(seed * 7u + 5u) * travel);
-        if (!wwInsideDomain(candidate)) {
+    return WhitewaterEmission(position, velocity, axis, tangent, bitangent, travel, lifetime, u32(births), index, frameSeed);
+}
+fn wwEmissionCandidate(emission: WhitewaterEmission, sample: u32) -> Diffuse {
+    let seed = (emission.particleIndex * 2654435761u) ^ (emission.frameSeed * 40503u) ^ (sample * 2246822519u);
+    let radius = foam.rv * sqrt(fRnd(seed));
+    let angle = 6.28318530718 * fRnd(seed * 3u + 1u);
+    let offset = emission.tangent * (radius * cos(angle)) + emission.bitangent * (radius * sin(angle));
+    let position = emission.position + offset + emission.axis * (fRnd(seed * 7u + 5u) * emission.travel);
+    return Diffuse(vec4<f32>(position, emission.lifetime), vec4<f32>(emission.velocity + offset, 0.0));
+}
+@compute @workgroup_size(64)
+fn emitFlipReferenceWhitewater(
+    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(local_invocation_index) local: u32,
+    @builtin(num_workgroups) groups: vec3<u32>
+) {
+    let emission = wwEmission(wwInvocationIndex(gid, groups));
+    var mask = 0u;
+    var kinds = 0u;
+    for (var sample = 0u; sample < emission.births; sample++) {
+        let candidate = wwEmissionCandidate(emission, sample);
+        if (!wwInsideDomain(candidate.p.xyz)) {
             continue;
         }
-        let kind = wwClassify(candidate, 1u);
+        let kind = wwClassify(candidate.p.xyz, 1u);
         if (!foamKindEnabled(kind)) {
             continue;
         }
-        let slot = wwPopFree();
-        if (slot == 0xffffffffu) {
-            return;
+        mask |= 1u << sample;
+        kinds |= kind << (sample * 2u);
+    }
+    if (local == 0u) { atomicStore(&emissionCount, 0u); }
+    workgroupBarrier();
+    let count = countOneBits(mask);
+    var offset = 0u;
+    if (count > 0u) { offset = atomicAdd(&emissionCount, count); }
+    workgroupBarrier();
+    if (local == 0u) {
+        let requested = atomicLoad(&emissionCount);
+        let reserved = wwReserveFree(requested);
+        var destination = 0u;
+        if (reserved.y > 0u) {
+            let nextSide = 1u - atomicLoad(&workingState[3]);
+            destination = atomicAdd(&workingState[1u + nextSide], reserved.y);
         }
-        workingPool[slot].p = vec4<f32>(candidate, lifetime);
-        workingPool[slot].v = vec4<f32>(velocity + offset, f32(kind));
-        if (!wwAppend(slot, nextSide)) {
-            workingPool[slot].p.w = 0.0;
-            wwPushFree(slot);
-            return;
-        }
+        emissionAllocation = vec3<u32>(reserved.x, reserved.y, destination);
+        if (reserved.y < requested) { atomicAdd(&workingState[7], requested - reserved.y); }
+    }
+    let allocation = workgroupUniformLoad(&emissionAllocation);
+    if (offset >= allocation.y || count == 0u) { return; }
+    let accepted = min(count, allocation.y - offset);
+    let capacity = atomicLoad(&workingState[4]);
+    let nextSide = 1u - atomicLoad(&workingState[3]);
+    var ordinal = 0u;
+    for (var sample = 0u; sample < emission.births && ordinal < accepted; sample++) {
+        if ((mask & (1u << sample)) == 0u) { continue; }
+        let slot = atomicLoad(&workingState[wwFreeBase(capacity) + allocation.x + offset + ordinal]);
+        var particle = wwEmissionCandidate(emission, sample);
+        particle.v.w = f32((kinds >> (sample * 2u)) & 3u);
+        workingPool[slot] = particle;
+        atomicStore(&workingState[wwListBase(nextSide, capacity) + allocation.z + offset + ordinal], slot);
+        ordinal++;
     }
 }
 
@@ -501,6 +550,7 @@ fn finishFlipReferenceWhitewater() {
     let oldSide = atomicLoad(&workingState[3]);
     let nextSide = 1u - oldSide;
     let count = atomicLoad(&workingState[1u + nextSide]);
+    wwWritePublishedDispatch(max(count, atomicLoad(&publishedState[1])));
     atomicStore(&workingState[3], nextSide);
     atomicStore(&workingState[1u + oldSide], 0u);
     atomicAdd(&workingState[6], 1u);
@@ -545,7 +595,8 @@ fn publishFlipReferenceWhitewater(
     }
     workgroupBarrier();
     if (frameValid && lid.x < 4u) {
-        atomicAdd(&publishedState[8u + lid.x], atomicLoad(&publicationCounts[lid.x]));
+        let count = atomicLoad(&publicationCounts[lid.x]);
+        if (count > 0u) { atomicAdd(&publishedState[8u + lid.x], count); }
     }
 }
 `;
@@ -562,6 +613,6 @@ export const FLIP_REFERENCE_WHITEWATER_BINDINGS: Readonly<Record<string, readonl
     prepareFlipReferenceWhitewaterField: [0, 4, 5, 7, 11, 12, 13],
     updateFlipReferenceWhitewater: [0, 4, 7, 11, 12, 13, 14, 15],
     emitFlipReferenceWhitewater: [0, 1, 2, 11, 12, 13, 14, 15],
-    finishFlipReferenceWhitewater: [11, 15, 18, 19],
+    finishFlipReferenceWhitewater: [11, 15, 18, 19, 20],
     publishFlipReferenceWhitewater: [11, 14, 15, 17, 18],
 };

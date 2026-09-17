@@ -337,6 +337,9 @@ async function main(): Promise<void> {
             requiredLimits = {
                 maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
                 maxBufferSize: adapter.limits.maxBufferSize,
+                maxComputeInvocationsPerWorkgroup: Math.min(1024, adapter.limits.maxComputeInvocationsPerWorkgroup),
+                maxComputeWorkgroupSizeX: Math.min(1024, adapter.limits.maxComputeWorkgroupSizeX),
+                maxComputeWorkgroupStorageSize: Math.min(32768, adapter.limits.maxComputeWorkgroupStorageSize),
             };
         }
     } catch {

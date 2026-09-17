@@ -186,6 +186,9 @@ export function createFlipReferenceSimulation(engine: EngineContext, options: Fl
     }
     const layers = integer("extrapolationLayers", options.extrapolationLayers ?? (referenceNumerics ? 12 : 8), 0);
     const advectionSubsteps = integer("maxAdvectionSubsteps", options.maxAdvectionSubsteps ?? 256, 1);
+    if (advectionSubsteps > 16_777_215) {
+        throw new RangeError("FLIP reference: maxAdvectionSubsteps must not exceed 16777215.");
+    }
     if (kernel !== "trilinear" && kernel !== "radial" && kernel !== "wyvill") {
         throw new RangeError("FLIP reference: kernel must be 'trilinear', 'radial', or 'wyvill'.");
     }

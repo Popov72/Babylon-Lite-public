@@ -5,6 +5,14 @@ export function flipReferenceGpuPressureBytes(cells: number): number {
     return cells * GPU_PRESSURE_ROW_BYTES;
 }
 
+/** @internal The reduction requires a power-of-two workgroup that fits its shared scratch. */
+export function flipReferenceGpuPressureWorkgroupSize(
+    limits: Pick<GPUSupportedLimits, "maxComputeInvocationsPerWorkgroup" | "maxComputeWorkgroupSizeX" | "maxComputeWorkgroupStorageSize">
+): number {
+    const maximum = Math.min(limits.maxComputeInvocationsPerWorkgroup, limits.maxComputeWorkgroupSizeX, Math.floor((limits.maxComputeWorkgroupStorageSize - 48) / 16));
+    return maximum >= 1024 ? 1024 : maximum >= 512 ? 512 : 256;
+}
+
 /**
  * Cached, warm-started single-workgroup Jacobi-PCG pressure solve.
  *
@@ -24,8 +32,9 @@ struct GpuPressureRow {
 }
 @group(0) @binding(19) var<storage, read_write> gpuPressureRows: array<GpuPressureRow>;
 
-var<workgroup> pressureSums: array<vec4<f32>, 256>;
-var<workgroup> pressureState: array<u32, 2>;
+override pressureWorkgroupSize: u32 = 256u;
+var<workgroup> pressureSums: array<vec4<f32>, pressureWorkgroupSize>;
+var<workgroup> pressureState: array<u32, 3>;
 
 fn pressureFinite(value: f32) -> bool {
     return value == value && abs(value) < 3.0e38;
@@ -33,7 +42,7 @@ fn pressureFinite(value: f32) -> bool {
 fn reducePressure(local: u32, value: vec4<f32>) -> vec4<f32> {
     pressureSums[local] = value;
     workgroupBarrier();
-    for (var stride = 128u; stride > 0u; stride /= 2u) {
+    for (var stride = pressureWorkgroupSize / 2u; stride > 0u; stride /= 2u) {
         if (local < stride) {
             pressureSums[local] += pressureSums[local + stride];
         }
@@ -53,6 +62,20 @@ fn cachedPressureValue(index: u32, component: u32) -> f32 {
         }
     }
     return value;
+}
+fn cachedPressureResidual(index: u32) -> f32 {
+    let row = gpuPressureRows[index];
+    var value = pressurePairScale(readPressurePair(index), row.diagonal);
+    for (var axis = 0u; axis < 3u; axis++) {
+        if (row.positive[axis] > 0.0) {
+            value = pressurePairAdd(value, -pressurePairScale(readPressurePair(row.positiveNeighbor[axis]), row.positive[axis]));
+        }
+        if (row.negative[axis] > 0.0) {
+            value = pressurePairAdd(value, -pressurePairScale(readPressurePair(row.negativeNeighbor[axis]), row.negative[axis]));
+        }
+    }
+    let residual = pressurePairAdd(vec2<f32>(row.rhs, 0.0), -value);
+    return residual.x + residual.y;
 }
 fn failGpuPressure(local: u32, code: f32, rz: f32, residualSquared: f32, rhsSquared: f32, iterations: u32) {
     if (local == 0u) {
@@ -148,18 +171,19 @@ fn prepareGpuPressure(@builtin(global_invocation_id) gid: vec3<u32>) {
         rhs = 0.0;
     }
 
-    var guess = 0.0;
+    var guess = vec2<f32>(0.0);
     if ((flags & 1u) != 0u && source.positive.w == 0.0 && previousDt > 0.0 && pressureFinite(previousDt) && currentDt > 0.0 && pressureFinite(currentDt)) {
-        guess = pcg[gid.x].x * (currentDt / previousDt);
-        if (!pressureFinite(guess)) {
-            guess = 0.0;
+        guess = pressurePairScale(readPressurePair(gid.x), currentDt / previousDt);
+        if (!pressureFinite(guess.x) || !pressureFinite(guess.y)) {
+            guess = vec2<f32>(0.0);
             flags |= 2u;
         }
     } else if (!(currentDt > 0.0) || !pressureFinite(currentDt) || (previousDt != 0.0 && !pressureFinite(previousDt))) {
         flags |= 2u;
     }
     gpuPressureRows[gid.x] = GpuPressureRow(positive, diagonal, negative, inverse, positiveNeighbor, rhs, negativeNeighbor, flags);
-    pcg[gid.x] = vec4<f32>(guess, 0.0, 0.0, 0.0);
+    pcg[gid.x] = vec4<f32>(guess.x, 0.0, 0.0, 0.0);
+    pressureLow[gid.x] = guess.y;
 }
 
 @compute @workgroup_size(128)
@@ -171,7 +195,7 @@ fn initializeGpuPressure(@builtin(global_invocation_id) gid: vec3<u32>) {
     if ((row.flags & 1u) == 0u || (row.flags & 4u) != 0u) {
         return;
     }
-    let residual = row.rhs - cachedPressureValue(gid.x, 0u);
+    let residual = cachedPressureResidual(gid.x);
     let preconditioned = residual * row.inverse;
     if (!pressureFinite(residual) || !pressureFinite(preconditioned)) {
         row.flags |= 2u;
@@ -183,14 +207,17 @@ fn initializeGpuPressure(@builtin(global_invocation_id) gid: vec3<u32>) {
     pcg[gid.x].z = preconditioned;
 }
 
-@compute @workgroup_size(256)
-fn solveGpuPressure(@builtin(local_invocation_index) local: u32) {
+// Phase 0 solves normally; 1 initializes an eligible parallel prefix; 2 preserves its CG recurrence.
+fn runGpuPressure(local: u32, phase: u32) {
     if (local == 0u) {
         pressureState[0] = u32(atomicLoad(&runtime[2]) != 0u && atomicLoad(&runtime[1]) == 0u);
         pressureState[1] = atomicLoad(&runtime[8]);
+        pressureState[2] = select(0u, u32(pcg[controlIndex() + 1u].z), phase == 2u);
+        pressureSums[0] = pcg[controlIndex()];
     }
     let enabled = workgroupUniformLoad(&pressureState[0]);
     let activeCount = workgroupUniformLoad(&pressureState[1]);
+    let incomingControl = workgroupUniformLoad(&pressureSums[0]);
     if (enabled == 0u) {
         return;
     }
@@ -202,7 +229,7 @@ fn solveGpuPressure(@builtin(local_invocation_index) local: u32) {
 
     var checks = vec4<f32>(0.0);
     var initialProducts = vec4<f32>(0.0);
-    for (var item = local; item < activeCount; item += 256u) {
+    for (var item = local; item < activeCount; item += pressureWorkgroupSize) {
         let index = atomicLoad(&lists[item]);
         if (index >= params.counts.x) {
             checks.x += 1.0;
@@ -213,11 +240,12 @@ fn solveGpuPressure(@builtin(local_invocation_index) local: u32) {
             checks.x += 1.0;
             continue;
         }
-        if ((row.flags & 2u) != 0u) {
+        if ((row.flags & 2u) != 0u && phase != 2u) {
             checks.y += 1.0;
         }
         let value = pcg[index];
-        let rz = value.y * value.z;
+        let preconditioned = select(value.z, value.y * row.inverse, phase == 2u);
+        let rz = value.y * preconditioned;
         let residualSquared = value.y * value.y;
         let rhsSquared = row.rhs * row.rhs;
         if (!pressureFinite(value.x) || !pressureFinite(value.y) || !pressureFinite(value.z) || !pressureFinite(rz) || !pressureFinite(residualSquared)) {
@@ -239,14 +267,19 @@ fn solveGpuPressure(@builtin(local_invocation_index) local: u32) {
         return;
     }
 
-    var rz = initial.x;
-    var residualSquared = initial.y;
-    let rhsSquared = initial.z;
-    let rejectWarm = checkTotal.y != 0.0 || !(rz >= 0.0) || !pressureFinite(rz) || !(residualSquared >= 0.0) || !pressureFinite(residualSquared)
-        || residualSquared > rhsSquared;
+    var rz = select(initial.x, incomingControl.x, phase == 2u);
+    var residualSquared = select(initial.y, incomingControl.y, phase == 2u);
+    let rhsSquared = select(initial.z, incomingControl.z, phase == 2u);
+    let invalidInitial = checkTotal.y != 0.0 || !(rz >= 0.0) || !pressureFinite(rz) || !(residualSquared >= 0.0) || !pressureFinite(residualSquared)
+        || !(rhsSquared >= 0.0) || !pressureFinite(rhsSquared) || (phase == 2u && incomingControl.w != 0.0 && incomingControl.w != 1.0);
+    if (phase == 2u && invalidInitial) {
+        failGpuPressure(local, 2.0, rz, residualSquared, rhsSquared, u32(pcg[controlIndex() + 1u].z));
+        return;
+    }
+    let rejectWarm = phase != 2u && (invalidInitial || residualSquared > rhsSquared);
     if (rejectWarm) {
         var coldProducts = vec4<f32>(0.0);
-        for (var item = local; item < activeCount; item += 256u) {
+        for (var item = local; item < activeCount; item += pressureWorkgroupSize) {
             let index = atomicLoad(&lists[item]);
             let row = gpuPressureRows[index];
             let preconditioned = row.rhs * row.inverse;
@@ -258,6 +291,7 @@ fn solveGpuPressure(@builtin(local_invocation_index) local: u32) {
                 coldProducts.y += row.rhs * row.rhs;
             }
             pcg[index] = vec4<f32>(0.0, row.rhs, preconditioned, 0.0);
+            pressureLow[index] = 0.0;
         }
         storageBarrier();
         let cold = reducePressure(local, coldProducts);
@@ -270,13 +304,17 @@ fn solveGpuPressure(@builtin(local_invocation_index) local: u32) {
     }
 
     let threshold = max(params.tolerances.y, params.tolerances.x * rhsSquared);
-    var iterations = 0u;
-    var needsIteration = residualSquared > threshold;
+    var iterations = workgroupUniformLoad(&pressureState[2]);
+    var needsIteration = select(residualSquared > threshold, incomingControl.w != 0.0, phase == 2u);
+    if (phase == 1u && activeCount >= 8192u && activeCount <= arrayLength(&particleScratch)) {
+        publishPressureControl(local, rz, residualSquared, rhsSquared, iterations, needsIteration);
+        return;
+    }
     var previousRestart = 0xffffffffu;
     loop {
         while (needsIteration && iterations < maximumIterations) {
             var directionProducts = vec4<f32>(0.0);
-            for (var item = local; item < activeCount; item += 256u) {
+            for (var item = local; item < activeCount; item += pressureWorkgroupSize) {
                 let index = atomicLoad(&lists[item]);
                 let direction = pcg[index].z;
                 let product = cachedPressureValue(index, 2u);
@@ -301,19 +339,20 @@ fn solveGpuPressure(@builtin(local_invocation_index) local: u32) {
             }
 
             var residualProducts = vec4<f32>(0.0);
-            for (var item = local; item < activeCount; item += 256u) {
+            for (var item = local; item < activeCount; item += pressureWorkgroupSize) {
                 let index = atomicLoad(&lists[item]);
                 let row = gpuPressureRows[index];
                 let value = pcg[index];
-                let nextX = value.x + alpha * value.z;
+                let nextX = pressurePairAdd(readPressurePair(index), pressurePairScale(vec2<f32>(value.z, 0.0), alpha));
                 let nextResidual = value.y - alpha * value.w;
                 let preconditioned = nextResidual * row.inverse;
                 let nextRz = nextResidual * preconditioned;
                 let nextResidualSquared = nextResidual * nextResidual;
-                pcg[index].x = nextX;
+                pcg[index].x = nextX.x;
+                pressureLow[index] = nextX.y;
                 pcg[index].y = nextResidual;
                 if (
-                    !pressureFinite(nextX) || !pressureFinite(nextResidual) || !pressureFinite(preconditioned) || !pressureFinite(nextRz)
+                    !pressureFinite(nextX.x) || !pressureFinite(nextX.y) || !pressureFinite(nextResidual) || !pressureFinite(preconditioned) || !pressureFinite(nextRz)
                     || !pressureFinite(nextResidualSquared)
                 ) {
                     residualProducts.w += 1.0;
@@ -347,7 +386,7 @@ fn solveGpuPressure(@builtin(local_invocation_index) local: u32) {
                     failGpuPressure(local, 2.0, rz, residualSquared, rhsSquared, iterations);
                     return;
                 }
-                for (var item = local; item < activeCount; item += 256u) {
+                for (var item = local; item < activeCount; item += pressureWorkgroupSize) {
                     let index = atomicLoad(&lists[item]);
                     let value = pcg[index];
                     pcg[index].z = value.y * gpuPressureRows[index].inverse + beta * value.z;
@@ -357,9 +396,9 @@ fn solveGpuPressure(@builtin(local_invocation_index) local: u32) {
         }
 
         var trueProducts = vec4<f32>(0.0);
-        for (var item = local; item < activeCount; item += 256u) {
+        for (var item = local; item < activeCount; item += pressureWorkgroupSize) {
             let index = atomicLoad(&lists[item]);
-            let trueResidual = rowRhs(index) - matrixValue(index, false);
+            let trueResidual = pressureResidualValue(index);
             let preconditioned = trueResidual * inverseDiagonal(index);
             let trueRz = trueResidual * preconditioned;
             let trueResidualSquared = trueResidual * trueResidual;
@@ -405,11 +444,28 @@ fn solveGpuPressure(@builtin(local_invocation_index) local: u32) {
         previousRestart = iterations;
     }
 }
+
+@compute @workgroup_size(pressureWorkgroupSize)
+fn solveGpuPressure(@builtin(local_invocation_index) local: u32) {
+    runGpuPressure(local, 0u);
+}
+@compute @workgroup_size(pressureWorkgroupSize)
+fn initializeParallelGpuPressure(@builtin(local_invocation_index) local: u32) {
+    runGpuPressure(local, 1u);
+}
+@compute @workgroup_size(pressureWorkgroupSize)
+fn resumeGpuPressure(@builtin(local_invocation_index) local: u32) {
+    runGpuPressure(local, 2u);
+}
 `;
 
 /** Storage/uniform bindings reachable by each pressure entry point. */
 export const FLIP_REFERENCE_GPU_PRESSURE_BINDINGS: Readonly<Record<string, readonly number[]>> = {
-    prepareGpuPressure: [0, 5, 8, 11, 19],
-    initializeGpuPressure: [0, 8, 11, 19],
-    solveGpuPressure: [0, 5, 6, 8, 11, 19],
+    prepareGpuPressure: [0, 5, 8, 11, 19, 21],
+    initializeGpuPressure: [0, 8, 11, 19, 21],
+    solveGpuPressure: [0, 5, 6, 8, 9, 11, 19, 21],
+    initializeParallelGpuPressure: [0, 5, 6, 8, 9, 11, 19, 21],
+    resumeGpuPressure: [0, 5, 6, 8, 9, 11, 19, 21],
+    project: [0, 4, 5, 8, 21],
+    trueResidual: [0, 5, 8, 21],
 };

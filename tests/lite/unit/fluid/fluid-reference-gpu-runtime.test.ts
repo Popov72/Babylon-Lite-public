@@ -29,6 +29,7 @@ function recordingFixture() {
             _cells: 8,
             _reductionGroups: 1,
             _extrapolationLayers: 12,
+            _maxPressureIterations: 400,
             capacity: 128,
             _removalEnabled: true,
             referenceNumerics: true,
@@ -38,6 +39,7 @@ function recordingFixture() {
             elapsedSeconds: 0,
         },
         frameData: new Float32Array(4),
+        pressureWorkgroupSize: 1024,
         frameBuffer: {},
         argumentBuffer: {},
         pipelines: new Proxy<Record<string, string>>({}, { get: (_target, entry) => entry }),
@@ -56,6 +58,54 @@ function recordingFixture() {
 }
 
 describe("GPU-resident Reference frame recording", () => {
+    it("bounds parallel pressure to the minimum substeps and preserves the search direction on resume", () => {
+        const f = recordingFixture();
+        f.gpu.core.capacity = 65536;
+        recordFlipReferenceFrame(f.gpu as never, f.encoder as never, 0.02, 2, 8, 0.01, 5, null);
+        const entries = f.pass.setPipeline.mock.calls.map(([entry]) => entry);
+        expect(entries.filter((entry) => entry === "initializeParallelGpuPressure")).toHaveLength(2);
+        expect(entries.filter((entry) => entry === "applyParallelPressure")).toHaveLength(256);
+        expect(entries.filter((entry) => entry === "finishParallelPressureIteration")).toHaveLength(256);
+        expect(entries).not.toContain("alphaParallelPressure");
+        expect(entries.filter((entry) => entry === "solveGpuPressure")).toHaveLength(6);
+        const finish = entries.indexOf("finishParallelPressure");
+        expect(entries.slice(finish, finish + 4)).toEqual(["finishParallelPressure", "continueParallelPressure", "resumeGpuPressure", "updateGpuDispatch"]);
+        expect(f.queue.submit).not.toHaveBeenCalled();
+        expect(f.readback.mapAsync).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        { capacity: 262144, workgroup: 1024 },
+        { capacity: 65536, workgroup: 256 },
+    ])("keeps vector updates parallel for $capacity particles with $workgroup lanes", ({ capacity, workgroup }) => {
+        const f = recordingFixture();
+        f.gpu.core.capacity = capacity;
+        f.gpu.pressureWorkgroupSize = workgroup;
+        recordFlipReferenceFrame(f.gpu as never, f.encoder as never, 0.01, 1, 1, 0.01, 5, null);
+        const entries = f.pass.setPipeline.mock.calls.map(([entry]) => entry);
+        expect(entries.filter((entry) => entry === "alphaParallelPressure")).toHaveLength(128);
+        expect(entries.filter((entry) => entry === "updateParallelPressure")).toHaveLength(128);
+        expect(entries).not.toContain("finishParallelPressureIteration");
+    });
+
+    it("never records more parallel iterations than the existing pressure budget", () => {
+        const f = recordingFixture();
+        f.gpu.core.capacity = 65536;
+        f.gpu.core._maxPressureIterations = 3;
+        recordFlipReferenceFrame(f.gpu as never, f.encoder as never, 0.01, 1, 1, 0.01, 5, null);
+        expect(f.pass.setPipeline.mock.calls.filter(([entry]) => entry === "applyParallelPressure")).toHaveLength(3);
+    });
+
+    it("does not record a parallel prefix when compaction scratch was not allocated", () => {
+        const f = recordingFixture();
+        f.gpu.core.capacity = 65536;
+        f.gpu.core._removalEnabled = false;
+        recordFlipReferenceFrame(f.gpu as never, f.encoder as never, 0.01, 1, 1, 0.01, 5, null);
+        const entries = f.pass.setPipeline.mock.calls.map(([entry]) => entry);
+        expect(entries).not.toContain("initializeParallelGpuPressure");
+        expect(entries).toContain("solveGpuPressure");
+    });
+
     it("applies an installed force before P2G and gates invalid force output before transfer", () => {
         const f = recordingFixture();
         const force = { pipeline: "manual-force" as never, bindGroup: {} as GPUBindGroup };

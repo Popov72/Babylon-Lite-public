@@ -1,5 +1,8 @@
+import { FLIP_REFERENCE_ADVECTION_WGSL } from "./advection.js";
+import { FLIP_REFERENCE_PRESSURE_PRECISION_WGSL } from "./pressure-precision.js";
+
 /** Independent dense MAC implementation; pressure is stored as dt * p / (density * dx). */
-export function flipReferenceWgsl(gpuResident = false): string {
+export function flipReferenceWgsl(gpuResident = false, compensatedPressure = false): string {
     return /* wgsl */ `
 struct Params {
     grid: vec4<u32>,
@@ -59,6 +62,7 @@ struct Correction {
 ${gpuResident ? "@group(0) @binding(11) var<storage, read_write> runtime: array<atomic<u32>>;" : ""}
 var<workgroup> sums: array<vec4<f32>, 128>;
 var<workgroup> survivorScan: array<u32, 128>;
+${compensatedPressure ? FLIP_REFERENCE_PRESSURE_PRECISION_WGSL : ""}
 
 fn particleCount() -> u32 { return ${gpuResident ? "atomicLoad(&runtime[0])" : "params.grid.w"}; }
 fn stepDt() -> f32 { return ${gpuResident ? "bitcast<f32>(atomicLoad(&runtime[4]))" : "params.gravity.w"}; }
@@ -500,6 +504,9 @@ fn rowRhs(i: u32) -> f32 {
     if (cells[i].positive.w != 0.0 || cells[i].state.w == 0.0) { return 0.0; }
     return cells[i].state.z;
 }
+fn pressureResidualValue(i: u32) -> f32 {
+    return ${compensatedPressure ? "pressurePairResidual(i)" : "rowRhs(i) - matrixValue(i, false)"};
+}
 fn inverseDiagonal(i: u32) -> f32 {
     let diagonal = cells[i].state.y;
     if (diagonal > 0.0 && cells[i].positive.w == 0.0) { return 1.0 / diagonal; }
@@ -520,7 +527,7 @@ fn applyDirection(@builtin(global_invocation_id) gid: vec3<u32>) {
 fn trueResidual(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (gid.x >= params.counts.x) { return; }
     // Only x is read from neighbors here; writes to r/d/q are invocation-local.
-    let residual = rowRhs(gid.x) - matrixValue(gid.x, false);
+    let residual = pressureResidualValue(gid.x);
     pcg[gid.x].y = residual;
     pcg[gid.x].z = residual * inverseDiagonal(gid.x);
 }
@@ -619,14 +626,18 @@ fn project(@builtin(global_invocation_id) gid: vec3<u32>) {
         let leftLiquid = liquid(left);
         let rightLiquid = liquid(right);
         if (leftLiquid || rightLiquid) {
-            var pl = 0.0;
-            var pr = 0.0;
+            var pl = ${compensatedPressure ? "vec2<f32>(0.0)" : "0.0"};
+            var pr = ${compensatedPressure ? "vec2<f32>(0.0)" : "0.0"};
             var fraction = 1.0;
-            if (leftLiquid) { pl = pcg[cellIndex(left)].x; }
-            if (rightLiquid) { pr = pcg[cellIndex(right)].x; }
+            if (leftLiquid) { pl = ${compensatedPressure ? "readPressurePair(cellIndex(left))" : "pcg[cellIndex(left)].x"}; }
+            if (rightLiquid) { pr = ${compensatedPressure ? "readPressurePair(cellIndex(right))" : "pcg[cellIndex(right)].x"}; }
             if (leftLiquid && !rightLiquid) { fraction = theta(cells[cellIndex(left)].state.x, cells[cellIndex(right)].state.x); }
             if (rightLiquid && !leftLiquid) { fraction = theta(cells[cellIndex(right)].state.x, cells[cellIndex(left)].state.x); }
-            f.velocity -= (pr - pl) / fraction;
+            ${
+                compensatedPressure
+                    ? "let difference = pressurePairAdd(pr, -pl);\n            f.velocity -= (difference.x + difference.y) / fraction;"
+                    : "f.velocity -= (pr - pl) / fraction;"
+            }
             f.valid = 1u;
         } else {
             f.velocity = 0.0;
@@ -658,7 +669,7 @@ fn constrainSnapshots(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 }
 
-fn sampleFace(point: vec3<f32>, axis: u32, previous: bool) -> f32 {
+fn sampleFaceWithSupport(point: vec3<f32>, axis: u32, previous: bool) -> vec2<f32> {
     var q = (point - params.origin.xyz) / params.origin.w - vec3<f32>(0.5);
     q[axis] += 0.5;
     let dimensions = faceDimensions(axis);
@@ -679,11 +690,18 @@ fn sampleFace(point: vec3<f32>, axis: u32, previous: bool) -> f32 {
             if (f.valid != 0u) { support += weight; }
         }
     }
-    if (!previous && support < 0.999) { atomicOr(&lists[statusIndex(6u)], 1u); }
-    return value;
+    return vec2<f32>(value, support);
+}
+fn sampleVelocityWithSupport(p: vec3<f32>, previous: bool) -> vec4<f32> {
+    let x = sampleFaceWithSupport(p, 0u, previous);
+    let y = sampleFaceWithSupport(p, 1u, previous);
+    let z = sampleFaceWithSupport(p, 2u, previous);
+    return vec4<f32>(x.x, y.x, z.x, min(x.y, min(y.y, z.y)));
 }
 fn sampleVelocity(p: vec3<f32>, previous: bool) -> vec3<f32> {
-    return vec3<f32>(sampleFace(p, 0u, previous), sampleFace(p, 1u, previous), sampleFace(p, 2u, previous));
+    let sample = sampleVelocityWithSupport(p, previous);
+    if (!previous && !(sample.w >= 0.999)) { atomicOr(&lists[statusIndex(6u)], 1u); }
+    return sample.xyz;
 }
 fn sampleObstacle(point: vec3<f32>) -> SolidSample {
     let q = clamp((point - params.origin.xyz) / params.origin.w, vec3<f32>(0.0), vec3<f32>(params.grid.xyz));
@@ -753,58 +771,20 @@ fn correctParticle(point: vec3<f32>, velocity: vec3<f32>) -> Correction {
     if (sampleSolid(p).distance < clearance - tolerance) { reportCollisionFailure(p); }
     return Correction(p, v, contacted);
 }
-fn advectGrid(point: vec3<f32>, h: f32, first: vec3<f32>) -> vec3<f32> {
-    let second = sampleVelocity(point + 0.5 * h * first, false);
-    if (params.switches.y == 0u) { return point + h * second; }
-    let third = sampleVelocity(point + 0.75 * h * second, false);
-    return point + h * ((2.0 / 9.0) * first + (1.0 / 3.0) * second + (4.0 / 9.0) * third);
-}
-fn sweepParticle(original: vec3<f32>, proposed: vec3<f32>, velocity: vec3<f32>) -> Correction {
-    let padding = vec3<f32>(params.geometry.y + params.geometry.z);
-    let lower = params.origin.xyz + padding;
-    let upper = params.origin.xyz + vec3<f32>(params.grid.xyz) * params.origin.w - padding;
-    let candidate = clamp(proposed, lower, upper);
-    let distance = length(candidate - original);
-    let spacing = 0.1 * params.origin.w;
-    if (!(distance <= f32(params.switches.z) * spacing)) {
-        atomicOr(&lists[statusIndex(5u)], 1u);
-        return Correction(original, velocity, false);
-    }
-    let intervals = max(1u, u32(ceil(distance / spacing)));
-    var lastSafe = clamp(original, lower, upper);
-    for (var i = 0u; i <= intervals; i++) {
-        let point = mix(original, candidate, f32(i) / f32(intervals));
-        let solid = sampleObstacle(point);
-        if (solid.distance < 0.0) {
-            let magnitude = length(solid.gradient);
-            var corrected = lastSafe;
-            var fallback = true;
-            if (magnitude > 1.0e-6) {
-                corrected = clamp(point + (params.settings.w - solid.distance) * solid.gradient / magnitude, lower, upper);
-                fallback = sampleObstacle(corrected).distance < 0.0 || length(corrected - point) > 5.0 * params.origin.w;
-            }
-            if (fallback) {
-                corrected = lastSafe;
-                atomicAdd(&lists[statusIndex(7u)], 1u);
-                if (sampleObstacle(corrected).distance < 0.0) { reportCollisionFailure(corrected); }
-            }
-            return Correction(corrected, velocity, true);
-        }
-        lastSafe = clamp(point, lower, upper);
-    }
-    return Correction(candidate, velocity, any(candidate != proposed));
-}
+${FLIP_REFERENCE_ADVECTION_WGSL}
 @compute @workgroup_size(128)
 fn gridToParticles(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (gid.x >= particleCount()) { return; }
     let original = positions[gid.x].xyz;
-    let pic = sampleVelocity(original, false);
+    let gridSample = sampleVelocityWithSupport(original, false);
+    if (!(gridSample.w >= 0.999)) { atomicOr(&lists[statusIndex(6u)], 1u); }
+    let pic = gridSample.xyz;
     let delta = pic - sampleVelocity(original, true);
     var velocity = mix(velocities[gid.x].xyz + delta, pic, params.settings.x);
     var position = original;
     var contacted = false;
     if (params.modes.w != 0u) {
-        let correction = sweepParticle(original, advectGrid(original, stepDt(), pic), velocity);
+        let correction = advectSweptParticle(original, stepDt(), gridSample, velocity);
         position = correction.position;
         contacted = correction.contacted;
     } else {

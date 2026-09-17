@@ -66,9 +66,10 @@ Each substep records transfer and matrix assembly, GPU connected-component condi
 gauges, a convergence-controlled pressure solve, projection/extrapolation, advection, stable
 compaction, and count/timestep finalization. Dispatch arguments are in a separate storage/indirect
 buffer; no dispatch simultaneously binds its indirect input as writable storage. Inactive
-substeps dispatch zero workgroups. The pressure solver must loop to the existing true-residual
-tolerance on the GPU, not emit a maximum-iterations command skeleton: zero-work indirect commands
-still have significant GPU command-processing cost.
+substeps dispatch zero workgroups. Never expand a maximum-iterations command skeleton across the
+maximum-substeps budget: zero-work indirect commands still have significant GPU command-processing
+cost. Large systems may use a bounded parallel prefix on the required minimum substeps, followed
+by the GPU-looping solver for remaining iterations and additional CFL substeps.
 
 The component graph uses monotone atomic root linking, with dispatch boundaries between linking,
 aggregation, conditioning, and gauge finalization; it has no cross-workgroup spin barrier.
@@ -92,17 +93,58 @@ Component entry points are `initializeGpuComponents`, `linkGpuComponents`,
 particle linked-list heads for compact liquid indices. All subsequent component kernels traverse
 this active list; its length lives in runtime word 8. The status tail is never overwritten.
 
-The pressure system and UI thresholds remain unchanged: Jacobi-PCG, relative L2 `1e-5`, absolute
-L2 `1e-8`, at most 400 iterations, with recomputed true residual and restart when recursive
-convergence is insufficient. An unconverged or nonfinite result cannot reach publication.
+The pressure matrix and acceptance tolerances remain unchanged: Jacobi-PCG, relative L2 `1e-5`
+and absolute L2 `1e-8`, with recomputed true residual and restart when recursive convergence is
+insufficient. The UI adapter defaults to a finite 1,024-iteration total cap; easy steps still stop
+as soon as they converge. An unconverged or nonfinite result cannot reach publication.
 
-`gpu-pressure.ts` implements `solveGpuPressure` as one 256-invocation workgroup after the
+### Compensated pressure representation
+
+The GPU runtime stores each pressure as two float32 components: the high part remains in
+`pcg[index].x`, and binding 21 holds a four-byte-per-cell low part. Binding 20 remains available
+to the separate whitewater module. `pressure-precision.ts` provides error-compensated addition
+and scaling using TwoSum and the product remainder from `fma`. These are not native float64
+instructions. Search directions, residual vectors, reductions and the matrix coefficients remain
+float32; only pressure accumulation and pressure-dependent evaluation use the pair.
+
+Warm-start scaling preserves both components. Rejected guesses and inactive/gauge rows clear both.
+Every persistent or parallel pressure update adds `alpha * direction` to the pair, including its
+multiply/add rounding remainder. Residual initialization uses paired pressure with the cached
+operator; final acceptance independently evaluates the original cell operator with compensated
+products/sums and subtracts the original RHS before collapsing the small residual to float32.
+Projection subtracts the left/right pressure pairs before converting the small gradient to float32.
+Never round the full pressure back to one float before residual evaluation or projection.
+
+This prevents large nearly uniform pocket pressures from erasing small pressure differences.
+Merely increasing the iteration cap or changing the preconditioner cannot fix a solution-storage
+precision floor. The matrix, boundary/gauge treatment and tolerances are not relaxed, and the
+configured total iteration budget remains enforced across all phases and restarts.
+The resource planner includes the low-part buffer, and reset/disposal owns it with
+the rest of the GPU runtime.
+
+`flipReferenceWgsl(gpuResident, compensatedPressure)` enables the pair helpers only for the GPU
+pressure runtime. The CPU-controlled oracle and whitewater's read-only helper shader retain their
+existing variants. GPU-specific bindings override the core scalar-pressure projection/residual
+pipelines so no path silently ignores the low part.
+
+Regression coverage includes a weakly anchored system with a large common pressure offset,
+nonfinite low-part warm starts, and an actual projection dispatch whose entire pressure gradient
+is carried in the low components. The weakly anchored case checks residual and gradient accuracy,
+not an arbitrary absolute pressure offset that the stated residual tolerance does not constrain.
+
+`gpu-pressure.ts` implements `solveGpuPressure` as one device-sized workgroup after the
 full-grid `prepareGpuPressure` and `initializeGpuPressure` dispatches (128 invocations each).
-Each solver lane traverses compact liquid indices with stride 256.
+The pressure workgroup is specialized through a pipeline override to 256, 512, or 1024 lanes,
+bounded by device invocation count, X dimension, and workgroup storage. Each solver lane
+traverses compact liquid indices with that stride. The fallback is the original 256 lanes;
+extra limits are requested by the Fluid app, not by changing general engine defaults.
 Matrix products, pressure/residual updates, and direction updates are separated by storage
 barriers; scalar products use a workgroup binary-tree reduction and `workgroupUniformLoad`.
 Only workgroup-local barriers are used, so scheduling never relies on simultaneous residency
-of independent workgroups. It requires 4,104 bytes of workgroup storage plus the cached
+of independent workgroups. Including 16-byte allocation alignment, the persistent solve requires
+`16 * lanes + 16` bytes of workgroup storage, and the fused parallel-update kernel needs
+`16 * lanes + 48`; specialization accounts
+for the larger requirement. Both use the cached
 operator buffer described below. The existing PCG controls retain residual/rhs squared
 norms and iteration count.
 
@@ -117,6 +159,51 @@ dispatches. A large connected liquid region can take more GPU execution time tha
 multi-workgroup oracle even while its submission-to-completion latency is substantially lower.
 The algorithm, tolerance, and successful-state publication contract are not weakened to hide
 that tradeoff.
+
+### Large-system parallel prefix
+
+For seeds with at least 65,536 particle slots and allocated compaction scratch, the required minimum substeps record up to 128
+parallel PCG iterations (never more than the existing pressure iteration limit). Additional CFL
+substeps retain the persistent workgroup solve. `initializeParallelGpuPressure` shares the normal
+finite/matrix checks, current-RHS norm and rejected-warm-start handling; it initializes only when
+there are at least 8,192 active pressure cells and temporary direction storage fits. Otherwise it
+finishes the pressure solve itself, leaving the parallel prefix inactive.
+
+`gpu-pressure-parallel.ts` distributes the direction/matrix product and local dot reduction.
+For fewer than 262,144 particle slots on devices supporting at least 512 pressure lanes, a second
+kernel fuses global alpha, pressure/residual updates, norm reduction and beta into one workgroup.
+This halves the number of recorded pressure commands for medium systems. Larger systems and 256-lane devices
+use four kernels per iteration, keeping the vector updates distributed instead of making them
+a bandwidth bottleneck in one workgroup.
+Direction construction is delayed until the next matrix product: each neighbor's direction is
+computed from its unchanged residual/old direction and the common beta. The new direction is
+saved separately and only committed during the later residual update. This eliminates a separate
+direction-update dispatch without any cross-workgroup read/write race.
+
+The temporary directions reuse `particleScratch[activeIndex].x`; pressure precedes all particle
+compaction, and `packSurvivors` overwrites each subsequently consumed position/velocity pair before
+`commitSurvivors`. The GPU initialization guard checks `activeCount <= arrayLength(particleScratch)`.
+No buffer is added. Partial reductions reuse the existing PCG reduction tail; only the active
+workgroup prefix is reduced. Direct control/update kernels own pressure dispatch arguments and
+disable subsequent vector kernels once recursive convergence or failure is reached.
+
+After this prefix, restore the normal dispatch dimensions and finish the pending search-direction
+update using the saved beta. `resumeGpuPressure` continues the existing CG recurrence, preserving
+the direction, scalar products, already-spent iteration count and original total budget. Do not
+restart CG merely because the parallel prefix ended: that discards useful conjugate directions
+and can consume the remaining iteration budget unnecessarily. The persistent tail recomputes the
+true residual with the original uncached operator before accepting convergence or failing the
+budget, including when the prefix already reported recursive convergence. It never treats the
+recursive norm alone as convergence, nor silently resets the budget or discards a nonfinite iterate. All
+scalar control remains GPU-owned; no CPU readback determines iteration or dispatch counts.
+
+The GPU regression fixture exercises both update paths at the portable workgroup size using
+manufactured variable-coefficient systems: open boundaries, two independently gauged pockets,
+rejected/nonfinite warm guesses, zero RHS, a small active list, insufficient temporary storage,
+invalid diagonals, and an exhausted three-iteration budget. It verifies that the parallel prefix
+actually writes its temporary directions, that the final field matches the manufactured solution,
+and that true-residual acceptance and failure codes remain intact. Wider-workgroup probes use
+the same fixture with the exact required aligned storage limit.
 
 ### Pressure and command-cost optimizations
 
@@ -162,6 +249,12 @@ Failure bits are `1` invalid particles/compaction, `2` unresolved collision, `4`
 flux, and `64` an unrepresentable/nonprogressing timestep. Ordinary substep-budget exhaustion
 is not a failure bit. The adapter requires eight compute storage
 bindings and 256-invocation workgroups; it does not silently fall back to the readback-driven oracle on smaller devices.
+
+Swept particle advection uses the shared bounded-trial implementation specified in module 58.
+The default 256-interval budget is not raised by the UI adapter: near collisions may complete
+overlong proposals, and inaccurate/unsupported RK trials can be refined without poisoning the
+shared velocity-band flag. Exhausted actual work or unresolved invalid sampling still fails.
+This budget is separate from both Maximum substeps and the pressure iteration limit.
 
 ## Publication and lifecycle
 
@@ -266,9 +359,14 @@ Collision handling samples the existing Reference nodal SDF without affecting th
 
 The working pool has a GPU-owned free-slot stack and two compact active lists. It reuses the
 shared 64-u32 header/aligned-list layout; the final capacity-sized region stores free indices
-instead of flags. Update returns dead slots to the stack before emission pops them, with a dispatch
-boundary between the two operations. Unique CAS pops ensure no two invocations write the same
-new slot. A full pool rejects new births rather than wrapping and racing writes to live slots.
+instead of flags. Update returns dead slots before emission reserves ranges, with a dispatch
+boundary between the two operations. Each 64-lane emission workgroup classifies its candidates
+first, retaining an eight-bit validity mask and two kind bits per candidate. Workgroup atomics
+assign per-lane ranges; one leader CAS reserves the group's free slots, and one global atomic
+reserves its active-list range. Disjoint reservations prevent overlapping writes. Candidate
+geometry is recomputed from the same seed rather than stored in large per-invocation arrays.
+Positions, velocities, kinds, lifetimes and requested birth counts are unchanged. A saturated pool
+admits only the granted prefix and counts rejected candidates; no live slot is overwritten.
 The active-particle mode uses indirect live-count dispatch; the dense mode visits capacity with
 dead-slot guards and retains the same particle semantics.
 
@@ -338,10 +436,11 @@ words 8–11. Draw arguments are `[6, liveCount, 0, 0]`.
 
 One compute pass records prepare, cached field, update, emission, finish, then publication.
 Prepare/finish use one invocation; the other kernels use 64. Prepare builds 2D indirect arguments
-from GPU counts, with update choosing the live list or full capacity. Publication always covers
-capacity to clear the inactive tail. Failed liquid frames zero dispatches and skip finish without
+from GPU counts, with update choosing the live list or full capacity. Finish dispatches publication
+over `max(previousPublishedCount, nextCount)`: newly live slots are copied and a shrinking tail is
+cleared, while never-used capacity stays zero from initialization. Failed liquid frames zero dispatches and skip finish without
 touching the previous publication. Each publication workgroup accumulates the four counters
-locally before adding to the published header.
+locally and adds only nonzero totals to the published header.
 
 Bindings 0/1/2/4/5/7/11 reuse liquid parameters/positions/velocities/faces/cells/solids/runtime.
 Whitewater bindings 12–20 are parameters, cached fields, working pool, working state, working

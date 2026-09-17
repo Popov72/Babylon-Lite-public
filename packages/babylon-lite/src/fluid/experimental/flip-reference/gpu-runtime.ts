@@ -5,7 +5,14 @@ import type { FluidTimestepDiagnostics } from "../../core/timestep-scheduler.js"
 import { FLIP_REFERENCE_BINDINGS, FLIP_REFERENCE_RUNTIME_ENTRIES, flipReferenceWgsl } from "./shaders.js";
 import { FLIP_REFERENCE_GPU_CONTROL_BINDINGS, FLIP_REFERENCE_GPU_CONTROL_WGSL } from "./gpu-control.js";
 import { FLIP_REFERENCE_GPU_COMPONENT_BINDINGS, FLIP_REFERENCE_GPU_COMPONENT_WGSL, flipReferenceGpuComponentBytes } from "./gpu-components.js";
-import { FLIP_REFERENCE_GPU_PRESSURE_BINDINGS, FLIP_REFERENCE_GPU_PRESSURE_WGSL, flipReferenceGpuPressureBytes } from "./gpu-pressure.js";
+import { FLIP_REFERENCE_GPU_PRESSURE_BINDINGS, FLIP_REFERENCE_GPU_PRESSURE_WGSL, flipReferenceGpuPressureBytes, flipReferenceGpuPressureWorkgroupSize } from "./gpu-pressure.js";
+import {
+    FLIP_REFERENCE_GPU_PARALLEL_PRESSURE_BINDINGS,
+    FLIP_REFERENCE_GPU_PARALLEL_PRESSURE_WGSL,
+    FLIP_REFERENCE_PARALLEL_PRESSURE_DISTRIBUTED_PARTICLES,
+    FLIP_REFERENCE_PARALLEL_PRESSURE_ITERATIONS,
+    FLIP_REFERENCE_PARALLEL_PRESSURE_MIN_PARTICLES,
+} from "./gpu-pressure-parallel.js";
 import { FLIP_REFERENCE_GPU_STAGES_BINDINGS, FLIP_REFERENCE_GPU_STAGES_WGSL } from "./gpu-stages.js";
 import type { FlipReferenceSimulation } from "./types.js";
 
@@ -34,6 +41,7 @@ export interface FlipReferenceGpuRuntime {
     readonly bindGroups: Record<string, GPUBindGroup>;
     readonly slots: TelemetrySlot[];
     readonly bytes: number;
+    readonly pressureWorkgroupSize: number;
     ready: Promise<void>;
     error: Error | null;
     telemetryError: Error | null;
@@ -53,6 +61,7 @@ export function flipReferenceGpuResources(cells: number): FluidAllocationResourc
         { name: "Reference GPU components", kind: "buffer", binding: "storage", bytes: flipReferenceGpuComponentBytes(cells) },
         { name: "Reference frame parameters", kind: "buffer", binding: "uniform", bytes: 16 },
         { name: "Reference pressure rows", kind: "buffer", binding: "storage", bytes: flipReferenceGpuPressureBytes(cells) },
+        { name: "Reference pressure low components", kind: "buffer", binding: "storage", bytes: cells * 4 },
         ...Array.from({ length: TELEMETRY_SLOTS }, (_, index): FluidAllocationResource => ({
             name: `Reference telemetry ${index}`,
             kind: "buffer",
@@ -75,6 +84,7 @@ export function createFlipReferenceGpuRuntime(
         throw new Error("[FLIP Reference] GPU-resident execution requires eight storage bindings and 256-invocation compute workgroups.");
     }
     const resources = flipReferenceGpuResources(core._cells);
+    const pressureWorkgroupSize = flipReferenceGpuPressureWorkgroupSize(device.limits);
     for (const resource of resources) {
         if (resource.bytes > device.limits.maxBufferSize || (resource.binding === "storage" && resource.bytes > device.limits.maxStorageBufferBindingSize)) {
             throw new RangeError(`[FLIP Reference] ${resource.name} exceeds this device's buffer limits.`);
@@ -123,9 +133,16 @@ export function createFlipReferenceGpuRuntime(
             publishedDraw,
             buffers[4]!,
         ];
+        bindingBuffers[21] = buffers[5]!;
         const module = device.createShaderModule({
             label: "flip-reference:gpu-resident",
-            code: flipReferenceWgsl(true) + FLIP_REFERENCE_GPU_CONTROL_WGSL + FLIP_REFERENCE_GPU_COMPONENT_WGSL + FLIP_REFERENCE_GPU_PRESSURE_WGSL + FLIP_REFERENCE_GPU_STAGES_WGSL,
+            code:
+                flipReferenceWgsl(true, true) +
+                FLIP_REFERENCE_GPU_CONTROL_WGSL +
+                FLIP_REFERENCE_GPU_COMPONENT_WGSL +
+                FLIP_REFERENCE_GPU_PRESSURE_WGSL +
+                FLIP_REFERENCE_GPU_PARALLEL_PRESSURE_WGSL +
+                FLIP_REFERENCE_GPU_STAGES_WGSL,
         });
         const pipelines: Record<string, GPUComputePipeline> = {};
         const bindGroups: Record<string, GPUBindGroup> = {};
@@ -134,17 +151,31 @@ export function createFlipReferenceGpuRuntime(
             ...FLIP_REFERENCE_GPU_CONTROL_BINDINGS,
             ...FLIP_REFERENCE_GPU_COMPONENT_BINDINGS,
             ...FLIP_REFERENCE_GPU_PRESSURE_BINDINGS,
+            ...FLIP_REFERENCE_GPU_PARALLEL_PRESSURE_BINDINGS,
             ...FLIP_REFERENCE_GPU_STAGES_BINDINGS,
         };
         for (const [entryPoint, original] of Object.entries(bindings)) {
             const readsRuntime = FLIP_REFERENCE_RUNTIME_ENTRIES.includes(entryPoint);
-            if (Object.hasOwn(FLIP_REFERENCE_BINDINGS, entryPoint) && !readsRuntime) {
+            if (Object.hasOwn(FLIP_REFERENCE_BINDINGS, entryPoint) && !readsRuntime && !Object.hasOwn(FLIP_REFERENCE_GPU_PRESSURE_BINDINGS, entryPoint)) {
                 pipelines[entryPoint] = core._pipelines[entryPoint]!;
                 bindGroups[entryPoint] = core._bindGroups[entryPoint]!;
                 continue;
             }
             const indices = readsRuntime ? [...original, 11] : original;
-            const pipeline = device.createComputePipeline({ label: `flip-reference:${entryPoint}`, layout: "auto", compute: { module, entryPoint } });
+            const pipeline = device.createComputePipeline({
+                label: `flip-reference:${entryPoint}`,
+                layout: "auto",
+                compute: {
+                    module,
+                    entryPoint,
+                    ...(entryPoint === "solveGpuPressure" ||
+                    entryPoint === "initializeParallelGpuPressure" ||
+                    entryPoint === "resumeGpuPressure" ||
+                    entryPoint === "finishParallelPressureIteration"
+                        ? { constants: { pressureWorkgroupSize } }
+                        : {}),
+                },
+            });
             pipelines[entryPoint] = pipeline;
             bindGroups[entryPoint] = device.createBindGroup({
                 label: `flip-reference:${entryPoint}`,
@@ -162,8 +193,9 @@ export function createFlipReferenceGpuRuntime(
             buffers,
             pipelines,
             bindGroups,
-            slots: buffers.slice(5).map((buffer) => ({ buffer, pending: false, mapping: null, sequence: 0 })),
+            slots: buffers.slice(6).map((buffer) => ({ buffer, pending: false, mapping: null, sequence: 0 })),
             bytes: resources.reduce((sum, resource) => sum + resource.bytes, 0),
+            pressureWorkgroupSize,
             ready: Promise.resolve(),
             error: null,
             telemetryError: null,
@@ -262,6 +294,9 @@ export function recordFlipReferenceFrame(
     void collectFlipReferenceGpuStatus(gpu);
     gpu.lastEncoder = encoder;
     const core = gpu.core;
+    const parallelSubsteps = core._removalEnabled && core.capacity >= FLIP_REFERENCE_PARALLEL_PRESSURE_MIN_PARTICLES ? minSubsteps : 0;
+    const parallelIterations = Math.min(FLIP_REFERENCE_PARALLEL_PRESSURE_ITERATIONS, core._maxPressureIterations);
+    const fusedParallelUpdates = core.capacity < FLIP_REFERENCE_PARALLEL_PRESSURE_DISTRIBUTED_PARTICLES && gpu.pressureWorkgroupSize >= 512;
     core._device.queue.writeBuffer(core._uniformBuffer, 0, core._params);
     gpu.frameData.set([dt, maxSubDt, minSubsteps, cfl]);
     core._device.queue.writeBuffer(gpu.frameBuffer, 0, gpu.frameData);
@@ -301,7 +336,25 @@ export function recordFlipReferenceFrame(
         indirect(gpu, pass, "fixGpuPressureGauges", 0);
         indirect(gpu, pass, "prepareGpuPressure", 0);
         indirect(gpu, pass, "initializeGpuPressure", 0);
-        indirect(gpu, pass, "solveGpuPressure", 4);
+        if (substep < parallelSubsteps) {
+            indirect(gpu, pass, "initializeParallelGpuPressure", 4);
+            direct(gpu, pass, "beginParallelPressure");
+            for (let iteration = 0; iteration < parallelIterations; iteration++) {
+                indirect(gpu, pass, "applyParallelPressure", 0);
+                if (fusedParallelUpdates) {
+                    direct(gpu, pass, "finishParallelPressureIteration");
+                } else {
+                    direct(gpu, pass, "alphaParallelPressure");
+                    indirect(gpu, pass, "updateParallelPressure", 0);
+                    direct(gpu, pass, "betaParallelPressure");
+                }
+            }
+            direct(gpu, pass, "finishParallelPressure");
+            indirect(gpu, pass, "continueParallelPressure", 0);
+            indirect(gpu, pass, "resumeGpuPressure", 4);
+        } else {
+            indirect(gpu, pass, "solveGpuPressure", 4);
+        }
         direct(gpu, pass, "updateGpuDispatch");
         indirect(gpu, pass, "project", 1);
         indirect(gpu, pass, "measureDivergence", 0);

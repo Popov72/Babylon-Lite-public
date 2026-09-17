@@ -125,6 +125,10 @@ followed by a recomputed true residual; residual replacement can restart CG with
 iteration budget. Diagnostics report actual convergence, iterations, L2 residual in velocity units,
 finite-volume divergence, collisions/fallbacks, live/capacity counts, and removal statistics.
 
+The standalone comparison oracle retains scalar float32 pressure. The GPU-resident UI runtime
+uses compensated high/low pressure components for accumulation, residual evaluation and projection,
+as specified in module 59, while retaining the same float32 matrix and acceptance tolerances.
+
 ## Numerical stage definitions
 
 With `R = sqrt(3)h/2` and `q = distance(face,marker)/R`, reference P2G uses
@@ -153,6 +157,44 @@ RK3 samples the projected grid at `x`, `x+dt*k1/2`, and `x+3dt*k2/4`, then advan
 projection toward `phi=0.2h`; invalid projection falls back to the last safe sample. Contact correction
 does not rescale the stored FLIP velocity. Remaining solid-interior markers are explicitly removed
 only when the removal stage is enabled; otherwise unresolved contacts fail the step.
+
+### Bounded swept advection
+
+`advection.ts` owns the shared RK2/RK3 trial and swept-contact helpers. Ordinary supported
+trajectories use the same full-step RK expression, `ceil(distance / (0.1h))` sweep intervals,
+collision projection and unchanged G2P velocity. Do not reject a proposed endpoint solely because
+the entire sweep would exceed the work budget: a collision near the start may resolve the move.
+
+`maxAdvectionSubsteps` remains 256 by default. In swept mode, the whole particle update shares
+`maxAdvectionSubsteps + 1` sweep samples, including segment starts, plus at most
+`maxAdvectionSubsteps` trial integrations. The existing bounded contact rechecks are separate
+from those sweep samples. Validate the setting as at most 16,777,215 so the endpoint counter and
+sample indices remain exactly representable. No velocity clamp or discarded successful-step time
+is used to satisfy the budget.
+
+For a well-predicted long proposal, sweep up to the remaining budget so any collision within
+that distance can resolve it. For an oversized first proposal whose embedded RK error exceeds
+0.01 cell, probe at most eight sweep samples for an early collision.
+An early hit completes the original full-step collision response. If the probe cannot complete,
+spend its samples but discard its tentative path, halve the trial timestep and enter refinement.
+Unsupported or nonfinite trial intermediates also request refinement, without latching an error
+from a discarded trial. The original grid sample must itself be supported and finite.
+
+Refined trials require each RK-stage velocity times its timestep to span at most half a cell,
+and the embedded midpoint/RK3 difference to be at most 0.01 cell (Euler/midpoint for RK2).
+Rejected trials halve their timestep; accepted segments consume their exact timestep and sweep
+samples, then may double the next trial up to the remaining physical time. Re-sample the frozen
+projected field at each accepted position, but never recompute or damp the stored G2P velocity.
+A resolved contact holds the particle at that contact for the remaining interval, matching the
+existing full-step swept-contact response rather than repeatedly pushing it into the same wall.
+Sweep work and integration attempts remain bounded across all retries/segments. Nonprogressing
+time, exhausted work, or unresolved unsupported/nonfinite sampling fails explicitly; publication
+retains the last completed fluid frame.
+
+Velocity sampling is split into a pure value/support helper and the existing reporting wrapper.
+Only accepted advection samples or an unrecoverable sampling failure may latch the shared
+velocity-band flag; clearing a shared flag to undo a rejected trial would erase other markers'
+errors and is forbidden.
 
 ## Native-style particle removal
 
