@@ -43,18 +43,19 @@ export interface FluidProfilerImpl extends FluidProfiler {
     /** Resolve this frame's written queries + copy them to a readback buffer. Must be
      *  recorded LAST in the frame's encoder (after every timed pass), before submit. */
     resolveInto(encoder: GPUCommandEncoder): void;
+    /** Collect queries whose resolve/copy command has already been submitted. */
+    collectSubmitted(): Promise<void>;
     /** Latest computed GPU times (ms), or null before the first readback has completed.
      *  `total` is the SUM of the individually timed passes; `frameTotal` is the whole
      *  frame's GPU time (frameStart→frameStop envelope), so `frameTotal - total` is the
      *  untimed remainder ("Other"). frameTotal is 0 until the envelope has been read. */
-    results(): { stages: Record<string, number>; total: number; frameTotal: number } | null;
+    results(): { stages: Record<string, number>; total: number; frameTotal: number; overflowed?: boolean } | null;
     /** Free the query set + all buffers. */
     dispose(): void;
 }
 
-// Query-set capacity. Iterative backends use stageSpan(), so substeps and solver
-// iterations consume one pair per stage rather than one pair per dispatch.
-// Remaining render passes fit comfortably; overflow still degrades safely.
+// Default query capacity. Async backends can request a larger window for their
+// independently submitted command spans; exhausted windows are reported incomplete.
 const CAPACITY = 256;
 // Mappable readback buffers cycled so a buffer is never re-used while its map is in
 // flight (guards against overlapping mapAsync on the same buffer).
@@ -64,6 +65,7 @@ interface StageRec {
     stage: string;
     begin: number;
     end: number;
+    outsideFrame?: boolean;
 }
 interface Inflight {
     buf: GPUBuffer;
@@ -73,31 +75,37 @@ interface Inflight {
      *  or -1 when the envelope was not encoded this frame. */
     frameBegin: number;
     frameEnd: number;
+    overflowed: boolean;
+    sequence: number;
 }
 
 /** Create the fluid GPU profiler. Throws if the device lacks the "timestamp-query"
  *  feature — the lab catches this and shows a UI fallback. */
 /** @internal */
-export function createFluidProfiler(device: GPUDevice): FluidProfilerImpl {
+export function createFluidProfiler(device: GPUDevice, queryCapacity = CAPACITY): FluidProfilerImpl {
     if (!device.features.has("timestamp-query")) {
         throw new Error("timestamp-query feature not available");
     }
+    if (!Number.isInteger(queryCapacity) || queryCapacity < 8 || queryCapacity > 8192) {
+        throw new RangeError("GPU profiler query capacity must be an integer from 8 to 8192.");
+    }
 
-    const querySet = device.createQuerySet({ label: "fluid-timing", type: "timestamp", count: CAPACITY });
+    const querySet = device.createQuerySet({ label: "fluid-timing", type: "timestamp", count: queryCapacity });
     const resolveBuf = device.createBuffer({
         label: "fluid-timing-resolve",
-        size: CAPACITY * 8,
+        size: queryCapacity * 8,
         usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC,
     });
     const free: GPUBuffer[] = [];
+    const buffers: GPUBuffer[] = [];
     for (let i = 0; i < READBACK_POOL; i++) {
-        free.push(
-            device.createBuffer({
-                label: `fluid-timing-readback-${i}`,
-                size: CAPACITY * 8,
-                usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
-            })
-        );
+        const buffer = device.createBuffer({
+            label: `fluid-timing-readback-${i}`,
+            size: queryCapacity * 8,
+            usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+        });
+        free.push(buffer);
+        buffers.push(buffer);
     }
 
     let cursor = 0;
@@ -113,12 +121,16 @@ export function createFluidProfiler(device: GPUDevice): FluidProfilerImpl {
     // Copies recorded in a PREVIOUS frame's resolveInto — submitted by now, so safe to
     // map. Reaped at the top of the next resolveInto.
     const inflight: Inflight[] = [];
-    let latest: { stages: Record<string, number>; total: number; frameTotal: number } | null = null;
+    let latest: { stages: Record<string, number>; total: number; frameTotal: number; overflowed?: boolean } | null = null;
     let disposed = false;
+    let overflowed = false;
+    let sequence = 0;
+    let publishedSequence = 0;
 
     // Allocate the next free begin/end query pair, or null when the set is full.
     function allocPair(): { begin: number; end: number } | null {
-        if (cursor + 2 > CAPACITY) {
+        if (cursor + 2 > queryCapacity) {
+            overflowed = true;
             return null;
         }
         const begin = cursor;
@@ -129,47 +141,76 @@ export function createFluidProfiler(device: GPUDevice): FluidProfilerImpl {
 
     // Map the buffers whose copy has already been submitted (previous frames), read
     // the timestamps, reduce to per-stage ms, then return the buffer to the pool.
-    function reap(): void {
+    async function reap(): Promise<void> {
         if (inflight.length === 0) {
             return;
         }
         const ready = inflight.splice(0, inflight.length);
-        for (const e of ready) {
-            void e.buf
-                .mapAsync(GPUMapMode.READ)
-                .then(() => {
-                    if (disposed) {
-                        return;
-                    }
-                    const ts = new BigInt64Array(e.buf.getMappedRange());
-                    const stages: Record<string, number> = {};
-                    let total = 0;
-                    for (const r of e.records) {
-                        // GPU nanoseconds; clamp to avoid tiny negatives from quantization.
-                        const ms = Math.max(0, Number(ts[r.end]! - ts[r.begin]!) / 1e6);
-                        stages[r.stage] = (stages[r.stage] ?? 0) + ms;
-                        total += ms;
-                    }
-                    // Whole-frame GPU time from the envelope (frameStart → frameStop).
-                    let frameTotal = 0;
-                    if (e.frameBegin >= 0 && e.frameEnd >= 0) {
-                        frameTotal = Math.max(0, Number(ts[e.frameEnd]! - ts[e.frameBegin]!) / 1e6);
-                    }
-                    latest = { stages, total, frameTotal };
-                    e.buf.unmap();
-                    free.push(e.buf);
-                })
-                .catch(() => {
-                    // Device lost / buffer destroyed mid-flight: drop this readback. If the
-                    // profiler is still alive, recycle the buffer.
-                    if (!disposed) {
-                        free.push(e.buf);
-                    }
-                });
-        }
+        await Promise.all(
+            ready.map((e) =>
+                e.buf
+                    .mapAsync(GPUMapMode.READ)
+                    .then(() => {
+                        if (disposed) {
+                            return;
+                        }
+                        const ts = new BigInt64Array(e.buf.getMappedRange());
+                        const stages: Record<string, number> = {};
+                        let total = 0;
+                        let outsideFrame = 0;
+                        for (const r of e.records) {
+                            // GPU nanoseconds; clamp to avoid tiny negatives from quantization.
+                            const ms = Math.max(0, Number(ts[r.end]! - ts[r.begin]!) / 1e6);
+                            stages[r.stage] = (stages[r.stage] ?? 0) + ms;
+                            total += ms;
+                            if (r.outsideFrame) {
+                                outsideFrame += ms;
+                            }
+                        }
+                        // Whole-frame GPU time from the envelope (frameStart → frameStop).
+                        let frameTotal = 0;
+                        if (e.frameBegin >= 0 && e.frameEnd >= 0) {
+                            frameTotal = Math.max(0, Number(ts[e.frameEnd]! - ts[e.frameBegin]!) / 1e6);
+                        }
+                        frameTotal += outsideFrame;
+                        if (e.sequence >= publishedSequence) {
+                            publishedSequence = e.sequence;
+                            latest = { stages, total, frameTotal, ...(e.overflowed ? { overflowed: true } : {}) };
+                        }
+                    })
+                    .catch((error: unknown) => {
+                        if (!disposed) {
+                            if (e.sequence >= publishedSequence) {
+                                publishedSequence = e.sequence;
+                                latest = null;
+                            }
+                            console.warn("[fluid] GPU timestamp readback failed", error);
+                        }
+                    })
+                    .finally(() => {
+                        if (e.buf.mapState === "mapped") {
+                            e.buf.unmap();
+                        }
+                        if (!disposed) {
+                            free.push(e.buf);
+                        }
+                    })
+            )
+        );
     }
 
     return {
+        commandSpan(encoder: GPUCommandEncoder, stage: string) {
+            const p = allocPair();
+            if (!p) {
+                return undefined;
+            }
+            frameRecords.push({ stage, begin: p.begin, end: p.end, outsideFrame: true });
+            encoder.beginComputePass({ label: "gpu-command-start", timestampWrites: { querySet, beginningOfPassWriteIndex: p.begin } }).end();
+            return () => {
+                encoder.beginComputePass({ label: "gpu-command-end", timestampWrites: { querySet, endOfPassWriteIndex: p.end } }).end();
+            };
+        },
         stageSpan(stage: string) {
             const p = allocPair();
             if (!p) {
@@ -195,6 +236,7 @@ export function createFluidProfiler(device: GPUDevice): FluidProfilerImpl {
             frameBeginIdx = -1;
             frameEndIdx = -1;
             frameStopReserved = null;
+            overflowed = false;
         },
         frameStart(encoder: GPUCommandEncoder): void {
             // Reserve BOTH envelope pairs first (start now, stop for later) so the frame
@@ -220,7 +262,7 @@ export function createFluidProfiler(device: GPUDevice): FluidProfilerImpl {
         },
         resolveInto(encoder: GPUCommandEncoder): void {
             // Map previous frames' readbacks (their copies have been submitted).
-            reap();
+            void reap();
             if (cursor === 0) {
                 return;
             }
@@ -233,21 +275,20 @@ export function createFluidProfiler(device: GPUDevice): FluidProfilerImpl {
             const count = cursor;
             encoder.resolveQuerySet(querySet, 0, count, resolveBuf, 0);
             encoder.copyBufferToBuffer(resolveBuf, 0, buf, 0, count * 8);
-            inflight.push({ buf, count, records: frameRecords.slice(), frameBegin: frameBeginIdx, frameEnd: frameEndIdx });
+            inflight.push({ buf, count, records: frameRecords.slice(), frameBegin: frameBeginIdx, frameEnd: frameEndIdx, overflowed, sequence: ++sequence });
         },
-        results(): { stages: Record<string, number>; total: number; frameTotal: number } | null {
+        collectSubmitted: reap,
+        results(): { stages: Record<string, number>; total: number; frameTotal: number; overflowed?: boolean } | null {
             return latest;
         },
         dispose(): void {
             disposed = true;
             querySet.destroy();
             resolveBuf.destroy();
-            for (const b of free) {
+            for (const b of buffers) {
                 b.destroy();
             }
-            for (const e of inflight) {
-                e.buf.destroy();
-            }
+            buffers.length = 0;
             free.length = 0;
             inflight.length = 0;
         },

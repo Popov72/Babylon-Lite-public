@@ -63,6 +63,8 @@ import {
     updateFluidFlowEmitter,
 } from "../core/sim-common.js";
 import { createFluidTimestepScheduler, deferFluidTimestep, getFluidTimestepDiagnostics, resetFluidTimestepScheduler, scheduleFluidTimestep } from "../core/timestep-scheduler.js";
+import { FLIP_FACE_APERTURE_WGSL } from "./flip-face-aperture.js";
+import { FLIP_DENSITY_CORRECTION_WGSL } from "./flip-density-correction.js";
 
 const WORKGROUP_SIZE = 64;
 const MAX_WORKGROUPS = 65535;
@@ -638,6 +640,8 @@ export interface FlipOptions extends FluidSimBaseOptions {
     restitution?: number;
     /** Explicit world-space xyz seed positions. */
     initialPositions?: Float32Array;
+    /** Explicit world-space xyz seed velocities aligned with initialPositions. */
+    initialVelocities?: Float32Array;
 }
 
 interface MultigridLevel {
@@ -1237,6 +1241,7 @@ ${COMMON_WGSL}
 ${sceneDecl}
 @group(0) @binding(0) var<storage, read_write> faceGeometry: array<vec2<f32>>;
 @group(0) @binding(1) var<uniform> p: Params;
+${FLIP_FACE_APERTURE_WGSL}
 
 fn faceCenter(kind: u32, c: vec3<i32>) -> vec3<f32> {
     var offset = vec3<f32>(0.5);
@@ -1244,10 +1249,6 @@ fn faceCenter(kind: u32, c: vec3<i32>) -> vec3<f32> {
     if (kind == FACE_V) { offset.y = 0.0; }
     if (kind == FACE_W) { offset.z = 0.0; }
     return p.originDx.xyz + (vec3<f32>(c) + offset) * p.originDx.w;
-}
-
-fn aperture(phi: f32) -> f32 {
-    return clamp(0.5 + phi / p.originDx.w, 0.0, 1.0);
 }
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
@@ -1278,11 +1279,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
         tangentA.x = 0.5 * p.originDx.w;
         tangentB.y = 0.5 * p.originDx.w;
     }
-    let open = 0.25 * (
-        aperture(sceneSdf(center - tangentA - tangentB, 0.0))
-        + aperture(sceneSdf(center + tangentA - tangentB, 0.0))
-        + aperture(sceneSdf(center - tangentA + tangentB, 0.0))
-        + aperture(sceneSdf(center + tangentA + tangentB, 0.0)));
+    let open = flipFaceAperture(vec4<f32>(
+        sceneSdf(center - tangentA - tangentB, 0.0),
+        sceneSdf(center + tangentA - tangentB, 0.0),
+        sceneSdf(center - tangentA + tangentB, 0.0),
+        sceneSdf(center + tangentA + tangentB, 0.0)), p.originDx.w);
     var solidVelocity = 0.0;
     if (p.counts.z != 0u && open < 1.0) {
         let epsilon = max(1.0e-4, min(p.sim.x, 0.002));
@@ -1642,6 +1643,7 @@ ${sceneDecl}
 @group(0) @binding(3) var<uniform> p: Params;
 @group(0) @binding(4) var<storage, read_write> accum: array<FaceAccum>;
 ${fractionalSolids ? "@group(0) @binding(7) var<storage, read> faceGeometry: array<vec2<f32>>;" : ""}
+${FLIP_DENSITY_CORRECTION_WGSL}
 
 fn faceValue(kind: u32, c: vec3<i32>) -> f32 {
     let index = globalFaceIndex(kind, c, p);
@@ -1704,7 +1706,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
         boundaryMoves = abs(sceneSdf(center, 0.002) - sceneSdf(center, 0.0)) > 1.0e-5;
     }
     let suppressBoundaryCorrection = nearSolid && !boundaryMoves;
-    let expansion = select(min(compression * 0.1 / max(p.sim.x, 1.0e-6), 0.5 / max(p.sim.x, 1.0e-6)), 0.0, suppressBoundaryCorrection);
+    let expansion = select(flipDensityExpansion(compression, p.sim.x), 0.0, suppressBoundaryCorrection);
     divergence[i] = div / p.originDx.w - expansion;
 }`;
 }
@@ -4446,6 +4448,10 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
     const spawnMax: [number, number, number] = options.spawnMax ? [...options.spawnMax] : [2, 12, 2];
     let spawnAccept: ((x: number, y: number, z: number) => boolean) | null = null;
     const initialPositions = options.initialPositions ?? null;
+    const initialVelocities = options.initialVelocities ?? null;
+    if (initialVelocities && (!initialPositions || initialVelocities.length !== initialPositions.length)) {
+        throw new RangeError("[FLIP] initialVelocities must match initialPositions.");
+    }
     let gravity = options.gravity ?? 9.8;
     let flipRatio = options.flipRatio ?? 0.95;
     let pressureIterations = Math.max(1, Math.round(options.pressureIterations ?? 40));
@@ -5037,6 +5043,9 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
                 x = initialPositions[i * 3]!;
                 y = initialPositions[i * 3 + 1]!;
                 z = initialPositions[i * 3 + 2]!;
+                vx = initialVelocities?.[i * 3] ?? 0;
+                vy = initialVelocities?.[i * 3 + 1] ?? 0;
+                vz = initialVelocities?.[i * 3 + 2] ?? 0;
             } else if (flowPositions && i < initialTargetCount) {
                 x = flowPositions[i * 3]!;
                 y = flowPositions[i * 3 + 1]!;

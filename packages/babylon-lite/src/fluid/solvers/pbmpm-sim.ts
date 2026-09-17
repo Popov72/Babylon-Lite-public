@@ -291,7 +291,16 @@ function buildGridUpdateWgsl(scene: SceneSdfSpec | null): string {
     const gridInject = scene ? sceneSdfGridBindingWgsl(scene, 3) : "";
     const decls = scene ? `${scene.struct}\n@group(0) @binding(2) var<uniform> sceneSdfParams: SceneSdfParams;${gridInject}\n${scene.sdf}\n${SCENE_NORMAL_WGSL}` : "";
     const sceneResolve = scene
-        ? `
+        ? scene.movingBoundaries
+            ? `
+    let samplePoint = nodePos + disp;
+    if (sceneSdf(samplePoint, 0.0) < 0.0) {
+        let n = sceneNormal(samplePoint, 0.0);
+        let vN = -(sceneSdf(samplePoint, 0.002) - sceneSdf(samplePoint, 0.0)) / 0.002;
+        let boundaryDisp = vN * p.misc.x * n;
+        disp = boundaryDisp + reflectMotion(disp - boundaryDisp, -n, p.misc.y);
+    }`
+            : `
     if (sceneSdf(nodePos + disp, 0.0) < 0.0) {
         let n = sceneNormal(nodePos + disp, 0.0);
         disp = reflectMotion(disp, -n, p.misc.y);
@@ -388,7 +397,17 @@ function buildIntegrateWgsl(scene: SceneSdfSpec | null): string {
     const decls = scene ? `${scene.struct}\n@group(0) @binding(2) var<uniform> sceneSdfParams: SceneSdfParams;${gridInject}\n${scene.sdf}\n${SCENE_NORMAL_WGSL}` : "";
     const lifecycleBinding = scene ? (scene.sdfGrid ? 4 : 3) : 2;
     const sceneResolve = scene
-        ? `
+        ? scene.movingBoundaries
+            ? `
+    let sd = sceneSdf(np, 0.0);
+    if (sd < 0.0) {
+        let n = sceneNormal(np, 0.0);
+        let vN = -(sceneSdf(np, 0.002) - sceneSdf(np, 0.0)) / 0.002;
+        let boundaryDisp = vN * p.misc.x * n;
+        np = np - sd * n;
+        nextDisp = boundaryDisp + reflectMotion(nextDisp - boundaryDisp, -n, p.misc.y);
+    }`
+            : `
     let sd = sceneSdf(np, 0.0);
     if (sd < 0.0) {
         let n = sceneNormal(np, 0.0);
@@ -1490,6 +1509,41 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
     seed();
     writeDynamicParams(1 / 120, 1 / 60);
 
+    let settlePipeline: GPUComputePipeline | null = null;
+    let settleBindGroup: GPUBindGroup | null = null;
+    function settleMotion(encoder: GPUCommandEncoder): void {
+        if (!settlePipeline) {
+            settlePipeline = device.createComputePipeline({
+                label: "pbmpm-settle-motion",
+                layout: "auto",
+                compute: {
+                    module: device.createShaderModule({
+                        label: "pbmpm-settle-motion",
+                        code: `${PARTICLE_STRUCT}
+@group(0) @binding(0) var<storage, read_write> particles: array<Particle>;
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if (gid.x >= arrayLength(&particles)) { return; }
+    particles[gid.x].displacement = vec3<f32>(0.0);
+    particles[gid.x].D = mat3x3<f32>(vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0));
+}`,
+                    }),
+                    entryPoint: "main",
+                },
+            });
+            settleBindGroup = device.createBindGroup({
+                layout: settlePipeline.getBindGroupLayout(0),
+                entries: [{ binding: 0, resource: { buffer: particleBuffer } }],
+            });
+        }
+        const pass = encoder.beginComputePass({ label: "pbmpm-settle-motion" });
+        pass.setPipeline(settlePipeline);
+        pass.setBindGroup(0, settleBindGroup);
+        pass.dispatchWorkgroups(Math.ceil(count / WORKGROUP_SIZE));
+        pass.end();
+        encoder.clearBuffer(velocityBuffer);
+    }
+
     return {
         count,
         get activeCount(): number {
@@ -1530,6 +1584,7 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
         get timestepDiagnostics() {
             return getFluidTimestepDiagnostics(timestepScheduler);
         },
+        settle: settleMotion,
         step(encoder: GPUCommandEncoder, dt: number): void {
             pollFluidActiveCount(flowState);
             const schedule = scheduleFluidTimestep(timestepScheduler, dt, substepsMut, maxSubDt);

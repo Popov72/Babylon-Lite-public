@@ -14,6 +14,8 @@ import type { FluidTimestepDiagnostics } from "./timestep-scheduler.js";
  *  `fluid/core/gpu-profiler.ts`; applications only bundle it when they opt in. */
 /** @internal */
 export interface FluidProfiler {
+    /** Time an independently submitted encoder; invoke the returned closure before finishing it. */
+    commandSpan?(encoder: GPUCommandEncoder, stage: string): (() => void) | undefined;
     /** timestampWrites for a pass tagged `stage` (allocates a begin/end query
      *  pair), or undefined to disable timing for this pass. The returned object is
      *  structurally valid for BOTH GPUComputePassDescriptor.timestampWrites and
@@ -90,6 +92,8 @@ export interface FluidSim {
     /** Contiguous active prefix safe for direct instanced rendering. Omitted when active
      *  slots may contain holes, in which case renderers must draw the full capacity. */
     readonly renderCount?: number;
+    /** Optional GPU-owned billboard arguments (vertex count, instance count, first vertex, first instance). */
+    readonly renderIndirectBuffer?: GPUBuffer;
     readonly particleRadius: number;
     /** Optional multiplier on the screen-space surface impostor size (and the
      *  bilateral-blur kernel derived from it). Backends whose particles settle at
@@ -125,6 +129,10 @@ export interface FluidSim {
     prepare?(): void;
     /** Encode one simulation step into `encoder`. `dt` is seconds. */
     step(encoder: GPUCommandEncoder, dt: number): void;
+    /** Optional offline/serialized stepping path for backends that await GPU results between passes. */
+    submitStep?(dt: number, beforeSubstep?: (deltaSeconds: number) => void): Promise<void>;
+    /** Clear solver motion/affine state while preserving current particle positions. */
+    settle?(encoder: GPUCommandEncoder): void;
     /** Rebuild a dirty polygon surface from the current particle state without
      * advancing the simulation. FLIP uses this when reconstruction settings
      * change while an application is paused. */
@@ -662,6 +670,9 @@ export interface SceneSdfSpec {
      *  full push-out + restitution reflect against the SDF (for thin curved shells like
      *  the capsule that the coarse grid wall would miss). */
     gridConfine?: boolean;
+    /** Resolve collision velocity relative to moving SDF boundaries in solvers whose
+     *  default confinement otherwise samples only the current geometry. */
+    movingBoundaries?: boolean;
 }
 
 export const SCENE_NORMAL_WGSL = /* wgsl */ `

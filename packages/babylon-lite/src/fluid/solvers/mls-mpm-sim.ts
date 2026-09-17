@@ -801,9 +801,9 @@ ${writeVelocity}
 // at >0) — packs the fluid against the wall over the kernel width, with no glued layer
 // and no gap (a per-particle position snap causes one or the other). A per-particle
 // container (gridConfine === false) skips the grid wall — the coarse grid reflection
-// would miss its thin curved shell — and confines per-particle in G2P instead. Static
-// walls only; a moving boundary (paddle: |−∂sdf/∂t| large) is left to the per-particle
-// G2P moving-boundary resolve.
+// would miss its thin curved shell — and confines per-particle in G2P instead. Moving
+// walls remain G2P-only by default; movingBoundaries opts into the same relative
+// boundary-velocity resolve at inside grid nodes so the MLS stencil carries their motion.
 function buildUpdateGridWgsl(scene: SceneSdfSpec | null, activeBlocks: boolean, pagedGrid: boolean): string {
     const closed = !!scene && scene.gridConfine !== false;
     // Baked SDF grid (optional): only the CLOSED path injects the scene SDF here, so the
@@ -812,15 +812,21 @@ function buildUpdateGridWgsl(scene: SceneSdfSpec | null, activeBlocks: boolean, 
     // (0=cells, 1=p, 2=sceneSdfParams).
     const gridInject = closed ? sceneSdfGridBindingWgsl(scene, 3) : "";
     const decls = closed ? `${scene.struct}\n@group(0) @binding(2) var<uniform> sceneSdfParams: SceneSdfParams;${gridInject}\n${scene.sdf}\n${SCENE_NORMAL_WGSL}` : "";
+    const movingWall = scene?.movingBoundaries
+        ? ` else {
+            let bvel = vN * n;
+            v = bvel + reflectVel(v - bvel, -n, p.misc2.x);
+        }`
+        : "";
     const wall = closed
         ? `
     let cw = p.origin.xyz + (vec3<f32>(f32(x), f32(y), f32(z)) + 0.5) * p.origin.w;
     if (sceneSdf(cw, 0.0) < 0.0) {
         let vN = -(sceneSdf(cw, 0.002) - sceneSdf(cw, 0.0)) / 0.002; // boundary normal speed
-        if (abs(vN) < 0.05) { // static wall only — the moving paddle is handled in G2P
-            let n = sceneNormal(cw, 0.0);
+        let n = sceneNormal(cw, 0.0);
+        if (abs(vN) < 0.05) {
             v = reflectVel(v, -n, p.misc2.x);
-        }
+        }${movingWall}
     }`
         : "";
     const activeDecls = activeBlocks
@@ -2646,6 +2652,41 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
         }
     }
 
+    let settlePipeline: GPUComputePipeline | null = null;
+    let settleBindGroup: GPUBindGroup | null = null;
+    function settleMotion(encoder: GPUCommandEncoder): void {
+        if (!settlePipeline) {
+            settlePipeline = device.createComputePipeline({
+                label: "mls-mpm-settle-motion",
+                layout: "auto",
+                compute: {
+                    module: device.createShaderModule({
+                        label: "mls-mpm-settle-motion",
+                        code: `${PARTICLE_STRUCT}
+@group(0) @binding(0) var<storage, read_write> particles: array<Particle>;
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if (gid.x >= arrayLength(&particles)) { return; }
+    particles[gid.x].v = vec3<f32>(0.0);
+    particles[gid.x].C = mat3x3<f32>(vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0));
+}`,
+                    }),
+                    entryPoint: "main",
+                },
+            });
+            settleBindGroup = device.createBindGroup({
+                layout: settlePipeline.getBindGroupLayout(0),
+                entries: [{ binding: 0, resource: { buffer: particleBuffer } }],
+            });
+        }
+        const pass = encoder.beginComputePass({ label: "mls-mpm-settle-motion" });
+        pass.setPipeline(settlePipeline);
+        pass.setBindGroup(0, settleBindGroup);
+        pass.dispatchWorkgroups(Math.ceil(count / WORKGROUP_SIZE));
+        pass.end();
+        encoder.clearBuffer(velocityBuffer);
+    }
+
     return {
         count,
         get activeCount(): number {
@@ -2719,6 +2760,7 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
         get timestepDiagnostics() {
             return getFluidTimestepDiagnostics(timestepScheduler);
         },
+        settle: settleMotion,
         step(encoder: GPUCommandEncoder, dt: number): void {
             if (pendingAsyncError) {
                 throw pendingAsyncError;

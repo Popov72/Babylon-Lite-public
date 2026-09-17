@@ -48,6 +48,8 @@ export interface FluidGridSettings {
 // values. `demoParams` is a generic bag captured from `FluidDemo.demoParams()`
 // (numeric params only) and restored via `FluidDemo.applyParam()`.
 export interface PairState {
+    /** Explicit FLIP implementation identity. Absence selects the production backend. */
+    backendId?: "flip-reference";
     /** Explicit interpretation of authored solver values. Inferred once for legacy files. */
     simulationSemantics?: FluidSimulationSemantics;
     /** Physics-slider values for the pair's method (core-owned SCHEMAS). */
@@ -91,7 +93,7 @@ export interface PairState {
     /** PB-MPM material enum: 0 liquid, 1 elastic, 2 sand, 3 viscoelastic. */
     material?: number;
     /** Optional authored ArcRotate camera framing. */
-    camera?: { alpha: number; beta: number; radius: number; target?: [number, number, number] };
+    camera?: { alpha: number; beta: number; radius: number; target?: [number, number, number]; fov?: number; mirrorX?: boolean };
     /** Optional authored FreeCamera pose. Kept separate because position/target do not map to ArcRotate alpha/beta/radius. */
     freeCamera?: { position: [number, number, number]; target: [number, number, number] };
     // -- Surface-render settings (per-pair, restored on switch). All optional so old
@@ -155,6 +157,9 @@ export interface PairState {
         tMax: number;
         poolScale: number;
         blurRadius: number;
+        spraySize?: number;
+        sprayIntensity?: number;
+        spraySeparation?: number;
         lightIntensity: number;
         ambient: number;
         aoStrength: number;

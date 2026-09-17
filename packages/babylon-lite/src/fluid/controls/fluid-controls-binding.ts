@@ -27,7 +27,7 @@ import { resolveFluidControlsCapabilities } from "./controls-capabilities.js";
 import type { FluidControlsCapabilities } from "./controls-capabilities.js";
 import { normalizeFluidFlipDiscretization, resolveFluidRenderMode } from "../core/fluid-policy.js";
 import type { FluidRenderMode } from "../core/fluid-policy.js";
-import { planFluidInitialState } from "../core/initial-state-plan.js";
+import { fluidInitialEmitterVolume } from "../core/initial-state-plan.js";
 import { resolveFluidSimulationConfig } from "../core/simulation-config.js";
 import type { FluidDebug } from "../rendering/fluid-surface-render.js";
 import type { FoamDebugTexture } from "../rendering/foam-render.js";
@@ -51,8 +51,16 @@ const RECONFIGURATION_KEYS: readonly ControlKey[] = [
     "fusedBlockDiscovery",
 ];
 
-const FLIP_DEFERRED_RECONFIGURATION_KEYS: readonly ControlKey[] = ["count", "gridPosition", "gridSize", "gridResolution", "markersPerCell", "pagedGrid", "pagedGridMaxPages"];
-const MLS_MPM_DEFERRED_RECONFIGURATION_KEYS: readonly ControlKey[] = ["pagedGridMaxPages"];
+const GRID_DEFERRED_RECONFIGURATION_KEYS: readonly ControlKey[] = ["gridPosition", "gridSize"];
+const FLIP_DEFERRED_RECONFIGURATION_KEYS: readonly ControlKey[] = [
+    "count",
+    ...GRID_DEFERRED_RECONFIGURATION_KEYS,
+    "gridResolution",
+    "markersPerCell",
+    "pagedGrid",
+    "pagedGridMaxPages",
+];
+const MLS_MPM_DEFERRED_RECONFIGURATION_KEYS: readonly ControlKey[] = [...GRID_DEFERRED_RECONFIGURATION_KEYS, "pagedGridMaxPages"];
 
 const RENDER_PROFILE_KEYS: readonly ControlKey[] = [
     "polygonShader",
@@ -98,6 +106,7 @@ export interface FluidControlsMemoryTarget {
     readonly options: FluidSimulationOptions;
     readonly activeCount?: number;
     readonly restartActiveCount?: number;
+    readonly restartActiveCountEstimated?: boolean;
     readonly currentGpuBytes?: number;
 }
 
@@ -107,6 +116,7 @@ export interface FluidControlsMemoryProjection {
     readonly foamCapacity: number;
     readonly restartActiveCount: number;
     readonly restartParticleCount: number;
+    readonly restartActiveCountEstimated: boolean;
     readonly plans: readonly FluidAllocationPlan[];
 }
 
@@ -124,8 +134,10 @@ export interface FluidControlsSceneTargetOptions
                 | "samplingType"
                 | "particleRadius"
                 | "groundY"
+                | "backend"
                 | "flow"
                 | "initialPositions"
+                | "initialVelocities"
                 | "sceneSdf"
                 | "forceField"
                 | "profiler"
@@ -172,6 +184,7 @@ interface FluidControlsBindingRuntime<THostState = unknown> {
 interface FluidControlsRestartTarget {
     readonly simulation: FluidSimulation;
     readonly method: FluidMethod;
+    readonly backend?: FluidSimulationOptions["backend"];
     readonly particleCount: number;
     readonly gridResolution?: number;
     readonly markersPerCell?: number;
@@ -271,8 +284,12 @@ function normalizedFoam(foam: FluidFoamValues): FluidFoamValues {
         "softness",
         "density",
         "subsurfaceStrength",
+        "spraySize",
+        "sprayIntensity",
+        "spraySeparation",
     ] as const) {
-        result[key] = finite(result[key], `foam.${key}`);
+        const fallback = key === "spraySize" ? 0.55 : key === "sprayIntensity" ? 1.4 : key === "spraySeparation" ? 1 : undefined;
+        result[key] = finite(result[key] ?? fallback!, `foam.${key}`);
     }
     if (result.energySpeedMax < result.energySpeedMin) {
         [result.energySpeedMin, result.energySpeedMax] = [result.energySpeedMax, result.energySpeedMin];
@@ -334,7 +351,19 @@ export function normalizeFluidControls(values: Readonly<FluidControlValues>, opt
     for (const [key, value] of Object.entries(normalized.schema)) {
         normalized.schema[key] = finite(value, `schema.${key}`);
     }
+    if (capabilities.physicsParameters) {
+        const schema: Record<string, number> = {};
+        for (const key of capabilities.physicsParameters) {
+            if (normalized.schema[key] !== undefined) {
+                schema[key] = normalized.schema[key]!;
+            }
+        }
+        normalized.schema = schema;
+    }
     normalized.foam = normalizedFoam(normalized.foam);
+    if (!capabilities.foam) {
+        normalized.foam.enabled = false;
+    }
     return normalized;
 }
 
@@ -351,7 +380,8 @@ export function deriveFluidControlsApplicationPlan(
     }
     const has = (keys: readonly ControlKey[]): boolean => keys.some((key) => changed.includes(key));
     const polygonSurfaceChanged = previous.schema.polygonSurface !== next.schema.polygonSurface;
-    const deferredKeys = next.method === "FLIP" ? FLIP_DEFERRED_RECONFIGURATION_KEYS : next.method === "MLS-MPM" ? MLS_MPM_DEFERRED_RECONFIGURATION_KEYS : [];
+    const deferredKeys =
+        next.method === "FLIP" ? FLIP_DEFERRED_RECONFIGURATION_KEYS : next.method === "MLS-MPM" ? MLS_MPM_DEFERRED_RECONFIGURATION_KEYS : GRID_DEFERRED_RECONFIGURATION_KEYS;
     const reconfigure = RECONFIGURATION_KEYS.some((key) => changed.includes(key) && !deferredKeys.includes(key));
     return {
         changedKeys: changed,
@@ -395,6 +425,22 @@ export function fluidFoamConfigFromControls(foam: Readonly<FluidFoamValues>): Fo
 function commonSimulationOptions(binding: FluidControlsBinding, target: FluidControlsBindingTarget, snapshot: FluidControlValues): FluidSimulationOptions {
     const method = fluidMethod(snapshot.method);
     const base = target.options;
+    const physics: Record<string, number> = {};
+    if (base.backend) {
+        if (snapshot.foam.enabled && !base.backend.supportsFoam) {
+            throw new Error("[fluid] selected backend does not support foam.");
+        }
+        if ((snapshot.schema.polygonSurface ?? 0) > 0 && !base.backend.renderModes.includes("polygon")) {
+            throw new Error("[fluid] selected backend does not support polygon rendering.");
+        }
+        for (const key of base.backend.physicsParameters) {
+            if (snapshot.schema[key] !== undefined) {
+                physics[key] = snapshot.schema[key]!;
+            }
+        }
+    } else {
+        Object.assign(physics, snapshot.schema);
+    }
     const publish = (requiredPages: number, capacity: number, overflow: boolean): void => {
         if (binding.disposed || binding.snapshot.method !== method) {
             return;
@@ -404,9 +450,12 @@ function commonSimulationOptions(binding: FluidControlsBinding, target: FluidCon
     return {
         ...base,
         method,
+        // Keep an explicit undefined when returning to production so collection update-merging
+        // replaces, rather than accidentally retains, the currently committed provider.
+        backend: base.backend,
         particleCount: positiveInteger(base.particleCount ?? snapshot.count, "target particle count"),
         physicsScale: snapshot.physScale,
-        physics: { ...snapshot.schema },
+        physics,
         explicitGrid: base.explicitGrid ?? true,
         gridResolution: method === "FLIP" ? snapshot.gridResolution : undefined,
         markersPerCell: method === "FLIP" ? snapshot.markersPerCell : undefined,
@@ -437,6 +486,9 @@ function allocationPlan(options: FluidSimulationOptions, activeCount?: number, l
     });
     if (!config.gridDim) {
         throw new Error("[fluid] controls memory projection requires resolved grid dimensions.");
+    }
+    if (options.backend?._allocationPlan) {
+        return options.backend._allocationPlan(options, config, limits);
     }
     const physics = config.physics;
     const foam = options.foam;
@@ -488,6 +540,7 @@ export function projectFluidControlsMemory(targets: readonly FluidControlsMemory
         foamCapacity: plans.reduce((sum, plan) => sum + plan.foamCapacity, 0),
         restartActiveCount: targets.reduce((sum, target) => sum + (target.restartActiveCount ?? target.activeCount ?? target.options.particleCount), 0),
         restartParticleCount: targets.reduce((sum, target) => sum + target.options.particleCount, 0),
+        restartActiveCountEstimated: targets.some((target) => target.restartActiveCountEstimated === true),
         plans,
     };
 }
@@ -561,6 +614,9 @@ function applyRenderState(binding: FluidControlsBinding, snapshot: FluidControlV
                 ambient: foam.ambient,
                 aoStrength: foam.aoStrength,
                 normalStrength: foam.normalStrength,
+                spraySize: foam.spraySize ?? 0.55,
+                sprayIntensity: foam.sprayIntensity ?? 1.4,
+                spraySeparation: foam.spraySeparation ?? 1,
                 debugByKind: foam.debugByKind ?? false,
                 debugTexture: foam.debugTexture as FoamDebugTexture,
             },
@@ -573,12 +629,15 @@ function targetSimulations(target: FluidSimulation | FluidSimulationCollection):
     return "simulations" in target ? target.simulations.filter((simulation) => !simulation.disposed) : target.disposed ? [] : [target];
 }
 
-function projectedRestartActiveCount(options: FluidSimulationOptions): number {
+function projectedRestartActiveCount(options: FluidSimulationOptions): { count: number; estimated: boolean } {
     if (options.initialPositions) {
-        return Math.min(options.particleCount, Math.floor(options.initialPositions.length / 3));
+        return { count: Math.min(options.particleCount, Math.floor(options.initialPositions.length / 3)), estimated: false };
     }
     if (!options.flow) {
-        return options.particleCount;
+        return { count: options.particleCount, estimated: false };
+    }
+    if (options.flow.initialEmittersFillCapacity) {
+        return { count: options.particleCount, estimated: false };
     }
     const config = resolveFluidSimulationConfig(options.compatibilityProfile ?? "fluid", {
         method: options.method,
@@ -593,13 +652,11 @@ function projectedRestartActiveCount(options: FluidSimulationOptions): number {
         physics: options.physics,
         semantics: options.semantics,
     });
-    return planFluidInitialState({
-        particleCapacity: options.particleCount,
-        particleVolume: config.particleVolume,
-        flow: options.flow,
-        bounds: { min: [...options.bounds.min], max: [...options.bounds.max] },
-        deriveInitialCount: options.method === "FLIP",
-    }).activeCount;
+    const initialVolume = fluidInitialEmitterVolume(options.flow);
+    return {
+        count: Math.min(options.particleCount, Math.max(0, Math.ceil(initialVolume / Math.max(config.particleVolume, 1e-12)))),
+        estimated: options.method === "FLIP" && options.flow.emitters.some((emitter) => emitter.enabled && emitter.behavior === "initial" && emitter.sampling === "volume"),
+    };
 }
 
 function projectionFor(
@@ -611,10 +668,12 @@ function projectionFor(
     return projectFluidControlsMemory(
         targets.map((target) => {
             const options = commonSimulationOptions(binding, target, snapshot);
+            const restartActive = restartRequired ? projectedRestartActiveCount(options) : null;
             return {
                 options,
                 activeCount: target.activeCount,
-                restartActiveCount: restartRequired ? projectedRestartActiveCount(options) : target.activeCount,
+                restartActiveCount: restartActive?.count ?? target.activeCount,
+                restartActiveCountEstimated: restartActive?.estimated ?? false,
                 currentGpuBytes: target.simulation.gpuBytes,
             };
         }),
@@ -677,6 +736,9 @@ function applyLiveSimulationState(targets: readonly FluidControlsBindingTarget[]
             });
         }
         for (const [key, value] of schema) {
+            if (target.simulation.options.backend && !target.simulation.options.backend.physicsParameters.includes(key)) {
+                continue;
+            }
             const previousValue = target.simulation.options.physics?.[key] ?? previous.schema[key];
             if (!Number.isFinite(previousValue)) {
                 throw new Error(`[fluid] cannot transactionally update simulation parameter "${key}" without its previous value.`);
@@ -713,12 +775,21 @@ function equalBounds(a: FluidSimulationOptions["bounds"], b: FluidSimulationOpti
     return a.min.every((value, axis) => value === b.min[axis]) && a.max.every((value, axis) => value === b.max[axis]);
 }
 
+function backendChanged(current: FluidSimulationOptions["backend"], desired: FluidSimulationOptions["backend"]): boolean {
+    return current !== desired || current?.id !== desired?.id;
+}
+
+function preserveReconfiguredState(target: FluidControlsBindingTarget): boolean {
+    return target.options.backend || target.simulation.options.backend ? false : (target.preserveState ?? true);
+}
+
 function restartTargetsFor(binding: FluidControlsBinding, snapshot: FluidControlValues, targets: readonly FluidControlsBindingTarget[]): FluidControlsRestartTarget[] {
     return targets.map((target) => {
         const desired = commonSimulationOptions(binding, target, snapshot);
         return {
             simulation: target.simulation,
             method: desired.method,
+            backend: desired.backend,
             particleCount: desired.particleCount,
             gridResolution: desired.gridResolution,
             markersPerCell: desired.markersPerCell,
@@ -730,22 +801,26 @@ function restartTargetsFor(binding: FluidControlsBinding, snapshot: FluidControl
 }
 
 function hasPendingRestartTargets(snapshot: FluidControlValues, targets: readonly FluidControlsRestartTarget[]): boolean {
-    if (snapshot.method !== "FLIP" && snapshot.method !== "MLS-MPM") {
-        return false;
-    }
     return targets.some((target) => {
         const current = target.simulation.options;
+        if (backendChanged(current.backend, target.backend)) {
+            return true;
+        }
+        const boundsChanged = !equalBounds(current.bounds, target.bounds);
         const pagedGridChanged = (current.pagedGrid ?? false) !== target.pagedGrid;
         const pageCapacityChanged = target.pagedGrid && current.pagedGridMaxPages !== target.pagedGridMaxPages;
         if (snapshot.method === "MLS-MPM") {
-            return pageCapacityChanged;
+            return boundsChanged || pageCapacityChanged;
+        }
+        if (snapshot.method !== "FLIP") {
+            return boundsChanged;
         }
         return (
             current.method !== target.method ||
             current.particleCount !== target.particleCount ||
             current.gridResolution !== target.gridResolution ||
             current.markersPerCell !== target.markersPerCell ||
-            !equalBounds(current.bounds, target.bounds) ||
+            boundsChanged ||
             pagedGridChanged ||
             pageCapacityChanged
         );
@@ -799,10 +874,14 @@ function publishPageDiagnostics(binding: FluidControlsBinding, method: FluidMeth
     binding._runtime.options.onPageDiagnostics?.(diagnostics);
 }
 
+function effectiveCapabilities(options: Pick<BindFluidControlsOptions, "controls" | "capabilities">): Partial<FluidControlsCapabilities> {
+    return { ...options.controls.capabilityOverrides, ...options.capabilities };
+}
+
 export function bindFluidControls<THostState = unknown>(options: BindFluidControlsOptions<THostState>): FluidControlsBinding {
     let snapshot = normalizeFluidControls(options.controls.getValues(), {
         maxParticleCount: options.maxParticleCount,
-        capabilities: options.capabilities,
+        capabilities: effectiveCapabilities(options),
         timestampQuerySupported: options.timestampQuerySupported,
     });
     const emptyPlan = deriveFluidControlsApplicationPlan(snapshot, snapshot, []);
@@ -817,12 +896,12 @@ export function bindFluidControls<THostState = unknown>(options: BindFluidContro
             foamEnabled: snapshot.foam.enabled,
             surfaceDebugActive: options.surfaceDebugActive?.() ?? snapshot.debug !== "none",
         }),
-        memory: { steadyBytes: 0, transitionPeakBytes: 0, foamCapacity: 0, restartActiveCount: 0, restartParticleCount: 0, plans: [] },
+        memory: { steadyBytes: 0, transitionPeakBytes: 0, foamCapacity: 0, restartActiveCount: 0, restartParticleCount: 0, restartActiveCountEstimated: false, plans: [] },
         pageDiagnostics: null,
         capabilities: resolveFluidControlsCapabilities({
             method: snapshot.method,
             timestampQuerySupported: options.timestampQuerySupported,
-            hostCapabilities: options.capabilities,
+            hostCapabilities: effectiveCapabilities(options),
         }),
         disposed: false,
         _runtime: { options: options as BindFluidControlsOptions<unknown>, applying: false },
@@ -854,7 +933,7 @@ export function applyFluidControls(binding: FluidControlsBinding, values: Readon
     const runtime = binding._runtime;
     let next = normalizeFluidControls(values, {
         maxParticleCount: runtime.options.maxParticleCount,
-        capabilities: runtime.options.capabilities,
+        capabilities: effectiveCapabilities(runtime.options),
         timestampQuerySupported: runtime.options.timestampQuerySupported,
     });
     let plan = deriveFluidControlsApplicationPlan(binding.snapshot, next, changedKeys);
@@ -882,17 +961,20 @@ export function applyFluidControls(binding: FluidControlsBinding, values: Readon
             runtime.options.applyHostState?.(next, hostChangedKeys);
             targets = targetSimulations(runtime.options.target).map((simulation) => runtime.options.resolveTarget(simulation, next));
         }
+        if (targets.some((target) => backendChanged(target.simulation.options.backend, target.options.backend))) {
+            plan = { ...plan, reconfigure: true, restartRequired: false };
+        }
         if (plan.reconfigure && targets.length > 0) {
             if ("simulations" in runtime.options.target) {
                 const requests: FluidSimulationReconfigurationRequest[] = targets.map((target) => ({
                     simulation: target.simulation,
                     updates: commonSimulationOptions(binding, target, next),
-                    preserveState: target.preserveState ?? true,
+                    preserveState: preserveReconfiguredState(target),
                 }));
                 prepared = prepareFluidCollectionReconfiguration(requests);
             } else {
                 const target = targets[0]!;
-                prepared = prepareFluidReconfiguration(target.simulation, commonSimulationOptions(binding, target, next), target.preserveState ?? true);
+                prepared = prepareFluidReconfiguration(target.simulation, commonSimulationOptions(binding, target, next), preserveReconfiguredState(target));
             }
         }
         const projectedRestart = !plan.reconfigure && hasPendingRestart(binding, next, targets);
@@ -915,7 +997,7 @@ export function applyFluidControls(binding: FluidControlsBinding, values: Readon
         binding.capabilities = resolveFluidControlsCapabilities({
             method: next.method,
             timestampQuerySupported: runtime.options.timestampQuerySupported,
-            hostCapabilities: runtime.options.capabilities,
+            hostCapabilities: effectiveCapabilities(runtime.options),
         });
         syncFluidControls(binding, { _targets: targets });
         return binding.plan;
@@ -967,6 +1049,11 @@ export function syncFluidControls(binding: FluidControlsBinding, input: SyncFlui
     if (binding.disposed) {
         return;
     }
+    binding.capabilities = resolveFluidControlsCapabilities({
+        method: binding.snapshot.method,
+        timestampQuerySupported: binding._runtime.options.timestampQuerySupported,
+        hostCapabilities: effectiveCapabilities(binding._runtime.options),
+    });
     if (input.pageDiagnostics) {
         publishPageDiagnostics(binding, input.pageDiagnostics.method, input.pageDiagnostics.requiredPages, input.pageDiagnostics.capacity, input.pageDiagnostics.overflow ?? false);
     }
@@ -998,7 +1085,8 @@ export function syncFluidControls(binding: FluidControlsBinding, input: SyncFlui
         diagnostics.gpuBytes,
         binding.plan.restartRequired ? binding.memory.restartActiveCount : undefined,
         binding.plan.restartRequired ? binding.memory.restartParticleCount : undefined,
-        binding.plan.restartRequired ? binding.memory.steadyBytes : undefined
+        binding.plan.restartRequired ? binding.memory.steadyBytes : undefined,
+        binding.plan.restartRequired ? binding.memory.restartActiveCountEstimated : undefined
     );
     controls.setFoamParticleCounts(diagnostics.diffuse ?? undefined, binding.snapshot.foam.enabled, diagnostics.diffuse?.capacity);
     controls.setPressureDiagnostics(diagnostics.pressure ?? undefined);

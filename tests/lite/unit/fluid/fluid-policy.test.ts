@@ -119,6 +119,10 @@ describe("shared fluid policy", () => {
             gridResolution: 65,
             markersPerCell: 4,
         });
+        expect(normalizeFluidFlipDiscretization(4096, 8)).toEqual({
+            gridResolution: 4096,
+            markersPerCell: 8,
+        });
     });
 
     it("normalizes impulse direction and applies shared force scales", () => {

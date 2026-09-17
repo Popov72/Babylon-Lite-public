@@ -103,9 +103,9 @@ initialMarkers = ceil(initialFluidVolume / cellSize^3 * markersPerCell)
 
 `markersPerCell` defaults to `8`, the standard 2 x 2 x 2 sub-cell layout. The generic Physics particle size and Particle count controls are not presented as FLIP quality controls. The former remains only as a serialized compatibility scale derived from cell size. FLIP instead exposes Particle capacity: the number of marker slots preallocated in its GPU buffers.
 
-Each FLIP marker is one simulation particle. Initial active markers are derived from emitter volume, cell size, and marker density. Inflows append markers into the preallocated capacity, while sinks recycle slots. The Physics simulation section shows active markers, allocated capacity, and solver-buffer GPU memory, plus the values expected after restart. Editing an emitter, Particle capacity, Grid size, Grid position, or Resolution divisions updates this preview without interrupting the running simulation. Reset simulation reallocates only when Particle capacity or grid storage changes; emitter-behavior changes reuse the existing particle buffers and bind groups.
+Each FLIP marker is one simulation particle. Initial active markers are derived from emitter volume, cell size, and marker density. Inflows append markers into the preallocated capacity, while sinks recycle slots. The Physics simulation section shows active markers, allocated capacity, and solver-buffer GPU memory, plus the values expected after restart. Editing Particle capacity, Grid size, Grid position, Resolution divisions, or marker density updates a constant-time pending projection without allocating GPU resources or traversing the deterministic seeding lattice. When bounds clipping could change the exact marker count, the row is labelled **After restart (estimated)**. Reset simulation performs the exact clipped-lattice count and reallocates only when Particle capacity or grid storage changes; emitter-behavior changes reuse the existing particle buffers and bind groups.
 
-Particle capacity is bounded by the active WebGPU device's `maxStorageBufferBindingSize` and `maxBufferSize`, and is allocated up front. The staggered U/V/W faces are concatenated into packed MAC buffers, so grid resolution is also bounded by the smaller of those per-buffer limits independently of aggregate GPU memory. If derived initial demand exceeds the selected capacity, or a packed MAC buffer exceeds that binding limit, reset reduces Resolution divisions to the highest value that fits. The pending warning reports the requested grid dimensions, required packed-buffer size, and device binding limit. If the minimum resolution still cannot fit, reset fails explicitly with the required initial markers and selected capacity.
+Particle capacity is bounded by the active WebGPU device's `maxStorageBufferBindingSize` and `maxBufferSize`, and is allocated up front. The staggered U/V/W faces are concatenated into packed MAC buffers, so grid resolution is also bounded by the smaller of those per-buffer limits independently of aggregate GPU memory. If exact bounds-clipped initial demand exceeds the selected capacity, or a packed MAC buffer exceeds that binding limit, reset reduces Resolution divisions to the highest value that fits. Pending validation reports constant-time grid/device-limit errors; exact initial-demand fitting is deliberately deferred to Reset. If the minimum resolution still cannot fit, reset fails explicitly with the required initial markers and selected capacity.
 
 ### Opt-in Paged Grid
 
@@ -334,6 +334,16 @@ With fractional solids disabled, solid-adjacent faces have already been set to t
 faceFlux = openFraction * fluidVelocity + (1 - openFraction) * solidVelocity
 ```
 
+The corner signs determine the homogeneous cases exactly: four nonpositive distances produce
+zero open area (including a face exactly on the surface), and four nonnegative distances
+with at least one positive corner produce full open area. Only mixed-sign faces use the
+existing mean of `clamp(0.5 + phi / dx, 0, 1)`. Applying that smoothed indicator to an entirely
+solid face fabricates small positive apertures near the surface; moving-solid flux then drives
+large pressure gradients through nonexistent openings during initial contact.
+`flip-face-aperture.ts` owns this WGSL helper, shared by dense and paged production face geometry.
+The same resulting aperture buffer feeds divergence, pressure coefficients, and projection;
+there is no startup-only damping, delayed obstacle motion, or altered speed limit.
+
 Fractional mode keeps SDF-cut cells active and classifies a cell as fully solid only when its centre lies at least one cell half-diagonal behind the surface. This lets partially open faces participate in divergence and pressure instead of being discarded by whole-cell classification.
 
 `movingSolidBoundaries` controls whether the second term uses SDF-derived normal velocity or zero. Static scenes can leave it disabled and avoid temporal SDF/normal evaluation.
@@ -375,6 +385,16 @@ The optional relative tolerance is evaluated from the infinity norm of the exact
 The UI shows Pressure iterations and Pressure relaxation only for Weighted Jacobi. Multigrid instead exposes Multigrid cycles; smoothing counts, hierarchy depth, and its relaxation factor are fixed implementation details.
 
 The divergence target also includes a bounded marker-density correction for compressed cells. It is disabled beside stationary solids: collision projection naturally concentrates markers in that cut-cell layer, and interpreting that boundary concentration as lost volume would push the neighbouring liquid inward while leaving a detached marker sheet pinned to the wall. The correction remains enabled beside moving boundaries, where it is needed to preserve occupied volume while an obstacle actively compresses and stirs the liquid.
+
+Density feedback is rate-bounded: `min(0.1 * compression, 0.5) / max(subDt, 1/120)`.
+The `1/120` normalization retains the previous correction at ordinary two-substep 60-Hz
+cadence and at larger timesteps; shorter steps cannot increase the relaxation rate beyond
+12 per second (maximum expansion 60 per second). It changes only this numerical
+marker-density feedback, not integration time, gravity, moving-boundary speed, CFL, or pressure
+accuracy. Previously applying a fixed fractional correction every substep divided by the
+arbitrarily small startup dt made the target divergence unbounded and produced a large first-frame
+velocity impulse. Regression coverage includes a 10-microsecond first frame followed by normal
+frames, as well as normal fresh imports and paged storage.
 
 Projection at a face between cells L and R:
 

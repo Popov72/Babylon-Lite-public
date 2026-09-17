@@ -1,4 +1,4 @@
-import type { FluidExportJson } from "./preset-io.js";
+import { FLIP_REFERENCE_BACKEND_ID, FLIP_REFERENCE_PHYSICS_PARAMETERS, fluidExportBackendProfileRejection, type FluidExportJson } from "./preset-io.js";
 import { Unzlib, zlibSync } from "fflate";
 import {
     MAX_FLUID_EMITTERS,
@@ -10,16 +10,15 @@ import {
     type FluidSink,
     type FluidTransform,
 } from "../core/sim-common.js";
-import { fluidSimulationCellSize } from "../core/simulation-config.js";
-import { PHYS_MAX_SCALE, PHYS_MIN_SCALE, gridCellsForSize } from "./grid-settings.js";
+import { PHYS_MAX_SCALE, PHYS_MIN_SCALE } from "./grid-settings.js";
 
 const SDF_MAGIC = 0x46534c42;
 const SDF_HEADER_BYTES = 64;
+const INITIAL_STATE_MAGIC = 0x49464c42;
+const INITIAL_STATE_HEADER_BYTES = 32;
 const MAX_ENTRY_BYTES = 512 * 1024 * 1024;
 const MAX_SDF_VOXELS = 16 * 1024 * 1024;
 const MAX_JSON_BYTES = 768 * 1024 * 1024;
-const MAX_GRID_AXIS_CELLS = 2048;
-const MAX_GRID_CELL_COUNT = 8 * 1024 * 1024;
 const MAX_ABS_POSITION = 1_000_000;
 const MAX_EXTENT = 10_000;
 const MAX_VELOCITY = 100_000;
@@ -130,6 +129,7 @@ export interface BlenderFluidScene {
     collisionEnabled: boolean;
     collisionTrilinear: boolean;
     animatedCollisions: BlenderFluidAnimatedCollision[];
+    initialState: BlenderFluidInitialState | null;
 }
 
 export type BlenderFluidExternalResources = ReadonlyMap<string, ArrayBufferLike>;
@@ -153,6 +153,12 @@ export interface BlenderFluidAnimatedCollision {
     collision: BlenderFluidCollision;
 }
 
+export interface BlenderFluidInitialState {
+    frame: number;
+    positions: Float32Array;
+    velocities: Float32Array;
+}
+
 export interface BlenderFluidScenePayloadOptions {
     /** Preserve external filenames instead of embedding the already-resolved bytes. Default false. */
     preserveExternal?: boolean;
@@ -174,6 +180,7 @@ export function scenePayloadFromBlenderFluidJson(scene: BlenderFluidScene, optio
                 ...(payload.collisionTrilinear !== undefined ? { collisionTrilinear: payload.collisionTrilinear } : {}),
                 ...(payload.collisionByteLength !== undefined ? { collisionByteLength: payload.collisionByteLength } : {}),
                 ...(payload.anchorPosition ? { anchorPosition: [...payload.anchorPosition] as [number, number, number] } : {}),
+                ...(payload.initialState ? { initialState: { ...payload.initialState } } : {}),
                 ...(payload.animatedCollisions
                     ? {
                           animatedCollisions: payload.animatedCollisions.map((entry) => ({
@@ -201,6 +208,16 @@ export function scenePayloadFromBlenderFluidJson(scene: BlenderFluidScene, optio
             collisionEnabled: scene.collisionEnabled,
             collisionTrilinear: scene.collisionTrilinear,
             ...(payload.anchorPosition ? { anchorPosition: [...payload.anchorPosition] as [number, number, number] } : {}),
+            ...(scene.initialState
+                ? {
+                      initialState: {
+                          data: encodeBase64(compressSdfBytes(encodeBlenderFluidInitialState(scene.initialState))),
+                          count: scene.initialState.positions.length / 3,
+                          frame: scene.initialState.frame,
+                          space: "world",
+                      },
+                  }
+                : {}),
             ...(scene.animatedCollisions.length
                 ? {
                       animatedCollisions: scene.animatedCollisions.map((entry) => ({
@@ -226,6 +243,7 @@ export function scenePayloadFromBlenderFluidJson(scene: BlenderFluidScene, optio
         ...(payload.collisionEnabled !== undefined ? { collisionEnabled: payload.collisionEnabled } : {}),
         ...(payload.collisionTrilinear !== undefined ? { collisionTrilinear: payload.collisionTrilinear } : {}),
         ...(payload.anchorPosition ? { anchorPosition: [...payload.anchorPosition] as [number, number, number] } : {}),
+        ...(payload.initialState ? { initialState: { ...payload.initialState } } : {}),
         ...(payload.animatedCollisions
             ? {
                   animatedCollisions: payload.animatedCollisions.map((entry) => ({ ...entry })),
@@ -235,7 +253,7 @@ export function scenePayloadFromBlenderFluidJson(scene: BlenderFluidScene, optio
 }
 
 function fail(message: string): never {
-    throw new Error(`Invalid fluid export: ${message}`);
+    throw new Error("Invalid fluid export: " + message);
 }
 
 function encodeBase64(bytes: Uint8Array): string {
@@ -260,6 +278,22 @@ function encodeBlenderFluidCollision(collision: BlenderFluidCollision): Uint8Arr
     view.setFloat32(36, collision.cellSize, true);
     for (let index = 0; index < collision.distances.length; index++) {
         view.setFloat32(SDF_HEADER_BYTES + index * 4, collision.distances[index]!, true);
+    }
+    return bytes;
+}
+
+function encodeBlenderFluidInitialState(initialState: BlenderFluidInitialState): Uint8Array {
+    const count = initialState.positions.length / 3;
+    const bytes = new Uint8Array(INITIAL_STATE_HEADER_BYTES + count * 6 * 4);
+    const view = new DataView(bytes.buffer);
+    view.setUint32(0, INITIAL_STATE_MAGIC, true);
+    view.setUint32(4, 1, true);
+    view.setUint32(8, count, true);
+    view.setInt32(12, initialState.frame, true);
+    view.setUint32(16, 1, true);
+    for (let index = 0; index < count * 3; index++) {
+        view.setFloat32(INITIAL_STATE_HEADER_BYTES + index * 4, initialState.positions[index]!, true);
+        view.setFloat32(INITIAL_STATE_HEADER_BYTES + (count * 3 + index) * 4, initialState.velocities[index]!, true);
     }
     return bytes;
 }
@@ -560,8 +594,27 @@ function validateSink(value: unknown, path: string, formatVersion: number): Flui
     return result;
 }
 
-function validatePhysics(value: unknown, method: string): void {
+function validatePhysics(value: unknown, method: string, backendId: unknown): void {
     const physics = numericRecord(value, "manifest.preset.physics");
+    if (backendId === FLIP_REFERENCE_BACKEND_ID) {
+        if (physics.polygonSurface !== undefined) {
+            fail("FLIP Reference does not support polygon-surface reconstruction");
+        }
+        const supported = new Set<string>(FLIP_REFERENCE_PHYSICS_PARAMETERS);
+        const unsupported = Object.keys(physics).filter((key) => !supported.has(key));
+        const missing = FLIP_REFERENCE_PHYSICS_PARAMETERS.filter((key) => physics[key] === undefined);
+        if (missing.length > 0 || unsupported.length > 0) {
+            const details = [...(missing.length > 0 ? [`missing: ${missing.join(", ")}`] : []), ...(unsupported.length > 0 ? [`unsupported: ${unsupported.join(", ")}`] : [])].join(
+                "; "
+            );
+            fail(`FLIP Reference physics must define exactly ${FLIP_REFERENCE_PHYSICS_PARAMETERS.join(", ")} (${details})`);
+        }
+        for (const key of FLIP_REFERENCE_PHYSICS_PARAMETERS) {
+            const [min, max] = PHYSICS_LIMITS.FLIP![key]!;
+            finiteNumber(physics[key], `manifest.preset.physics.${key}`, min, max);
+        }
+        return;
+    }
     const limits = PHYSICS_LIMITS[method]!;
     const allowed = new Set(Object.keys(limits));
     for (const key of Object.keys(physics)) {
@@ -682,6 +735,9 @@ function validateFoam(value: unknown): void {
         ["turbulenceMax", 40],
         ["foamLayerDepth", 4],
         ["sprayDrag", 10],
+        ["spraySize", 3],
+        ["sprayIntensity", 10],
+        ["spraySeparation", 4],
     ] as const) {
         if (foam[key] !== undefined) {
             finiteNumber(foam[key], `manifest.preset.foam.${key}`, 0, max);
@@ -733,9 +789,10 @@ function validatePreset(value: unknown): FluidExportJson {
         preset.formatVersion !== 12 &&
         preset.formatVersion !== 13 &&
         preset.formatVersion !== 14 &&
-        preset.formatVersion !== 15
+        preset.formatVersion !== 15 &&
+        preset.formatVersion !== 16
     ) {
-        fail("manifest preset must use formatVersion 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, or 15");
+        fail("manifest preset must use formatVersion 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, or 16");
     }
     if (preset.formatVersion >= 14) {
         const semantics = record(preset.simulationSemantics, "manifest.preset.simulationSemantics");
@@ -759,33 +816,26 @@ function validatePreset(value: unknown): FluidExportJson {
     if (!METHODS.includes(method as (typeof METHODS)[number])) {
         fail(`manifest.preset.meta.method "${method}" is not supported`);
     }
-    validatePhysics(preset.physics, method);
-    const demoParams = numericRecord(preset.demoParams, "manifest.preset.demoParams");
-    const demoState = validateDemoState(preset.demoState);
-    const resolution = method === "FLIP" && preset.gridResolution !== undefined ? integer(preset.gridResolution, "manifest.preset.gridResolution", 16, 2048) : undefined;
-    const particleSize =
-        preset.physicsParticleSize !== undefined
-            ? finiteNumber(preset.physicsParticleSize, "manifest.preset.physicsParticleSize", PHYS_MIN_SCALE, PHYS_MAX_SCALE)
-            : resolution !== undefined
-              ? 1
-              : finiteNumber(preset.physicsParticleSize, "manifest.preset.physicsParticleSize", PHYS_MIN_SCALE, PHYS_MAX_SCALE);
+    const backendId = preset.backendId;
+    if (backendId !== undefined && backendId !== FLIP_REFERENCE_BACKEND_ID) {
+        fail(`backendId "${String(backendId)}" is not supported`);
+    }
+    if (backendId === FLIP_REFERENCE_BACKEND_ID && method !== "FLIP") {
+        fail(`backendId "${FLIP_REFERENCE_BACKEND_ID}" requires meta.method "FLIP"`);
+    }
+    validatePhysics(preset.physics, method, backendId);
+    numericRecord(preset.demoParams, "manifest.preset.demoParams");
+    validateDemoState(preset.demoState);
+    const resolution =
+        method === "FLIP" && preset.gridResolution !== undefined ? integer(preset.gridResolution, "manifest.preset.gridResolution", 16, Number.MAX_SAFE_INTEGER) : undefined;
+    if (preset.physicsParticleSize !== undefined || resolution === undefined) {
+        finiteNumber(preset.physicsParticleSize, "manifest.preset.physicsParticleSize", PHYS_MIN_SCALE, PHYS_MAX_SCALE);
+    }
     integer(preset.particleCount, "manifest.preset.particleCount", 1, Number.MAX_SAFE_INTEGER);
     vector(preset.gridPosition, "manifest.preset.gridPosition", 3, -MAX_ABS_POSITION, MAX_ABS_POSITION);
-    const gridSize = vector(preset.gridSize, "manifest.preset.gridSize", 3, Number.MIN_VALUE, MAX_EXTENT) as [number, number, number];
+    vector(preset.gridSize, "manifest.preset.gridSize", 3, Number.MIN_VALUE, MAX_EXTENT);
     if (preset.markersPerCell !== undefined) {
         integer(preset.markersPerCell, "manifest.preset.markersPerCell", 1, 64);
-    }
-    const simulationType = demoState.simulationType;
-    const cellSize = resolution
-        ? Math.max(...gridSize) / resolution
-        : fluidSimulationCellSize(method, {
-              physicsParticleSize: particleSize,
-              samplingType: simulationType === "mesh" ? "mesh" : "fluid",
-              particleRadius: demoParams.particleRadius,
-          });
-    const cells = gridCellsForSize(gridSize, cellSize);
-    if (cells.some((count) => count > MAX_GRID_AXIS_CELLS) || cells[0] * cells[1] * cells[2] > MAX_GRID_CELL_COUNT) {
-        fail("manifest preset grid exceeds the supported allocation limits");
     }
     const emitterValues = array(preset.emitters, "manifest.preset.emitters");
     const sinkValues = array(preset.sinks, "manifest.preset.sinks");
@@ -852,9 +902,19 @@ function validatePreset(value: unknown): FluidExportJson {
         if (camera.target !== undefined) {
             vector(camera.target, "manifest.preset.camera.target", 3, -MAX_EXTENT, MAX_EXTENT);
         }
+        if (camera.fov !== undefined) {
+            finiteNumber(camera.fov, "manifest.preset.camera.fov", 1e-4, Math.PI - 1e-4);
+        }
+        if (camera.mirrorX !== undefined) {
+            bool(camera.mirrorX, "manifest.preset.camera.mirrorX");
+        }
     }
     validateRender(preset.render);
     validateFoam(preset.foam);
+    const backendRejection = fluidExportBackendProfileRejection(preset as unknown as FluidExportJson);
+    if (backendRejection) {
+        fail(backendRejection);
+    }
     return preset as unknown as FluidExportJson;
 }
 
@@ -968,7 +1028,47 @@ export function parseBlenderFluidCollision(bytes: Uint8Array): BlenderFluidColli
     return { dims, origin, cellSize, distances };
 }
 
-/** Parse an embedded or external-resource format-6 through format-15 fluid JSON export. */
+export function parseBlenderFluidInitialState(bytes: Uint8Array, maximumCount: number): BlenderFluidInitialState {
+    if (bytes.byteLength < INITIAL_STATE_HEADER_BYTES) {
+        fail("initial-state data is truncated");
+    }
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    if (view.getUint32(0, true) !== INITIAL_STATE_MAGIC) {
+        fail("initial-state data has invalid magic");
+    }
+    if (view.getUint32(4, true) !== 1) {
+        fail("unsupported initial-state version");
+    }
+    const count = view.getUint32(8, true);
+    if (count < 1 || count > maximumCount) {
+        fail(`initial-state count ${count.toLocaleString("en-US")} exceeds particleCount ${maximumCount.toLocaleString("en-US")}`);
+    }
+    if (view.getUint32(16, true) !== 1) {
+        fail("initial-state data must include velocities");
+    }
+    const expectedBytes = INITIAL_STATE_HEADER_BYTES + count * 6 * 4;
+    if (bytes.byteLength !== expectedBytes) {
+        fail("initial-state payload length is invalid");
+    }
+    const frame = view.getInt32(12, true);
+    const positions = new Float32Array(count * 3);
+    const velocities = new Float32Array(count * 3);
+    for (let index = 0; index < count * 3; index++) {
+        const position = view.getFloat32(INITIAL_STATE_HEADER_BYTES + index * 4, true);
+        const velocity = view.getFloat32(INITIAL_STATE_HEADER_BYTES + (count * 3 + index) * 4, true);
+        if (!Number.isFinite(position) || Math.abs(position) > MAX_ABS_POSITION) {
+            fail(`initial-state position ${index} is invalid`);
+        }
+        if (!Number.isFinite(velocity) || Math.abs(velocity) > MAX_VELOCITY) {
+            fail(`initial-state velocity ${index} is invalid`);
+        }
+        positions[index] = position;
+        velocities[index] = velocity;
+    }
+    return { frame, positions, velocities };
+}
+
+/** Parse an embedded or external-resource format-6 through format-16 fluid JSON export. */
 export function parseBlenderFluidJson(contents: string, externalResources?: BlenderFluidExternalResources): BlenderFluidScene {
     if (contents.length > MAX_JSON_BYTES) {
         fail("JSON export exceeds the 768 MiB limit");
@@ -990,9 +1090,10 @@ export function parseBlenderFluidJson(contents: string, externalResources?: Blen
         preset.formatVersion !== 12 &&
         preset.formatVersion !== 13 &&
         preset.formatVersion !== 14 &&
-        preset.formatVersion !== 15
+        preset.formatVersion !== 15 &&
+        preset.formatVersion !== 16
     ) {
-        fail("self-contained fluid JSON must use formatVersion 6, 7, 8, 9, 10, 11, 12, 13, 14, or 15");
+        fail("self-contained fluid JSON must use formatVersion 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, or 16");
     }
     const scene = record(preset.scene, "manifest.preset.scene");
     if (scene.sdfCompression !== undefined && scene.sdfCompression !== "zlib") {
@@ -1007,6 +1108,7 @@ export function parseBlenderFluidJson(contents: string, externalResources?: Blen
         vector(scene.anchorPosition, "manifest.preset.scene.anchorPosition", 3, -MAX_ABS_POSITION, MAX_ABS_POSITION);
     }
     const animatedEntries = scene.animatedCollisions === undefined ? [] : array(scene.animatedCollisions, "manifest.preset.scene.animatedCollisions");
+    const initialEntry = scene.initialState === undefined ? null : record(scene.initialState, "manifest.preset.scene.initialState");
     if (animatedEntries.length > MAX_ANIMATED_COLLISIONS) {
         fail(`manifest.preset.scene.animatedCollisions supports at most ${MAX_ANIMATED_COLLISIONS} entries`);
     }
@@ -1048,6 +1150,40 @@ export function parseBlenderFluidJson(contents: string, externalResources?: Blen
     }
     const sceneGlb = parseGlb(glbBytes);
     const collision = parseBlenderFluidCollision(collisionBytes);
+    let initialState: BlenderFluidInitialState | null = null;
+    if (initialEntry) {
+        const path = "manifest.preset.scene.initialState";
+        if (initialEntry.space !== "world") {
+            fail(`${path}.space must be "world"`);
+        }
+        const count = integer(initialEntry.count, `${path}.count`, 1, preset.particleCount as number);
+        const frame = integer(initialEntry.frame, `${path}.frame`, -1_000_000, 1_000_000);
+        const hasByteOffset = initialEntry.byteOffset !== undefined;
+        const hasByteLength = initialEntry.byteLength !== undefined;
+        if (hasByteOffset !== hasByteLength) {
+            fail(`${path}.byteOffset and byteLength must be provided together`);
+        }
+        let initialBytes: Uint8Array;
+        if (scene.encoding === "base64") {
+            if (hasByteOffset) {
+                fail(`${path} byte ranges are only valid for external resources`);
+            }
+            initialBytes = decompressSdfBytes(decodeBase64(initialEntry.data, `${path}.data`), `${path}.data`, sdfCompressed);
+        } else if (hasByteOffset) {
+            initialBytes = resourceSlice(
+                readExternalSdf(initialEntry.data, `${path}.data`),
+                `${path}.data`,
+                integer(initialEntry.byteOffset, `${path}.byteOffset`, 0, MAX_ENTRY_BYTES),
+                integer(initialEntry.byteLength, `${path}.byteLength`, INITIAL_STATE_HEADER_BYTES, MAX_ENTRY_BYTES)
+            );
+        } else {
+            initialBytes = readExternalSdf(initialEntry.data, `${path}.data`);
+        }
+        initialState = parseBlenderFluidInitialState(initialBytes, preset.particleCount as number);
+        if (initialState.positions.length / 3 !== count || initialState.frame !== frame) {
+            fail(`${path} metadata does not match its binary payload`);
+        }
+    }
     let totalVoxels = collision.distances.length;
     for (let index = 0; index < animatedEntries.length; index++) {
         const path = `manifest.preset.scene.animatedCollisions[${index}]`;
@@ -1112,5 +1248,5 @@ export function parseBlenderFluidJson(contents: string, externalResources?: Blen
             collision: animatedCollision,
         });
     }
-    return { preset, sceneGlb, collision, collisionEnabled, collisionTrilinear, animatedCollisions };
+    return { preset, sceneGlb, collision, collisionEnabled, collisionTrilinear, animatedCollisions, initialState };
 }

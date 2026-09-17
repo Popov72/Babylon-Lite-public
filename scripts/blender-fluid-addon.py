@@ -3,7 +3,7 @@
 bl_info = {
     "name": "Babylon Lite Fluid JSON",
     "author": "Babylon Lite contributors",
-    "version": (3, 9, 0),
+    "version": (3, 17, 0),
     "blender": (4, 0, 0),
     "location": "Properties > Scene > Babylon Lite Fluid; File > Export",
     "description": "Export a native or add-on fluid setup to Babylon Lite JSON",
@@ -32,8 +32,8 @@ MAX_FLUID_EMITTERS = 16
 MAX_FLUID_SINKS = 16
 MAX_FLUID_POLYGON_POINTS = 256
 MAX_SDF_VOXELS = 16 * 1024 * 1024
-MAX_GRID_AXIS_CELLS = 2048
-MAX_GRID_CELL_COUNT = 8 * 1024 * 1024
+INITIAL_STATE_MAGIC = 0x49464C42
+INITIAL_STATE_HEADER_BYTES = 32
 MIN_DECIMATABLE_TRIANGLES = 256
 FLIP_BASE_CELL_SIZE = 0.25
 FLIP_MARKERS_PER_CELL = 8
@@ -202,6 +202,20 @@ def animated_meshes(scene):
     return sorted((obj for obj in scene.objects if is_animated_mesh(obj)), key=lambda obj: obj.name.casefold())
 
 
+def simulation_frame_range(scene, domain):
+    if is_flip_fluids_domain(domain):
+        frame_start, frame_end = domain.flip_fluid.domain.simulation.get_frame_range()
+    else:
+        settings = fluid_modifier(domain, "DOMAIN").domain_settings
+        frame_start = settings.cache_frame_start
+        frame_end = settings.cache_frame_end
+    frame_start = int(frame_start)
+    frame_end = int(frame_end)
+    if frame_end < frame_start:
+        raise ValueError(f"Fluid simulation frame range is invalid: {frame_start}..{frame_end}")
+    return frame_start, frame_end
+
+
 def local_bounds(obj):
     corners = [Vector(corner) for corner in obj.bound_box]
     minimum = Vector((min(v.x for v in corners), min(v.y for v in corners), min(v.z for v in corners)))
@@ -353,26 +367,6 @@ def fluid_grid_cells(grid_size, resolution):
         tolerance = 2.220446049250313e-16 * 16 * max(1, abs(exact_cells))
         cells.append(max(4, nearest_integer if abs(exact_cells - nearest_integer) <= tolerance else math.ceil(exact_cells)))
     return cell_size, cells
-
-
-def compatible_flip_resolution(grid_size, requested_resolution):
-    requested = int(clamp(int(requested_resolution), 16, MAX_GRID_AXIS_CELLS))
-
-    def fits(resolution):
-        _, cells = fluid_grid_cells(grid_size, resolution)
-        return max(cells) <= MAX_GRID_AXIS_CELLS and math.prod(cells) <= MAX_GRID_CELL_COUNT
-
-    if fits(requested):
-        return requested
-    minimum = 16
-    maximum = requested
-    while minimum < maximum:
-        candidate = (minimum + maximum + 1) // 2
-        if fits(candidate):
-            minimum = candidate
-        else:
-            maximum = candidate - 1
-    return minimum
 
 
 def flow_shape_volume(shape):
@@ -540,9 +534,8 @@ def target_flip_resolution(grid_size, emitters, markers_per_cell, target_particl
     initial_volume = initial_emitter_volume(emitters)
     if initial_volume <= 0:
         raise ValueError("Target particle count requires at least one enabled volume-sampled initial fluid object")
-    maximum = compatible_flip_resolution(grid_size, MAX_GRID_AXIS_CELLS)
     approximate_cell = (initial_volume * markers_per_cell / target_particles) ** (1 / 3)
-    candidate = int(clamp(round(max(grid_size) / approximate_cell), 16, maximum))
+    candidate = max(16, int(round(max(grid_size) / approximate_cell)))
     counts = {}
 
     def clipped_count(resolution):
@@ -555,11 +548,11 @@ def target_flip_resolution(grid_size, emitters, markers_per_cell, target_particl
         count = clipped_count(candidate)
         if count <= 0:
             break
-        next_candidate = int(clamp(round(candidate * (target_particles / count) ** (1 / 3)), 16, maximum))
+        next_candidate = max(16, int(round(candidate * (target_particles / count) ** (1 / 3))))
         if next_candidate == candidate:
             break
         candidate = next_candidate
-    nearby = range(max(16, candidate - 4), min(maximum, candidate + 4) + 1)
+    nearby = range(max(16, candidate - 4), candidate + 5)
     return min(nearby, key=lambda resolution: (abs(clipped_count(resolution) - target_particles), resolution))
 
 
@@ -570,7 +563,7 @@ def derived_domain_values(scene, domain, grid_size, resolution_override=None):
         advanced = domain_props.advanced
         world = domain_props.world
         raw_resolution = max(1, int(simulation.resolution))
-        resolution = compatible_flip_resolution(grid_size, resolution_override if resolution_override is not None else raw_resolution)
+        resolution = max(16, int(resolution_override if resolution_override is not None else raw_resolution))
         cell_size, cells = fluid_grid_cells(grid_size, resolution)
         markers_per_cell = FLIP_MARKERS_PER_CELL
         raw_particle_size = cell_size / FLIP_BASE_CELL_SIZE
@@ -583,6 +576,7 @@ def derived_domain_values(scene, domain, grid_size, resolution_override=None):
         time_steps = advanced.min_max_time_steps_per_frame
         min_substeps = int(clamp(int(time_steps.value_min), 1, 16))
         max_substeps = int(clamp(max(min_substeps, int(time_steps.value_max)), 1, 32))
+        simulation_fps = max(float(simulation.get_frame_rate()), 1e-6)
         pressure_iterations = int(clamp(int(advanced.pressure_solver_max_iterations), 1, 100))
         pressure_tolerance = clamp(float(getattr(advanced, "pressure_solver_error_tolerance", 1e-3)), 0, 0.1)
         surface = getattr(domain_props, "surface", None)
@@ -602,7 +596,7 @@ def derived_domain_values(scene, domain, grid_size, resolution_override=None):
         if settings is None:
             raise ValueError("Liquid domain settings are unavailable")
         raw_resolution = max(1, int(settings.resolution_max))
-        resolution = compatible_flip_resolution(grid_size, resolution_override if resolution_override is not None else raw_resolution)
+        resolution = max(16, int(resolution_override if resolution_override is not None else raw_resolution))
         cell_size, cells = fluid_grid_cells(grid_size, resolution)
         marker_axis = max(1, int(settings.particle_number))
         markers_per_cell = int(clamp(marker_axis**3, 1, 64))
@@ -614,6 +608,7 @@ def derived_domain_values(scene, domain, grid_size, resolution_override=None):
         gravity_vector = Vector(settings.gravity)
         min_substeps = int(clamp(int(settings.timesteps_min), 1, 16))
         max_substeps = int(clamp(max(min_substeps, int(settings.timesteps_max)), 1, 32))
+        simulation_fps = max(float(scene.render.fps) / max(float(scene.render.fps_base), 1e-12), 1e-6)
         pressure_iterations = 40
         pressure_tolerance = 1e-3
         particle_sheeting = False
@@ -669,7 +664,7 @@ def derived_domain_values(scene, domain, grid_size, resolution_override=None):
             "sheetingInterval": 5,
             "polygonSurface": 0,
             "viscosityIterations": 12,
-            "maxSubDtMs": 8.4,
+            "maxSubDtMs": 1000 / (simulation_fps * min_substeps),
         },
     }
 
@@ -960,36 +955,44 @@ def local_collision_metrics(obj, resolution):
     return cell_size, dims, math.prod(dims), padding_cells, minimum, maximum
 
 
-def evaluated_local_geometry(obj, frame):
+def evaluated_collision_state(obj, frame):
     scene = bpy.context.scene
     scene.frame_set(frame)
     depsgraph = bpy.context.evaluated_depsgraph_get()
     evaluated = obj.evaluated_get(depsgraph)
+    matrix = tuple(float(evaluated.matrix_world[row][column]) for row in range(4) for column in range(4))
     mesh = evaluated.to_mesh()
     try:
         mesh.calc_loop_triangles()
-        return len(mesh.loop_triangles), [(float(vertex.co.x), float(vertex.co.y), float(vertex.co.z)) for vertex in mesh.vertices]
+        return (
+            len(mesh.loop_triangles),
+            [(float(vertex.co.x), float(vertex.co.y), float(vertex.co.z)) for vertex in mesh.vertices],
+            matrix,
+        )
     finally:
         evaluated.to_mesh_clear()
 
 
-def validate_rigid_animation(obj, scene):
-    if scene.frame_end <= scene.frame_start:
-        return
-    frames = sorted({round(scene.frame_start + (scene.frame_end - scene.frame_start) * index / 8) for index in range(9)})
+def classify_collision_animation(obj, scene, frame_start, frame_end):
+    if frame_end <= frame_start:
+        return "static"
+    frames = sorted({round(frame_start + (frame_end - frame_start) * index / 8) for index in range(9)})
     previous_frame = scene.frame_current
     try:
-        reference_triangles, reference_vertices = evaluated_local_geometry(obj, frames[0])
+        reference_triangles, reference_vertices, reference_matrix = evaluated_collision_state(obj, frames[0])
+        transform_changed = False
         for frame in frames[1:]:
-            triangles, vertices = evaluated_local_geometry(obj, frame)
+            triangles, vertices, matrix = evaluated_collision_state(obj, frame)
             if triangles != reference_triangles or len(vertices) != len(reference_vertices):
-                raise ValueError(f"{obj.name}: deforming or topology-changing animated collisions are not supported")
+                return "topology"
             if any(
                 abs(vertex[axis] - reference_vertices[index][axis]) > 1e-5
                 for index, vertex in enumerate(vertices)
                 for axis in range(3)
             ):
-                raise ValueError(f"{obj.name}: deforming animated collisions are not supported; use rigid object or parent transforms")
+                return "deforming"
+            transform_changed = transform_changed or any(abs(value - reference_matrix[index]) > 1e-6 for index, value in enumerate(matrix))
+        return "rigid" if transform_changed else "static"
     finally:
         scene.frame_set(previous_frame)
 
@@ -1089,10 +1092,24 @@ def bake_local_collision(obj, resolution, window_manager):
     return bytes(output), dims, voxel_count
 
 
-def scene_objects(scene, domain):
+def scene_objects(scene, domain, frame_start, frame_end):
     animated = animated_meshes(scene)
     animated_set = set(animated)
-    animated_collisions = [obj for obj in animated if int(obj.blitefluid_animated_sdf_resolution) > 0]
+    collision_animation = {
+        obj: classify_collision_animation(obj, scene, frame_start, frame_end)
+        for obj in animated
+        if is_collision_object(obj)
+    }
+    animated_collisions = [
+        obj
+        for obj, kind in collision_animation.items()
+        if int(obj.blitefluid_animated_sdf_resolution) > 0 and kind == "rigid"
+    ]
+    unsupported_animated_collisions = [
+        (obj, kind)
+        for obj, kind in collision_animation.items()
+        if int(obj.blitefluid_animated_sdf_resolution) > 0 and kind in {"deforming", "topology"}
+    ]
     emitter_sources = [obj for obj in scene.objects if obj != domain and obj.type == "MESH" and is_emitter_source_object(obj)]
     presentation_objects = [
         obj
@@ -1112,8 +1129,21 @@ def scene_objects(scene, domain):
                 presentation_objects.append(parent)
             parent = parent.parent
     visual_objects = [obj for obj in presentation_objects if obj.type == "MESH"]
-    collision_objects = [obj for obj in scene.objects if obj != domain and obj.type == "MESH" and obj not in animated_set and is_collision_object(obj)]
-    return presentation_objects, visual_objects, collision_objects, animated, animated_collisions
+    collision_objects = [
+        obj
+        for obj in scene.objects
+        if obj != domain
+        and obj.type == "MESH"
+        and is_collision_object(obj)
+        and (
+            obj not in animated_set
+            or (
+                int(obj.blitefluid_animated_sdf_resolution) > 0
+                and collision_animation.get(obj) == "static"
+            )
+        )
+    ]
+    return presentation_objects, visual_objects, collision_objects, animated, animated_collisions, unsupported_animated_collisions
 
 
 def bounds_overlap(first, second):
@@ -1148,6 +1178,7 @@ def validate_setup(context):
         else:
             sdf_resolution = int(scene.blitefluid_sdf_resolution)
             cell_size, dims, voxel_count = grid_metrics(grid_size, sdf_resolution)
+            frame_start, frame_end = simulation_frame_range(scene, domain)
             summary.update(
                 domain=domain,
                 domain_bounds=domain_bounds,
@@ -1156,6 +1187,8 @@ def validate_setup(context):
                 dims=dims,
                 voxel_count=voxel_count,
                 sdf_resolution=sdf_resolution,
+                frame_start=frame_start,
+                frame_end=frame_end,
                 derived=derived_domain_values(scene, domain, grid_size),
             )
             if voxel_count > MAX_SDF_VOXELS:
@@ -1205,11 +1238,6 @@ def validate_setup(context):
     if emitter_count == 0:
         warnings.append("No liquid initial-volume or inflow objects were found")
     derived = summary["derived"]
-    if derived["method"] == "FLIP" and derived["resolution"] != derived["raw_resolution"]:
-        warnings.append(
-            f"Authored FLIP resolution {derived['raw_resolution']} will be adjusted to {derived['resolution']} "
-            "to fit Babylon Lite grid allocation limits"
-        )
     if abs(derived["particle_size"] - derived["raw_particle_size"]) > 1e-8:
         label = "FLIP cell-size compatibility scale" if derived["method"] == "FLIP" else "physics particle size"
         warnings.append(f"Derived {label} {derived['raw_particle_size']:.3g} will be clamped to {derived['particle_size']:.3g}")
@@ -1225,7 +1253,12 @@ def validate_setup(context):
     if scene.blitefluid_export_lights and unsupported_lights:
         warnings.append(f"glTF cannot export non-punctual lights; skipped: {', '.join(unsupported_lights)}")
 
-    presentation_objects, visual_objects, collision_objects, animated, animated_collisions = scene_objects(scene, summary["domain"])
+    presentation_objects, visual_objects, collision_objects, animated, animated_collisions, unsupported_animated_collisions = scene_objects(
+        scene,
+        summary["domain"],
+        summary["frame_start"],
+        summary["frame_end"],
+    )
     summary.update(
         presentation_objects=presentation_objects,
         visual_objects=visual_objects,
@@ -1241,10 +1274,14 @@ def validate_setup(context):
         warnings.append("No liquid effectors or Babylon Lite collider meshes were found")
     if len(animated_collisions) > 16:
         errors.append("Babylon Lite supports at most 16 animated collision meshes")
+    for obj, kind in unsupported_animated_collisions:
+        if kind == "topology":
+            errors.append(f"{obj.name}: deforming or topology-changing animated collisions are not supported")
+        else:
+            errors.append(f"{obj.name}: deforming animated collisions are not supported; use rigid object or parent transforms")
     animated_voxels = 0
     for obj in animated_collisions:
         try:
-            validate_rigid_animation(obj, scene)
             _, dims, voxel_count, _, _, _ = local_collision_metrics(obj, int(obj.blitefluid_animated_sdf_resolution))
             animated_voxels += voxel_count
             if voxel_count > MAX_SDF_VOXELS:
@@ -1316,6 +1353,7 @@ def source_snapshot(scene, domain):
             effectors[obj.name] = settings_snapshot(modifier.effector_settings)
     if is_flip_fluids_domain(domain):
         dprops = domain.flip_fluid.domain
+        simulation_fps = float(dprops.simulation.get_frame_rate())
         domain_settings = {
             "simulation": settings_snapshot(dprops.simulation),
             "advanced": settings_snapshot(dprops.advanced),
@@ -1326,22 +1364,26 @@ def source_snapshot(scene, domain):
         application = "FLIP add-on"
     else:
         domain_settings = settings_snapshot(fluid_modifier(domain, "DOMAIN").domain_settings)
+        simulation_fps = float(scene.render.fps) / max(float(scene.render.fps_base), 1e-12)
         application = "Native fluid"
+    frame_start, frame_end = simulation_frame_range(scene, domain)
     return {
         "application": application,
         "version": bpy.app.version_string,
         "settings": {
             "timeline": {
-                "frameStart": scene.frame_start,
-                "frameEnd": scene.frame_end,
+                "frameStart": frame_start,
+                "frameEnd": frame_end,
                 "fps": scene.render.fps,
                 "fpsBase": scene.render.fps_base,
+                "simulationFps": simulation_fps,
             },
             "export": {
                 "separateFiles": scene.blitefluid_separate_files,
                 "exportLights": scene.blitefluid_export_lights,
                 "decimateMeshes": scene.blitefluid_decimate_meshes,
                 "targetTriangles": scene.blitefluid_target_triangles,
+                "initialState": scene.blitefluid_export_initial_state,
             },
             "collisionSdfResolution": scene.blitefluid_sdf_resolution,
             "targetInitialParticles": scene.blitefluid_target_initial_particles,
@@ -1354,6 +1396,36 @@ def source_snapshot(scene, domain):
             "flows": flows,
             "effectors": effectors,
         },
+    }
+
+
+def camera_preset(scene, domain):
+    camera = scene.camera
+    if camera is None or camera.type != "CAMERA" or camera.data.type != "PERSP":
+        return None
+    evaluated = camera.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    position = evaluated.matrix_world.translation.copy()
+    forward = evaluated.matrix_world.to_quaternion() @ Vector((0, 0, -1))
+    if forward.length_squared <= 1e-12:
+        return None
+    forward.normalize()
+    minimum, maximum = authored_domain_bounds(domain)
+    domain_center = (minimum + maximum) * 0.5
+    radius = max((domain_center - position).dot(forward), (maximum - minimum).length, 1.0)
+    target = position + forward * radius
+    runtime_position = blite_vec(position)
+    runtime_target = blite_vec(target)
+    offset = [runtime_position[axis] - runtime_target[axis] for axis in range(3)]
+    runtime_radius = math.sqrt(sum(value * value for value in offset))
+    frame = camera.data.view_frame(scene=scene)
+    vertical_angles = [math.atan2(corner.y, -corner.z) for corner in frame]
+    return {
+        "alpha": math.atan2(offset[2], offset[0]),
+        "beta": math.acos(clamp(offset[1] / runtime_radius, -1, 1)),
+        "radius": runtime_radius,
+        "target": runtime_target,
+        "fov": clamp(max(vertical_angles) - min(vertical_angles), 1e-4, math.pi - 1e-4),
+        "mirrorX": True,
     }
 
 
@@ -1371,8 +1443,9 @@ def default_preset(scene, grid_position, grid_size, emitters, sinks, derived, pa
         bubbles_enabled = bool(settings.use_bubble_particles)
         foam_layer_depth = 0
         simulation_time_scale = clamp(float(settings.time_scale), 0.01, 100)
+    camera = camera_preset(scene, domain)
     preset = {
-        "formatVersion": 15,
+        "formatVersion": 16,
         "simulationSemantics": {
             "version": 1,
             "profile": "normalized-v1",
@@ -1408,6 +1481,7 @@ def default_preset(scene, grid_position, grid_size, emitters, sinks, derived, pa
         "showGridBounds": False,
         "particleCount": particle_count,
         "material": 0,
+        **({"camera": camera} if camera is not None else {}),
         "render": {
             "renderAsSpheres": False,
             "waterColor": fluid_render_color(scene, domain),
@@ -1605,13 +1679,16 @@ def remove_export_checker_textures(records):
         bpy.data.images.remove(image)
 
 
-def export_glb(path, objects, export_lights, decimate, target_triangles, animated_collisions=(), emitter_source_names=()):
+def export_glb(path, objects, export_lights, decimate, target_triangles, frame_start, frame_end, animated_collisions=(), emitter_source_names=()):
     if not objects:
         raise ValueError("No visible presentation meshes are available for scene.glb")
     view_layer = bpy.context.view_layer
     previous_active = view_layer.objects.active
     previous_selected = list(bpy.context.selected_objects)
     previous_visibility = [(obj, obj.hide_render, obj.hide_viewport, obj.hide_get()) for obj in objects]
+    previous_frame_start = bpy.context.scene.frame_start
+    previous_frame_end = bpy.context.scene.frame_end
+    previous_frame = bpy.context.scene.frame_current
     decimation_modifiers = add_export_decimation(objects, target_triangles, animated_collisions) if decimate else []
     checker_records = []
     try:
@@ -1623,6 +1700,9 @@ def export_glb(path, objects, export_lights, decimate, target_triangles, animate
             obj.hide_set(False)
             obj.select_set(True)
         view_layer.objects.active = objects[0]
+        bpy.context.scene.frame_start = frame_start
+        bpy.context.scene.frame_end = frame_end
+        bpy.context.scene.frame_set(frame_start)
         export_options = dict(
             filepath=path,
             export_format="GLB",
@@ -1634,6 +1714,7 @@ def export_glb(path, objects, export_lights, decimate, target_triangles, animate
             export_animations=True,
             export_frame_range=True,
             export_frame_step=1,
+            export_anim_slide_to_zero=True,
             export_force_sampling=True,
             export_bake_animation=True,
             export_animation_mode="SCENE",
@@ -1654,7 +1735,56 @@ def export_glb(path, objects, export_lights, decimate, target_triangles, animate
         for obj, modifier in decimation_modifiers:
             obj.modifiers.remove(modifier)
         remove_export_checker_textures(checker_records)
+        bpy.context.scene.frame_start = previous_frame_start
+        bpy.context.scene.frame_end = previous_frame_end
+        bpy.context.scene.frame_set(previous_frame)
         view_layer.update()
+
+
+def ffp3_vector_count(path):
+    with open(path, "rb") as stream:
+        header = stream.read(16)
+    if len(header) != 16:
+        raise ValueError(f"{os.path.basename(path)} is truncated")
+    surface, boundary, interior, id_limit = struct.unpack("<4I", header)
+    count = surface + boundary + interior
+    expected = 16 + id_limit * 12 + count * 12
+    if os.path.getsize(path) != expected:
+        raise ValueError(f"{os.path.basename(path)} has an invalid payload length")
+    return count, id_limit
+
+
+def baked_initial_state_paths(domain, frame):
+    bakefiles = os.path.join(domain.flip_fluid.domain.cache.get_cache_abspath(), "bakefiles")
+    suffix = str(frame).zfill(6) + ".ffp3"
+    return os.path.join(bakefiles, "fluidparticles" + suffix), os.path.join(bakefiles, "fluidparticlesvelocity" + suffix)
+
+
+def build_baked_initial_state(domain, frame):
+    positions_path, velocities_path = baked_initial_state_paths(domain, frame)
+    if not os.path.isfile(positions_path) or not os.path.isfile(velocities_path):
+        raise ValueError(
+            f"Exact initial state requires baked fluid particle positions and velocities at frame {frame}; "
+            "enable this option before baking, then bake the simulation"
+        )
+    count, position_id_limit = ffp3_vector_count(positions_path)
+    velocity_count, velocity_id_limit = ffp3_vector_count(velocities_path)
+    if count != velocity_count:
+        raise ValueError(f"Initial position/velocity counts differ at frame {frame}: {count:,} vs {velocity_count:,}")
+    with open(positions_path, "rb") as stream:
+        positions = stream.read()
+    with open(velocities_path, "rb") as stream:
+        velocities = stream.read()
+    position_offset = 16 + position_id_limit * 12
+    velocity_offset = 16 + velocity_id_limit * 12
+    output = bytearray(INITIAL_STATE_HEADER_BYTES + count * 24)
+    struct.pack_into("<3IiI3I", output, 0, INITIAL_STATE_MAGIC, 1, count, frame, 1, 0, 0, 0)
+    for index in range(count):
+        px, py, pz = struct.unpack_from("<3f", positions, position_offset + index * 12)
+        vx, vy, vz = struct.unpack_from("<3f", velocities, velocity_offset + index * 12)
+        struct.pack_into("<3f", output, INITIAL_STATE_HEADER_BYTES + index * 12, px, pz, -py)
+        struct.pack_into("<3f", output, INITIAL_STATE_HEADER_BYTES + count * 12 + index * 12, vx, vz, -vy)
+    return {"bytes": bytes(output), "count": count, "frame": frame}
 
 
 def export_bundle(context, filepath):
@@ -1677,10 +1807,15 @@ def export_bundle(context, filepath):
     presentation_objects = summary["presentation_objects"]
     collision_objects = summary["collision_objects"]
     animated_objects = summary["animated_collisions"]
+    frame_start = summary["frame_start"]
+    frame_end = summary["frame_end"]
+    initial_state = build_baked_initial_state(domain, frame_start) if scene.blitefluid_export_initial_state else None
+    if initial_state is not None:
+        particle_count = max(particle_count, initial_state["count"])
     previous_frame = scene.frame_current
     animated_payloads = []
     try:
-        scene.frame_set(scene.frame_start)
+        scene.frame_set(frame_start)
         collision = bake_collision(
             collision_objects,
             grid_position,
@@ -1697,7 +1832,7 @@ def export_bundle(context, filepath):
                     "node": obj.name,
                     "space": "node-local",
                     "resolution": resolution,
-                    "bakeFrame": scene.frame_start,
+                    "bakeFrame": frame_start,
                     "presentation": bool(not obj.hide_render and obj.visible_get()),
                     "enabled": True,
                     "trilinear": True,
@@ -1720,6 +1855,8 @@ def export_bundle(context, filepath):
             scene.blitefluid_export_lights,
             scene.blitefluid_decimate_meshes,
             scene.blitefluid_target_triangles,
+            frame_start,
+            frame_end,
             animated_objects,
             emitter_source_names,
         )
@@ -1738,6 +1875,19 @@ def export_bundle(context, filepath):
                 }
             )
             byte_offset += byte_length
+        initial_state_entry = None
+        if initial_state is not None:
+            byte_length = len(initial_state["bytes"])
+            sdf_container.extend(initial_state["bytes"])
+            initial_state_entry = {
+                "data": os.path.basename(sdf_path),
+                "byteOffset": byte_offset,
+                "byteLength": byte_length,
+                "count": initial_state["count"],
+                "frame": initial_state["frame"],
+                "space": "world",
+            }
+            byte_offset += byte_length
         with open(sdf_path, "wb") as stream:
             stream.write(zlib.compress(sdf_container, level=6))
         for stale_path in glob.glob(base_path + ".animated-collision-*.sdf"):
@@ -1751,6 +1901,7 @@ def export_bundle(context, filepath):
             "collisionTrilinear": True,
             "collisionByteLength": len(collision),
             "anchorPosition": grid_position,
+            **({"initialState": initial_state_entry} if initial_state_entry else {}),
             **({"animatedCollisions": animated_entries} if animated_entries else {}),
         }
     else:
@@ -1762,6 +1913,8 @@ def export_bundle(context, filepath):
                 scene.blitefluid_export_lights,
                 scene.blitefluid_decimate_meshes,
                 scene.blitefluid_target_triangles,
+                frame_start,
+                frame_end,
                 animated_objects,
                 emitter_source_names,
             )
@@ -1775,6 +1928,18 @@ def export_bundle(context, filepath):
             "collisionEnabled": True,
             "collisionTrilinear": True,
             "anchorPosition": grid_position,
+            **(
+                {
+                    "initialState": {
+                        "data": base64.b64encode(zlib.compress(initial_state["bytes"], level=6)).decode("ascii"),
+                        "count": initial_state["count"],
+                        "frame": initial_state["frame"],
+                        "space": "world",
+                    }
+                }
+                if initial_state is not None
+                else {}
+            ),
             **(
                 {
                     "animatedCollisions": [
@@ -1875,6 +2040,30 @@ class BLITEFLUID_PT_export(bpy.types.Panel):
             )
         except (AttributeError, TypeError, ValueError):
             self.layout.label(text="Particle estimate unavailable until a valid liquid setup exists")
+        try:
+            domain = find_domain(context.scene)
+            frame_start, frame_end = simulation_frame_range(context.scene, domain)
+            self.layout.label(text=f"Export frame range: {frame_start} to {frame_end}")
+        except (AttributeError, TypeError, ValueError):
+            self.layout.label(text="Export frame range unavailable until a valid liquid domain exists")
+        initial_state_row = self.layout.row()
+        try:
+            domain = find_domain(context.scene)
+            initial_state_row.enabled = is_flip_fluids_domain(domain)
+        except (AttributeError, TypeError, ValueError):
+            initial_state_row.enabled = False
+        initial_state_row.prop(context.scene, "blitefluid_export_initial_state")
+        if context.scene.blitefluid_export_initial_state and initial_state_row.enabled:
+            try:
+                frame_start, _ = simulation_frame_range(context.scene, domain)
+                positions_path, velocities_path = baked_initial_state_paths(domain, frame_start)
+                position_count, _ = ffp3_vector_count(positions_path)
+                velocity_count, _ = ffp3_vector_count(velocities_path)
+                if position_count != velocity_count:
+                    raise ValueError("position/velocity particle counts differ")
+                self.layout.label(text=f"Initial state: frame {frame_start}, {position_count:,} markers")
+            except (OSError, ValueError):
+                self.layout.label(text="Initial state cache missing; enable before baking and rebake", icon="ERROR")
         self.layout.prop(context.scene, "blitefluid_sdf_resolution", text="Static collision SDF resolution")
         try:
             dims, texture_bytes = collision_texture_metrics(context.scene)
@@ -1904,6 +2093,24 @@ CLASSES = (BLITEFLUID_OT_export, BLITEFLUID_PT_export)
 
 def menu_func_export(self, context):
     self.layout.operator(BLITEFLUID_OT_export.bl_idname, text="Babylon Lite Fluid JSON (.json)")
+
+
+def update_export_initial_state(scene, context):
+    if not scene.blitefluid_export_initial_state:
+        return
+    try:
+        domain = find_domain(context.scene)
+    except ValueError:
+        return
+    if not is_flip_fluids_domain(domain):
+        return
+    particles = domain.flip_fluid.domain.particles
+    particles.enable_fluid_particle_output = True
+    particles.fluid_particle_output_amount = 1.0
+    particles.enable_fluid_particle_surface_output = True
+    particles.enable_fluid_particle_boundary_output = True
+    particles.enable_fluid_particle_interior_output = True
+    particles.enable_fluid_particle_velocity_vector_attribute = True
 
 
 def register():
@@ -1941,6 +2148,12 @@ def register():
         description="Write sibling .glb and .sdf files and reference them from the JSON instead of embedding base64 data",
         default=False,
     )
+    bpy.types.Scene.blitefluid_export_initial_state = BoolProperty(
+        name="Export baked initial positions/velocities",
+        description="Enable full FLIP marker and velocity cache output for baking, then export the first baked frame as the exact Babylon FLIP initial state",
+        default=False,
+        update=update_export_initial_state,
+    )
     bpy.types.Scene.blitefluid_export_lights = BoolProperty(
         name="Export lights",
         description="Include visible point, sun, and spot lights in the scene GLB",
@@ -1963,6 +2176,7 @@ def unregister():
     del bpy.types.Scene.blitefluid_target_triangles
     del bpy.types.Scene.blitefluid_decimate_meshes
     del bpy.types.Scene.blitefluid_export_lights
+    del bpy.types.Scene.blitefluid_export_initial_state
     del bpy.types.Scene.blitefluid_separate_files
     del bpy.types.Object.blitefluid_animated_sdf_resolution
     del bpy.types.Scene.blitefluid_sdf_resolution

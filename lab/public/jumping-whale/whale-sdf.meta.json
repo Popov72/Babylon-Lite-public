@@ -1,0 +1,19 @@
+{
+  "formatVersion": 2,
+  "generator": "native-gltf-skinning",
+  "sourceSha256": "4bcd362558558f3d510a9c0108d315ef5b8437f43a3750c211ebfb0cfa285465",
+  "sdfSha256": "cbd7278df1e5cde2a0509a99792296782cc696dd28df8655dfef20ff0fe46e2a",
+  "frameCount": 144,
+  "frameRate": 12,
+  "dims": [
+    49,
+    66,
+    30
+  ],
+  "origin": [
+    -6,
+    -7.25,
+    -3.25
+  ],
+  "cellSize": 0.25
+}

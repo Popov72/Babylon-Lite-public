@@ -87,7 +87,7 @@ export function createArcRotateCamera(alpha: number, beta: number, radius: numbe
  *  Input handlers accumulate into the camera's inertial offset properties.
  *  Inertia is applied each frame via scene._beforeRender (single RAF loop).
  *  Returns a cleanup function to remove all event listeners and the beforeRender hook. */
-export function attachControl(camera: ArcRotateCamera, canvas: HTMLCanvasElement, scene?: SceneContext): () => void;
+export function attachControl(camera: ArcRotateCamera, canvas: HTMLCanvasElement, scene?: SceneContext, options?: AttachControlOptions): () => void;
 ```
 
 ### `free-camera.ts`

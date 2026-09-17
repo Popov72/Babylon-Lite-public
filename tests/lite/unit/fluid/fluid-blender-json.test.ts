@@ -25,6 +25,20 @@ function collisionBytes(): Uint8Array {
     return bytes;
 }
 
+function initialStateBytes(): Uint8Array {
+    const positions = [1, 2, 3, 4, 5, 6];
+    const velocities = [0.1, 0.2, 0.3, -0.1, -0.2, -0.3];
+    const bytes = new Uint8Array(32 + (positions.length + velocities.length) * 4);
+    const view = new DataView(bytes.buffer);
+    view.setUint32(0, 0x49464c42, true);
+    view.setUint32(4, 1, true);
+    view.setUint32(8, 2, true);
+    view.setInt32(12, 150, true);
+    view.setUint32(16, 1, true);
+    [...positions, ...velocities].forEach((value, index) => view.setFloat32(32 + index * 4, value, true));
+    return bytes;
+}
+
 function glbBytes(): Uint8Array {
     const bytes = new Uint8Array(12);
     const view = new DataView(bytes.buffer);
@@ -52,8 +66,8 @@ describe("Blender FLIP Fluids exporter", () => {
 
     it("exports the format-15 quality-comparison settings", () => {
         const source = readFileSync(resolve(process.cwd(), "scripts/blender-fluid-addon.py"), "utf8");
-        expect(source).toContain('"version": (3, 9, 0)');
-        expect(source).toContain('"formatVersion": 15');
+        expect(source).toContain('"version": (3, 17, 0)');
+        expect(source).toContain('"formatVersion": 16');
         for (const key of [
             "pressureSolver",
             "multigridCycles",
@@ -77,11 +91,30 @@ describe("Blender FLIP Fluids exporter", () => {
         }
     });
 
-    it("limits imported FLIP Fluids resolution to a runtime-compatible grid", () => {
+    it("preserves authored FLIP resolution without fixed export ceilings", () => {
         const source = readFileSync(resolve(process.cwd(), "scripts/blender-fluid-addon.py"), "utf8");
-        expect(source).toContain("MAX_GRID_CELL_COUNT = 8 * 1024 * 1024");
-        expect(source).toContain("resolution = compatible_flip_resolution(grid_size, raw_resolution)");
-        expect(source).toContain("to fit Babylon Lite grid allocation limits");
+        expect(source).not.toContain("MAX_GRID_CELL_COUNT");
+        expect(source).not.toContain("compatible_flip_resolution");
+        expect(source).toContain("resolution = max(16, int(resolution_override if resolution_override is not None else raw_resolution))");
+    });
+
+    it("scopes collision classification and glTF animation to the fluid bake range", () => {
+        const source = readFileSync(resolve(process.cwd(), "scripts/blender-fluid-addon.py"), "utf8");
+        expect(source).toContain("def simulation_frame_range(scene, domain):");
+        expect(source).toContain("domain.flip_fluid.domain.simulation.get_frame_range()");
+        expect(source).toContain("def classify_collision_animation(obj, scene, frame_start, frame_end):");
+        expect(source).toContain('return "rigid" if transform_changed else "static"');
+        expect(source).toContain("bpy.context.scene.frame_start = frame_start");
+        expect(source).toContain("bpy.context.scene.frame_end = frame_end");
+        expect(source).toContain("export_anim_slide_to_zero=True");
+        expect(source).toContain('"bakeFrame": frame_start');
+        expect(source).toContain("Export frame range:");
+        expect(source).toContain('"simulationFps": simulation_fps');
+        expect(source).toContain('"maxSubDtMs": 1000 / (simulation_fps * min_substeps)');
+        expect(source).toContain("blitefluid_export_initial_state");
+        expect(source).toContain("def build_baked_initial_state(domain, frame):");
+        expect(source).toContain("fluidparticlesvelocity");
+        expect(source).toContain('"initialState": initial_state_entry');
     });
 
     it("exports Blender lights in Babylon Lite's unitless lighting mode", () => {
@@ -121,7 +154,10 @@ describe("Blender FLIP Fluids exporter", () => {
         expect(source).toContain("def clipped_initial_particle_count(");
         expect(source).toContain("def particle_target_preview(");
         expect(source).toContain("def authored_object_transform(obj):");
-        expect(source).toContain('zlib.compress(sdf_container, level=6)');
+        expect(source).toContain("def camera_preset(scene, domain):");
+        expect(source).toContain("vertical_angles = [math.atan2(corner.y, -corner.z) for corner in frame]");
+        expect(source).toContain('"mirrorX": True');
+        expect(source).toContain("zlib.compress(sdf_container, level=6)");
         expect(source).toContain('"sdfCompression": "zlib"');
         expect(source).toContain("particle_count = max(1, initial_markers + target_inflow_particles)");
         expect(source).toContain("initial_row.enabled = initial_count > 0");
@@ -348,6 +384,29 @@ function selfContainedJson(preset: FluidExportJson): string {
     return JSON.stringify(preset);
 }
 
+function referencePreset(): FluidExportJson {
+    const preset = validPreset();
+    preset.backendId = "flip-reference";
+    preset.meta.method = "FLIP";
+    preset.physics = {
+        gravity: 9.8,
+        flipRatio: 0.95,
+        minSubsteps: 1,
+        maxSubsteps: 8,
+        maxSubDtMs: 8.4,
+        cflNumber: 2,
+    };
+    preset.gridResolution = 80;
+    preset.emitters![0]!.behavior = "initial";
+    delete preset.emitters![0]!.volumeRate;
+    preset.sinks = [];
+    preset.pagedGrid = false;
+    preset.foam.enableFoam = false;
+    preset.render.renderAsSpheres = false;
+    preset.render.anisotropicSurface = true;
+    return preset;
+}
+
 describe("Blender fluid JSON", () => {
     it("parses the self-contained format-6 Blender JSON", () => {
         const preset = validPreset();
@@ -365,6 +424,92 @@ describe("Blender fluid JSON", () => {
         expect(bundle.preset.sinks?.[0]?.mode).toBe("recycle");
         expect(bundle.sceneGlb.byteLength).toBe(glbBytes().byteLength);
         expect(bundle.collision.dims).toEqual([2, 2, 2]);
+    });
+
+    it("accepts the exact Reference physics profile with screen-space anisotropy", () => {
+        const parsed = parseBlenderFluidJson(selfContainedJson(referencePreset())).preset;
+
+        expect(parsed.backendId).toBe("flip-reference");
+        expect(parsed.physics).toEqual({
+            gravity: 9.8,
+            flipRatio: 0.95,
+            minSubsteps: 1,
+            maxSubsteps: 8,
+            maxSubDtMs: 8.4,
+            cflNumber: 2,
+        });
+        expect(parsed.render).toMatchObject({ renderAsSpheres: false, anisotropicSurface: true });
+    });
+
+    it("accepts Reference whitewater without weakening its liquid-backend restrictions", () => {
+        const preset = referencePreset();
+        preset.foam.enableFoam = true;
+        preset.foam.generateSpray = true;
+        preset.foam.generateFoam = false;
+        preset.foam.generateBubbles = true;
+        const parsed = parseBlenderFluidJson(selfContainedJson(preset)).preset;
+        expect(parsed.foam).toMatchObject({ enableFoam: true, generateSpray: true, generateFoam: false, generateBubbles: true });
+        expect(parsed.physics).toEqual(preset.physics);
+        expect(parsed.backendId).toBe("flip-reference");
+    });
+
+    it.each([
+        [
+            "an unknown backend",
+            (preset: FluidExportJson) => {
+                Object.assign(preset, { backendId: "unknown" });
+            },
+            'backendId "unknown" is not supported',
+        ],
+        [
+            "Reference with a non-FLIP method",
+            (preset: FluidExportJson) => {
+                preset.meta.method = "PBF";
+            },
+            'requires meta.method "FLIP"',
+        ],
+        [
+            "unsupported Reference physics",
+            (preset: FluidExportJson) => {
+                preset.physics.kinematicViscosity = 0;
+            },
+            "unsupported: kinematicViscosity",
+        ],
+        [
+            "Reference polygon reconstruction",
+            (preset: FluidExportJson) => {
+                preset.physics.polygonSurface = 0;
+            },
+            "does not support polygon-surface reconstruction",
+        ],
+        [
+            "Reference paging",
+            (preset: FluidExportJson) => {
+                preset.pagedGrid = true;
+            },
+            "does not support paged grids",
+        ],
+        [
+            "an active Reference inflow",
+            (preset: FluidExportJson) => {
+                preset.emitters![0]!.behavior = "inflow";
+            },
+            "initial-only",
+        ],
+        [
+            "an active Reference sink",
+            (preset: FluidExportJson) => {
+                const sink = structuredClone(validPreset().sinks![0]!);
+                sink.mode = "delete";
+                sink.targets = [];
+                preset.sinks = [sink];
+            },
+            "does not support active sink",
+        ],
+    ])("rejects %s", (_name, mutate, message) => {
+        const preset = referencePreset();
+        mutate(preset);
+        expect(() => parseBlenderFluidJson(selfContainedJson(preset))).toThrow(message);
     });
 
     it("loads external GLB and SDF resources and re-embeds them for UI export", () => {
@@ -648,6 +793,55 @@ describe("Blender fluid JSON", () => {
         expect(parseBlenderFluidJson(selfContainedJson(preset)).preset.particleCount).toBe(2_500_000);
     });
 
+    it("validates and preserves authored camera projection", () => {
+        const preset = validPreset();
+        preset.camera = { alpha: 0.25, beta: 1.1, radius: 12, target: [1, 2, 3], fov: 0.471, mirrorX: true };
+
+        expect(parseBlenderFluidJson(selfContainedJson(preset)).preset.camera).toEqual(preset.camera);
+    });
+
+    it("parses exact baked FLIP positions and velocities", () => {
+        const json = JSON.parse(selfContainedJson(validPreset())) as FluidExportJson;
+        json.meta.method = "FLIP";
+        json.physics = {
+            gravity: 9.8,
+            flipRatio: 0.95,
+            kinematicViscosity: 0,
+            surfaceTension: 0,
+            minSubsteps: 2,
+            maxSubsteps: 8,
+            cflNumber: 2,
+            restitution: 0,
+            velocityDamping: 0,
+            pressureIterations: 40,
+            pressureRelaxation: 0.8,
+            viscosityIterations: 12,
+            maxSubDtMs: 10,
+        };
+        json.gridResolution = 32;
+        json.markersPerCell = 8;
+        json.particleCount = 10;
+        delete json.physicsParticleSize;
+        json.scene!.initialState = {
+            data: Buffer.from(zlibSync(initialStateBytes())).toString("base64"),
+            count: 2,
+            frame: 150,
+            space: "world",
+        };
+
+        const initialState = parseBlenderFluidJson(JSON.stringify(json)).initialState!;
+        expect(initialState.frame).toBe(150);
+        expect([...initialState.positions]).toEqual([1, 2, 3, 4, 5, 6]);
+        expect([...initialState.velocities]).toEqual([
+            expect.closeTo(0.1),
+            expect.closeTo(0.2),
+            expect.closeTo(0.3),
+            expect.closeTo(-0.1),
+            expect.closeTo(-0.2),
+            expect.closeTo(-0.3),
+        ]);
+    });
+
     it.each(["", "none"])('normalizes legacy foamDebug "%s" to "off"', (foamDebug) => {
         const preset = validPreset();
         preset.foam!.foamDebug = foamDebug;
@@ -666,6 +860,34 @@ describe("Blender fluid JSON", () => {
         expect(scene.anchorPosition).toEqual([1, 2, 3]);
     });
 
+    it("accepts FLIP grids above the former fixed preset ceilings", () => {
+        const preset = validPreset();
+        preset.meta.method = "FLIP";
+        preset.physics = {
+            gravity: 9.8,
+            flipRatio: 0.95,
+            kinematicViscosity: 0,
+            surfaceTension: 0,
+            minSubsteps: 2,
+            maxSubsteps: 8,
+            cflNumber: 2,
+            restitution: 0,
+            velocityDamping: 0,
+            pressureIterations: 40,
+            pressureRelaxation: 0.8,
+            viscosityIterations: 12,
+            maxSubDtMs: 8.4,
+        };
+        preset.gridResolution = 4096;
+        preset.gridSize = [2.96, 1.74549376965, 7.8];
+        preset.particleCount = 10_000;
+        delete preset.physicsParticleSize;
+
+        const parsed = parseBlenderFluidJson(selfContainedJson(preset)).preset;
+        expect(parsed.gridResolution).toBe(4096);
+        expect(parsed.gridSize).toEqual([2.96, 1.74549376965, 7.8]);
+    });
+
     it("rejects truncated collision payloads", () => {
         expect(() => parseBlenderFluidCollision(collisionBytes().subarray(0, -4))).toThrow("payload length");
     });
@@ -675,29 +897,6 @@ describe("Blender fluid JSON", () => {
         ["unknown solver method", (preset: FluidExportJson) => (preset.meta.method = "SPH"), "meta.method"],
         ["unsafe particle count", (preset: FluidExportJson) => (preset.particleCount = Number.MAX_SAFE_INTEGER + 1), "particleCount"],
         ["unbounded physics particle size", (preset: FluidExportJson) => (preset.physicsParticleSize = 9), "physicsParticleSize"],
-        [
-            "unbounded FLIP grid resolution",
-            (preset: FluidExportJson) => {
-                preset.meta.method = "FLIP";
-                preset.physics = {
-                    gravity: 9.8,
-                    flipRatio: 0.95,
-                    kinematicViscosity: 0,
-                    surfaceTension: 0,
-                    minSubsteps: 2,
-                    maxSubsteps: 8,
-                    cflNumber: 2,
-                    restitution: 0,
-                    velocityDamping: 0,
-                    pressureIterations: 40,
-                    pressureRelaxation: 0.8,
-                    viscosityIterations: 12,
-                    maxSubDtMs: 8.4,
-                };
-                preset.gridResolution = 2049;
-            },
-            "gridResolution",
-        ],
         [
             "unbounded markers per cell",
             (preset: FluidExportJson) => {
@@ -725,7 +924,6 @@ describe("Blender fluid JSON", () => {
         ["unbounded alpha decay", (preset: FluidExportJson) => (preset.alphaDecay = 11), "alphaDecay"],
         ["unbounded simulation time scale", (preset: FluidExportJson) => (preset.simulationTimeScale = 101), "simulationTimeScale"],
         ["negative grid extent", (preset: FluidExportJson) => (preset.gridSize = [40, -1, 40]), "gridSize[1]"],
-        ["unbounded grid allocation", (preset: FluidExportJson) => (preset.gridSize = [10_000, 10_000, 10_000]), "allocation limits"],
         [
             "too many emitters",
             (preset: FluidExportJson) => {

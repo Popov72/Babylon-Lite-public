@@ -476,7 +476,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         collectMeshes(root, meshes);
         return meshes.length ? { root, meshes } : null;
     };
-    void (async (): Promise<void> => {
+    const loadDucks = async (): Promise<void> => {
         try {
             const first = await loadDuckRoot();
             if (!first) return;
@@ -584,7 +584,17 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             // eslint-disable-next-line no-console
             console.warn("[box] duck load failed", err);
         }
-    })();
+    };
+    let duckLoadPromise: Promise<void> | null = null;
+    const ensureDucksLoaded = (): void => {
+        if (duckReady || duckLoadPromise) {
+            return;
+        }
+        duckLoadPromise = loadDucks().finally(() => {
+            duckLoadPromise = null;
+        });
+        void duckLoadPromise;
+    };
 
     // Per-frame hybrid update: the reusable system measures submersion from the current Havok pose,
     // then this demo converts that measurement into Havok forces. Havok steps after the core's
@@ -732,6 +742,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     raftChk.onchange = () => {
         bodyOn = raftChk.checked;
         if (bodyOn) {
+            ensureDucksLoaded();
             bodySystem.reset();
         }
         setDucksEnabled(bodyOn, bodyOn);

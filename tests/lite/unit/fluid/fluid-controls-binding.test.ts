@@ -240,6 +240,46 @@ describe("shared fluid controls binding", () => {
         expect(normalized.schema.pressureTolerance).toBe(0);
     });
 
+    it("prepares a backend transition before applying otherwise-identical live values", () => {
+        const initial = values({ pagedGrid: false, schema: { gravity: 9.8, polygonSurface: 0 } });
+        const { simulation, backend } = fakeSimulation({ ...simulationOptions(false), pagedGrid: false, physics: initial.schema });
+        let useReference = false;
+        const desiredBackend: NonNullable<FluidSimulationOptions["backend"]> = {
+            id: "flip-reference",
+            name: "FLIP Reference",
+            method: "FLIP",
+            steppingMode: "async",
+            renderModes: ["spheres", "surface"],
+            supportsFoam: false,
+            supportsForces: false,
+            supportsContinuousFlow: false,
+            physicsParameters: ["gravity"],
+            description: "test provider",
+            _create: () => {
+                throw new Error("backend transition attempted");
+            },
+        };
+        const binding = bindFluidControls({
+            controls: controlsFor(initial),
+            target: simulation,
+            deviceLimits: limits,
+            resolveTarget: () => ({
+                simulation,
+                options: {
+                    ...simulation.options,
+                    ...(useReference ? { backend: desiredBackend } : {}),
+                },
+            }),
+        });
+        const before = binding.snapshot;
+        useReference = true;
+
+        expect(() => applyFluidControls(binding, initial, [])).toThrow("backend transition attempted");
+        expect(backend.setParam).not.toHaveBeenCalled();
+        expect(backend.setFoam).not.toHaveBeenCalled();
+        expect(binding.snapshot).toBe(before);
+    });
+
     it("derives and clamps page capacity from shared target options and device limits", () => {
         const initial = values({ pagedGridMaxPages: 1_000_000_000 });
         const { simulation } = fakeSimulation({
@@ -329,10 +369,20 @@ describe("shared fluid controls binding", () => {
         expect(plan.restartRequired).toBe(true);
     });
 
+    it.each(["PBF", "MLS-MPM", "PB-MPM"] as const)("keeps %s grid bounds pending until reset", (method) => {
+        const previous = values({ method });
+        const next = values({ method, gridPosition: [1, 2, 3], gridSize: [10, 11, 12] });
+
+        expect(deriveFluidControlsApplicationPlan(previous, next, ["gridPosition", "gridSize"])).toMatchObject({
+            reconfigure: false,
+            restartRequired: true,
+        });
+    });
+
     it("keeps pending FLIP restart projections visible until the simulation catches up", () => {
         const initial = values();
         const { simulation, backend } = fakeSimulation(simulationOptions(false));
-        const usage: number[][] = [];
+        const usage: Array<Array<number | boolean>> = [];
         const binding = bindFluidControls({
             controls: controlsFor(initial, (...args) => usage.push(args.map((value) => value ?? -1))),
             target: simulation,
@@ -364,7 +414,7 @@ describe("shared fluid controls binding", () => {
         expect(pending.restartRequired).toBe(true);
         expect(simulation._sim).toBe(backend);
         expect(simulation.count).toBe(20_000);
-        expect(usage.at(-1)?.slice(3)).toEqual([40_000, 40_000, binding.memory.steadyBytes]);
+        expect(usage.at(-1)?.slice(3, 6)).toEqual([40_000, 40_000, binding.memory.steadyBytes]);
 
         const stillPending = applyFluidControls(binding, values({ count: 40_000, color: "#ffffff" }), ["color"]);
         expect(stillPending.restartRequired).toBe(true);
@@ -373,7 +423,52 @@ describe("shared fluid controls binding", () => {
         backend.count = 40_000;
         syncFluidControls(binding);
         expect(binding.plan.restartRequired).toBe(false);
-        expect(usage.at(-1)?.slice(3)).toEqual([-1, -1, -1]);
+        expect(usage.at(-1)?.slice(3, 6)).toEqual([-1, -1, -1]);
+    });
+
+    it("uses a constant-time estimated active count for pending FLIP resolution changes", () => {
+        const initial = values();
+        const options = simulationOptions(false);
+        options.flow = {
+            emitters: [
+                {
+                    id: "initial",
+                    name: "Initial",
+                    enabled: true,
+                    behavior: "initial",
+                    transform: { position: [3.5, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1] },
+                    shape: { type: "box", size: [4, 4, 4] },
+                    sampling: "volume",
+                    velocity: [0, 0, 0],
+                    velocitySpace: "world",
+                    spread: 0,
+                },
+            ],
+            sinks: [],
+        };
+        const { simulation, backend } = fakeSimulation(options);
+        const binding = bindFluidControls({
+            controls: controlsFor(initial),
+            target: simulation,
+            deviceLimits: limits,
+            resolveTarget: (_simulation, snapshot) => ({
+                simulation,
+                options: {
+                    ...simulation.options,
+                    gridResolution: snapshot.gridResolution,
+                    markersPerCell: snapshot.markersPerCell,
+                },
+            }),
+        });
+
+        const pending = applyFluidControls(binding, values({ gridResolution: 512 }), ["gridResolution"]);
+
+        expect(pending.restartRequired).toBe(true);
+        expect(simulation._sim).toBe(backend);
+        expect(binding.memory.restartActiveCountEstimated).toBe(true);
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/controls/fluid-controls-binding.ts"), "utf8");
+        expect(source).not.toContain('from "../core/initial-state-plan.js";');
+        expect(source).toContain("fluidInitialEmitterVolume(options.flow)");
     });
 
     it("reuses the resolved projection while the controls snapshot and target set are unchanged", () => {
@@ -650,6 +745,21 @@ describe("shared fluid controls binding", () => {
 
         disposeFluidControlsBinding(binding);
         expect(binding.disposed).toBe(true);
+    });
+
+    it("preserves provider overrides in target options and forces reset candidates", () => {
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/controls/fluid-controls-binding.ts"), "utf8");
+
+        expect(source).toContain('| "backend"');
+        expect(source).toContain("const base = target.options;");
+        expect(source).toContain("...base,");
+        expect(source).toContain("backend: base.backend");
+        expect(source).toContain("return current !== desired || current?.id !== desired?.id");
+        expect(source).toContain("target.options.backend || target.simulation.options.backend ? false : (target.preserveState ?? true)");
+        expect(source).toContain("targets.some((target) => backendChanged(target.simulation.options.backend, target.options.backend))");
+        expect(source).toContain("plan = { ...plan, reconfigure: true, restartRequired: false }");
+        expect(source).toContain("preserveState: preserveReconfiguredState(target)");
+        expect(source).toContain("prepareFluidReconfiguration(target.simulation, commonSimulationOptions(binding, target, next), preserveReconfiguredState(target))");
     });
 
     it("is the common apply, page-diagnostic and memory authority for both lab hosts", () => {

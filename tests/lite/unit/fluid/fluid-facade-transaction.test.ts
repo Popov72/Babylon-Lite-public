@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { FluidSimulationBackend } from "../../../../packages/babylon-lite/src/fluid/core/fluid-facade.js";
 
 const mocks = vi.hoisted(() => {
     const state = {
@@ -281,6 +282,23 @@ vi.mock("../../../../packages/babylon-lite/src/fluid/core/fluid-particle-runtime
 }));
 
 const facade = await import("../../../../packages/babylon-lite/src/fluid/core/fluid-facade.js");
+const flipModule = await import("../../../../packages/babylon-lite/src/fluid/solvers/flip-sim.js");
+
+function asynchronousBackend(submitStep: (dt: number, beforeSubstep?: (dt: number) => void) => Promise<void>): FluidSimulationBackend {
+    return {
+        id: "test-async",
+        name: "Async test solver",
+        method: "FLIP",
+        steppingMode: "async",
+        renderModes: ["spheres", "surface"],
+        supportsFoam: false,
+        supportsForces: false,
+        supportsContinuousFlow: false,
+        physicsParameters: ["gravity"],
+        description: "Test-only asynchronous backend.",
+        _create: (engine) => ({ ...flipModule.createFlipSim(engine), submitStep }),
+    };
+}
 
 const engine = {
     _device: {
@@ -322,6 +340,55 @@ beforeEach(() => {
 });
 
 describe("fluid facade transactional lifecycle", () => {
+    it("awaits an explicit asynchronous backend and forwards per-substep scene updates", async () => {
+        let finish!: () => void;
+        const pending = new Promise<void>((resolve) => {
+            finish = resolve;
+        });
+        const submit = vi.fn(async (dt: number, beforeSubstep?: (dt: number) => void) => {
+            beforeSubstep?.(dt / 2);
+            await pending;
+            beforeSubstep?.(dt / 2);
+        });
+        const simulation = facade.createFluidSimulation(engine as never, { ...options("FLIP"), backend: asynchronousBackend(submit) });
+        const beforeSubstep = vi.fn();
+        expect(simulation.steppingMode).toBe("async");
+        expect(() => facade.stepFluidSimulation(simulation, 0.02)).toThrow("awaited submitFluidSimulationStep");
+        const operation = facade.submitFluidSimulationStep(simulation, 0.02, { beforeSubstep });
+        expect(beforeSubstep).toHaveBeenCalledExactlyOnceWith(0.01);
+        expect(engine._device.createCommandEncoder).not.toHaveBeenCalled();
+        finish();
+        await operation;
+        expect(beforeSubstep).toHaveBeenCalledTimes(2);
+        expect(mocks.state.backends[0]!.step).not.toHaveBeenCalled();
+    });
+
+    it("does not route implementation overrides through production FLIP state transfer", () => {
+        const backend = asynchronousBackend(vi.fn(async () => {}));
+        const simulation = facade.createFluidSimulation(engine as never, { ...options("FLIP"), backend });
+        expect(() => facade.prepareFluidReconfigurationUpdate(simulation, { particleCount: 24 }, true)).toThrow("state-preserving");
+        expect(mocks.transfer).not.toHaveBeenCalled();
+        const replacement = facade.prepareFluidReconfigurationUpdate(simulation, { backend: undefined });
+        facade.commitFluidReconfiguration(replacement);
+        expect(simulation.steppingMode).toBe("frame");
+        expect(simulation.options.backend).toBeUndefined();
+    });
+
+    it("rejects unsupported backend features before allocation", () => {
+        const backend = asynchronousBackend(vi.fn(async () => {}));
+        expect(() => facade.createFluidSimulation(engine as never, { ...options("PBF"), backend })).toThrow("intrinsic method");
+        expect(() => facade.createFluidSimulation(engine as never, { ...options("FLIP"), backend, foam: {} })).toThrow("does not support foam");
+        expect(mocks.state.backends).toHaveLength(0);
+    });
+
+    it("does not invoke an asynchronous step from inside render-frame recording", async () => {
+        const submit = vi.fn(async () => {});
+        const simulation = facade.createFluidSimulation(engine as never, { ...options("FLIP"), backend: asynchronousBackend(submit) });
+        engine._currentEncoder = {};
+        await expect(facade.submitFluidSimulationStep(simulation, 0.02)).rejects.toThrow("render frame");
+        expect(submit).not.toHaveBeenCalled();
+    });
+
     it("disposes a constructor candidate when configuration throws", () => {
         mocks.state.configureFailure = true;
         expect(() => facade.createFluidSimulation(engine as never, { ...options(), flow: { emitters: [], sinks: [] } })).toThrow("configure failed");

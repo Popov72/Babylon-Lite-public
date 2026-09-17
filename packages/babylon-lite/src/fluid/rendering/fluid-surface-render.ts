@@ -2311,11 +2311,14 @@ export function createFluidSurfaceTask(engine: EngineContext, scene: SceneContex
         apF32[5] = anisoStrength;
         apF32[6] = ANISO_KR;
         apF32[7] = ANISO_NEPS;
-        apU32[8] = currentSim.renderCount ?? currentSim.count;
+        apU32[8] = currentSim.renderIndirectBuffer ? currentSim.count : (currentSim.renderCount ?? currentSim.count);
         apU32[9] = anisoNumBuckets;
         apU32[10] = ANISO_MAX_PER_CELL; // per-cell WPCA neighbour cap
         apU32[11] = 0;
         device.queue.writeBuffer(apBuffer, 0, apData);
+        if (currentSim.renderIndirectBuffer) {
+            engine._currentEncoder.copyBufferToBuffer(currentSim.renderIndirectBuffer, 4, apBuffer, 32, 4);
+        }
     }
 
     function anisoDispatch(pass: GPUComputePassEncoder, groups: number): void {
@@ -2341,7 +2344,7 @@ export function createFluidSurfaceTask(engine: EngineContext, scene: SceneContex
     // Run the full neighbour-grid + anisotropy compute chain for this frame. Assumes
     // ensureAniso() returned true and writeAnisoParams() has run.
     function runAnisoGrid(): void {
-        const count = currentSim.renderCount ?? currentSim.count;
+        const count = currentSim.renderIndirectBuffer ? currentSim.count : (currentSim.renderCount ?? currentSim.count);
         const particleGroups = Math.ceil(count / ANISO_WG);
         const bucketGroups = Math.ceil(anisoNumBuckets / ANISO_WG);
         const scanChunks = Math.max(1, Math.ceil(anisoNumBuckets / ANISO_SCAN_WG));
@@ -2353,6 +2356,14 @@ export function createFluidSurfaceTask(engine: EngineContext, scene: SceneContex
         anisoComputeStep("fluid-aniso-scatter", anisoScatterPipe!, anisoScatterBG!, particleGroups);
         anisoComputeStep("fluid-aniso-gather", anisoGatherPipe!, anisoGatherBG!, particleGroups);
         anisoComputeStep("fluid-aniso-compute", anisoComputePipe!, anisoComputeBG!, particleGroups);
+    }
+
+    function drawParticles(pass: GPURenderPassEncoder, count: number): void {
+        if (currentSim.renderIndirectBuffer) {
+            pass.drawIndirect(currentSim.renderIndirectBuffer, 0);
+        } else {
+            pass.draw(6, count);
+        }
     }
 
     function updateUniforms(surfaceUsesAniso = false): void {
@@ -2717,13 +2728,13 @@ export function createFluidSurfaceTask(engine: EngineContext, scene: SceneContex
                 return 0;
             }
             const enc = engine._currentEncoder;
-            const renderCount = currentSim.renderCount ?? currentSim.count;
+            const renderCount = currentSim.renderIndirectBuffer ? currentSim.count : (currentSim.renderCount ?? currentSim.count);
 
             // No visible particles: skip ALL fluid passes (depth/thickness/blur/composite) and just
             // present the background (scene) with one cheap fullscreen blit. Deliberately NOT
             // tagged with the "Surface" profiler pass, so the timing pane reports 0 for the
             // surface stage while idle (the blit is scene presentation, not fluid work).
-            if (renderCount === 0 || opacity <= 0) {
+            if ((!currentSim.renderIndirectBuffer && renderCount === 0) || opacity <= 0) {
                 const bg = getBlitBindGroup(bgView);
                 enc.pushDebugGroup("Fluid surface (idle passthrough)");
                 const pass = enc.beginRenderPass({
@@ -2790,7 +2801,7 @@ export function createFluidSurfaceTask(engine: EngineContext, scene: SceneContex
                     });
                     pass.setPipeline(ellipsoidDebugPipe!);
                     pass.setBindGroup(0, anisoParticleBG!);
-                    pass.draw(6, renderCount);
+                    drawParticles(pass, renderCount);
                     pass.end();
                 }
                 enc.popDebugGroup();
@@ -2843,7 +2854,7 @@ export function createFluidSurfaceTask(engine: EngineContext, scene: SceneContex
                 });
                 pass.setPipeline(depthPipeUsed);
                 pass.setBindGroup(0, particleBGUsed);
-                pass.draw(6, renderCount);
+                drawParticles(pass, renderCount);
                 pass.end();
             }
             // 2. Thickness (additive, no depth test — full volume integral).
@@ -2856,7 +2867,7 @@ export function createFluidSurfaceTask(engine: EngineContext, scene: SceneContex
                 pass.setPipeline(thickPipeUsed);
                 pass.setBindGroup(0, particleBGUsed);
                 pass.setBindGroup(1, getColorDepthBindGroup(provisionalDepthView));
-                pass.draw(6, renderCount);
+                drawParticles(pass, renderCount);
                 pass.end();
             }
             // 3. Rebuild the nearest depth while rejecting an unsupported provisional
@@ -2873,7 +2884,7 @@ export function createFluidSurfaceTask(engine: EngineContext, scene: SceneContex
                 pass.setBindGroup(0, particleBGUsed);
                 pass.setBindGroup(1, getColorDepthBindGroup(provisionalDepthView));
                 pass.setBindGroup(2, getSurfaceSupportBindGroup(views.thick!));
-                pass.draw(6, renderCount);
+                drawParticles(pass, renderCount);
                 pass.end();
             }
             // 3b. Per-particle colour (opt-in, sphere path only): the FRONT-most particle per pixel
@@ -2890,7 +2901,7 @@ export function createFluidSurfaceTask(engine: EngineContext, scene: SceneContex
                 pass.setPipeline(colorPipe!);
                 pass.setBindGroup(0, particleBGUsed);
                 pass.setBindGroup(1, getColorDepthBindGroup(views.depth!));
-                pass.draw(6, renderCount);
+                drawParticles(pass, renderCount);
                 pass.end();
             }
             enc.pushDebugGroup("surface blur (depth + thickness)");

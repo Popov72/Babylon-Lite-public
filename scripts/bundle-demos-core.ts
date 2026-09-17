@@ -19,6 +19,8 @@
  * Usage: npx tsx scripts/build-bundle-demos.ts
  */
 import { build, type Plugin } from "vite";
+import { createHash } from "crypto";
+import { spawnSync } from "child_process";
 import { resolve, dirname, basename } from "path";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
@@ -53,12 +55,38 @@ const TETRIS_SRC = resolve(labDir, "public/tetris");
 const PLATFORMER_SRC = resolve(labDir, "public/platformer");
 const SANDBLOX_SRC = resolve(labDir, "public/sandblox");
 const WATERFALL_SRC = resolve(labDir, "public/waterfall");
+const JUMPING_WHALE_SRC = resolve(labDir, "public/jumping-whale");
 const RACER_SRC = resolve(labDir, "public/racer");
 const ANTIGRAVITY_RACER_SRC = resolve(labDir, "public/antigravity-racer");
 const SCREEN_SPACE_EFFECTS_SRC = resolve(labDir, "public/screen-space-effects");
 const DRACO_FILES = ["draco_decoder.js", "draco_decoder.wasm"];
 
 const _demoRequire = createRequire(import.meta.url);
+
+function ensureJumpingWhaleSdfCurrent(): void {
+    const glb = resolve(JUMPING_WHALE_SRC, "whale.glb");
+    const sdf = resolve(JUMPING_WHALE_SRC, "whale-sdf.bin");
+    const metadataFile = resolve(JUMPING_WHALE_SRC, "whale-sdf.meta.json");
+    const sourceSha256 = createHash("sha256").update(readFileSync(glb)).digest("hex");
+    let metadata: { formatVersion?: number; generator?: string; sourceSha256?: string } | null = null;
+    try {
+        metadata = JSON.parse(readFileSync(metadataFile, "utf8")) as { formatVersion?: number; generator?: string; sourceSha256?: string };
+    } catch {
+        // Missing or malformed metadata is handled as a stale bake below.
+    }
+    if (existsSync(sdf) && metadata?.formatVersion === 2 && metadata.generator === "native-gltf-skinning" && metadata.sourceSha256 === sourceSha256) {
+        return;
+    }
+    console.log("Jumping whale GLB changed; regenerating its deforming SDF...");
+    const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+    const result = spawnSync(pnpm, ["exec", "tsx", resolve(ROOT, "scripts/bake-jumping-whale-sdf.ts")], {
+        cwd: ROOT,
+        stdio: "inherit",
+    });
+    if (result.status !== 0) {
+        throw new Error("Jumping whale SDF regeneration failed. Run `pnpm exec tsx scripts/bake-jumping-whale-sdf.ts` for the detailed error.");
+    }
+}
 
 /** Absolute path to the ESM build of `@babylonjs/havok`, or null if unavailable.
  *  Scenes externalize Havok to `/vendor/havok.js` via an import map, but standalone
@@ -297,6 +325,8 @@ function copyDemoRuntimeAssets(demos: DemoConfigEntry[]): void {
         const WATERFALL_SKIP = new Set(["scripts", "oasis.glb", "oasis-heightmap.bin"]);
         const isUnservedSource = (file: string): boolean => file.includes("-high.") && !file.startsWith("oasis-");
         copyRequiredDir(WATERFALL_SRC, resolve(demosDir, "waterfall"), "Waterfall rock", (file) => !WATERFALL_SKIP.has(file) && !isUnservedSource(file));
+        ensureJumpingWhaleSdfCurrent();
+        copyRequiredDir(JUMPING_WHALE_SRC, resolve(demosDir, "jumping-whale"), "Jumping whale", (file) => file !== "whale-sdf.meta.json");
     }
 
     if (demos.some((demo) => demo.slug === "racer")) {

@@ -12,6 +12,7 @@ interface SceneSdfBindingOptions {
     readonly sdfGrid?: Float32Array | Uint32Array;
     readonly sdfGridFormat?: "f32" | "packed-f16";
     readonly gridConfine?: boolean;
+    readonly movingBoundaries?: boolean;
 }
 
 interface ForceFieldBindingOptions {
@@ -26,6 +27,7 @@ export interface SceneSdfRuntimeBinding {
     updateSdfGrid(data: Float32Array | Uint32Array): void;
     updateTransforms?(updates: readonly CompositeSceneSdfTransformUpdate[], elapsedSeconds: number, resetMotion: boolean): void;
     updateStaticOffset?(offset: readonly [number, number, number], resetMotion: boolean): void;
+    updateStaticScale?(scale: number, pivot: readonly [number, number, number], resetMotion: boolean): void;
     updateContainer?(bounds: CompositeSceneSdfBounds | null): void;
     updateGridSettings?(updates: readonly CompositeSceneSdfGridSettingsUpdate[]): void;
     dispose(): void;
@@ -64,6 +66,7 @@ export interface CompositeSceneSdfBindingOptions {
     readonly localSdfs?: readonly CompositeSceneSdfLocalGridData[];
     readonly container?: CompositeSceneSdfBounds;
     readonly gridConfine?: boolean;
+    readonly movingBoundaries?: boolean;
 }
 
 export interface CompositeSceneSdfTransformUpdate {
@@ -310,6 +313,8 @@ export function createCompositeSceneSdfRuntimeBinding(engine: EngineContext, opt
     const previousMatrices = localSdfs.map(() => identityMatrix());
     const staticOrigin: [number, number, number] = options.staticSdf ? [...options.staticSdf.origin] : [0, 0, 0];
     let staticOffset: [number, number, number] = [0, 0, 0];
+    let staticScale = 1;
+    let staticScalePivot: [number, number, number] = [0, 0, 0];
     let atlasOffset = 0;
     if (options.staticSdf) {
         packSdfGrid(atlas, atlasOffset, options.staticSdf, floatView, uintView);
@@ -342,8 +347,19 @@ export function createCompositeSceneSdfRuntimeBinding(engine: EngineContext, opt
         sdfGrid: atlas,
         sdfGridFormat: "packed-f16",
         gridConfine: options.gridConfine,
+        movingBoundaries: options.movingBoundaries,
     });
     const writeParams = (): void => binding.updateParams(params);
+    const updateStaticGridTransform = (resetMotion: boolean): void => {
+        params[0] = staticScalePivot[0] + (staticOrigin[0] - staticScalePivot[0]) * staticScale + staticOffset[0];
+        params[1] = staticScalePivot[1] + (staticOrigin[1] - staticScalePivot[1]) * staticScale + staticOffset[1];
+        params[2] = staticScalePivot[2] + (staticOrigin[2] - staticScalePivot[2]) * staticScale + staticOffset[2];
+        params[3] = options.staticSdf ? 1 / (options.staticSdf.cellSize * staticScale) : 0;
+        if (resetMotion) {
+            params[10] = 0;
+        }
+        writeParams();
+    };
     binding.updateTransforms = (updates, elapsedSeconds, resetMotion): void => {
         if (!Number.isFinite(elapsedSeconds) || elapsedSeconds < 0) {
             throw new RangeError("[fluid] scene SDF transform elapsed time must be finite and non-negative.");
@@ -393,13 +409,18 @@ export function createCompositeSceneSdfRuntimeBinding(engine: EngineContext, opt
             throw new RangeError("[fluid] scene SDF static offset must be finite.");
         }
         staticOffset = [offset[0], offset[1], offset[2]];
-        params[0] = staticOrigin[0] + staticOffset[0];
-        params[1] = staticOrigin[1] + staticOffset[1];
-        params[2] = staticOrigin[2] + staticOffset[2];
-        if (resetMotion) {
-            params[10] = 0;
+        updateStaticGridTransform(resetMotion);
+    };
+    binding.updateStaticScale = (scale, pivot, resetMotion): void => {
+        if (!Number.isFinite(scale) || scale <= 0) {
+            throw new RangeError("[fluid] scene SDF static scale must be finite and positive.");
         }
-        writeParams();
+        if (!pivot.every(Number.isFinite)) {
+            throw new RangeError("[fluid] scene SDF static scale pivot must be finite.");
+        }
+        staticScale = scale;
+        staticScalePivot = [pivot[0], pivot[1], pivot[2]];
+        updateStaticGridTransform(resetMotion);
     };
     binding.updateContainer = (bounds): void => {
         if (bounds) {
@@ -478,6 +499,7 @@ export function createSceneSdfRuntimeBinding(engine: EngineContext, options: Sce
         ...(sdfGrid ? { sdfGrid } : {}),
         ...(sdfGrid ? { sdfGridFormat: options.sdfGridFormat ?? "f32" } : {}),
         ...(options.gridConfine !== undefined ? { gridConfine: options.gridConfine } : {}),
+        ...(options.movingBoundaries !== undefined ? { movingBoundaries: options.movingBoundaries } : {}),
     };
     return {
         spec,

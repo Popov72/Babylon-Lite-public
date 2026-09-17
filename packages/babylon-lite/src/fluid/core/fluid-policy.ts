@@ -113,7 +113,7 @@ export function fitFluidGridResolution(requestedResolution: number, minimumResol
 /** Normalize authored FLIP discretization through one shared import/control policy. */
 export function normalizeFluidFlipDiscretization(gridResolution: number, markersPerCell: number, limits: FluidFlipDiscretizationLimits = {}): FluidFlipDiscretization {
     const minimumResolution = Math.max(1, Math.floor(limits.minimumResolution ?? 16));
-    const maximumResolution = Math.max(minimumResolution, Math.floor(limits.maximumResolution ?? 2000));
+    const maximumResolution = Math.max(minimumResolution, Math.floor(limits.maximumResolution ?? Number.MAX_SAFE_INTEGER));
     const minimumMarkers = Math.max(1, Math.floor(limits.minimumMarkersPerCell ?? 1));
     const maximumMarkers = Math.max(minimumMarkers, Math.floor(limits.maximumMarkersPerCell ?? 64));
     if (![gridResolution, markersPerCell, minimumResolution, maximumResolution, minimumMarkers, maximumMarkers].every(Number.isFinite)) {

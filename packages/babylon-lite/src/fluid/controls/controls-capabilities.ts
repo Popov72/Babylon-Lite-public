@@ -28,6 +28,11 @@ export interface FluidControlsCapabilities {
     readonly pagedGrid: boolean;
     /** GPU polygon-surface reconstruction toggle (FLIP only). */
     readonly polygonSurface: boolean;
+    /** Diffuse-particle generation and foam-render controls. */
+    readonly foam: boolean;
+    /** Physics parameter keys accepted by an implementation override. null means every intrinsic
+     *  method parameter remains available. */
+    readonly physicsParameters: readonly string[] | null;
     /** Per-simulation independent render-profile control (every backend). */
     readonly independentRendering: boolean;
     /** GPU timing panel (requires device timestamp-query support). */
@@ -76,6 +81,8 @@ export function resolveFluidControlsCapabilities(input: FluidControlsCapabilitie
     const backend: FluidControlsCapabilities = {
         pagedGrid: flip || input.method === "MLS-MPM",
         polygonSurface: flip,
+        foam: true,
+        physicsParameters: null,
         pressureDiagnostics: flip,
         flipTuning: flip,
         material: input.method === "PB-MPM",
@@ -89,6 +96,8 @@ export function resolveFluidControlsCapabilities(input: FluidControlsCapabilitie
     return {
         pagedGrid: backend.pagedGrid && host?.pagedGrid !== false,
         polygonSurface: backend.polygonSurface && host?.polygonSurface !== false,
+        foam: backend.foam && host?.foam !== false,
+        physicsParameters: host?.physicsParameters ? [...host.physicsParameters] : backend.physicsParameters,
         pressureDiagnostics: backend.pressureDiagnostics && host?.pressureDiagnostics !== false,
         flipTuning: backend.flipTuning && host?.flipTuning !== false,
         material: backend.material && host?.material !== false,

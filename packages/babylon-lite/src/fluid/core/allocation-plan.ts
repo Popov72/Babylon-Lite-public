@@ -780,6 +780,10 @@ export const fluidGridCellCountLimit = (limits: FluidBufferLimits): number =>
 export const fluidFlipMacBufferBytes = (cells: readonly [number, number, number], paging?: FluidFlipPaging): number =>
     paging?.enabled ? pagedFlipStorageCounts(Number.isFinite(paging.maxPages) ? Math.max(1, Math.floor(paging.maxPages)) : 1).faces * 8 : cellAndFaceCounts(cells).faceCount * 8;
 
+function formatBufferBytes(bytes: number): string {
+    return (bytes / (1024 * 1024)).toFixed(1) + " MiB (" + Math.ceil(bytes).toLocaleString("en-US") + " bytes)";
+}
+
 /** Validate grid dimensions and produce shared, consumer-independent device diagnostics. */
 export function resolveFluidGridCompatibility(
     method: FluidAllocationMethod,
@@ -793,22 +797,47 @@ export function resolveFluidGridCompatibility(
         return {
             compatible: false,
             code: "axis-limit",
-            message: `Grid requires ${dim[oversizedAxis]!.toLocaleString()} cells on ${"XYZ"[oversizedAxis]}; maximum is ${FLUID_GRID_MAX_AXIS_CELLS.toLocaleString()}.`,
+            message:
+                "Grid requires " +
+                dim[oversizedAxis]!.toLocaleString("en-US") +
+                " cells on " +
+                "XYZ"[oversizedAxis] +
+                "; the runtime implementation maximum is " +
+                FLUID_GRID_MAX_AXIS_CELLS.toLocaleString("en-US") +
+                ".",
             gridDim: dim,
         };
     }
-    const availableBytes = fluidParticleBufferLimitBytes(limits);
+    const storageBindingLimit = finitePositive(limits.maxStorageBufferBindingSize, 1, [], "maxStorageBufferBindingSize");
+    const bufferSizeLimit = finitePositive(limits.maxBufferSize, 1, [], "maxBufferSize");
+    const availableBytes = Math.min(storageBindingLimit, bufferSizeLimit);
+    const limitingProperty =
+        storageBindingLimit === bufferSizeLimit
+            ? "maxStorageBufferBindingSize and maxBufferSize"
+            : storageBindingLimit < bufferSizeLimit
+              ? "maxStorageBufferBindingSize"
+              : "maxBufferSize";
     const usesPagedGrid = (method === "FLIP" || method === "MLS-MPM") && paging?.enabled === true;
     const requestedPageCount = Number.isFinite(paging?.maxPages) ? Math.max(1, Math.floor(paging?.maxPages ?? 1)) : 1;
     const mlsPageCount = Math.min(mpmBlockCount(dim), requestedPageCount);
     const requiredBytes =
         method === "FLIP" ? fluidFlipMacBufferBytes(dim, paging) : method === "MLS-MPM" && usesPagedGrid ? (mlsPageCount + 1) * MPM_PAGE_BYTES : dim[0] * dim[1] * dim[2] * 16;
     if (requiredBytes > availableBytes) {
-        const subject = usesPagedGrid ? `Page capacity ${requestedPageCount.toLocaleString()}` : `Grid ${dim.join(" \u00d7 ")}`;
+        const subject = usesPagedGrid ? "Page capacity " + requestedPageCount.toLocaleString("en-US") : "Grid " + dim.join(" x ");
         return {
             compatible: false,
             code: "storage-binding-limit",
-            message: `${subject} requires ${(requiredBytes / (1024 * 1024)).toFixed(1)} MiB per ${method === "FLIP" ? "FLIP MAC" : "grid"} storage buffer; this device supports ${(availableBytes / (1024 * 1024)).toFixed(1)} MiB.`,
+            message:
+                subject +
+                " requires " +
+                formatBufferBytes(requiredBytes) +
+                " for one " +
+                (method === "FLIP" ? "FLIP MAC" : "grid") +
+                " storage buffer; this WebGPU device allows " +
+                formatBufferBytes(availableBytes) +
+                " per storage buffer (" +
+                limitingProperty +
+                ").",
             gridDim: dim,
             requiredBytes,
             availableBytes,

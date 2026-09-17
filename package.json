@@ -24,6 +24,7 @@
         "build:bundle-demos": "tsx scripts/build-bundle-demos.ts",
         "build:bundle-demo": "tsx scripts/build-bundle-demo.ts",
         "build:bundle-master-info": "tsx scripts/build-master-bundle-info.ts",
+        "render:fluid-offline": "tsx scripts/render-fluid-offline.ts",
         "fetch:freedoom": "tsx scripts/fetch-freedoom.ts",
         "fetch:librequake": "tsx scripts/fetch-librequake.ts",
         "fetch:voxelpack": "tsx scripts/fetch-voxelpack.ts",

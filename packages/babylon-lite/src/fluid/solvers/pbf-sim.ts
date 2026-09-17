@@ -608,6 +608,15 @@ const APPLY_CONFINE_SDF = /* wgsl */ `
     if (d < 0.0) { p += sceneNormal(p, 0.0) * (-d); }
     // Global ground safety floor (the unified SDF also floors at groundY; cheap backstop).
     p.y = max(p.y, sim.capsuleB.w);`;
+const APPLY_CONFINE_MOVING_SDF = /* wgsl */ `
+    let d = sceneSdf(p, 0.0);
+    if (d < 0.0) {
+        let n = sceneNormal(p, 0.0);
+        let vN = max(-(sceneSdf(p, 0.002) - sceneSdf(p, 0.0)) / 0.002, 0.0);
+        p += n * max(-d, vN * sim.dt);
+    }
+    // Global ground safety floor (the unified SDF also floors at groundY; cheap backstop).
+    p.y = max(p.y, sim.capsuleB.w);`;
 const APPLY_CONFINE_NONE = /* wgsl */ `
     // No scene SDF: still apply the density solve and keep the global floor.
     p.y = max(p.y, sim.capsuleB.w);`;
@@ -620,7 +629,7 @@ function buildApplyWgsl(scene: SceneSdfSpec | null): string {
     // sampleSdfGrid.
     const gridInject = scene ? sceneSdfGridBindingWgsl(scene, 4) : "";
     const decls = scene ? `${scene.struct}\n@group(0) @binding(3) var<uniform> sceneSdfParams: SceneSdfParams;${gridInject}\n${scene.sdf}\n${SCENE_NORMAL_WGSL}` : "";
-    const confine = scene ? APPLY_CONFINE_SDF : APPLY_CONFINE_NONE;
+    const confine = scene ? (scene.movingBoundaries ? APPLY_CONFINE_MOVING_SDF : APPLY_CONFINE_SDF) : APPLY_CONFINE_NONE;
     return /* wgsl */ `
 ${COMMON_WGSL}
 @group(0) @binding(0) var<storage, read_write> sortedPos: array<vec4<f32>>;
@@ -1902,6 +1911,9 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
         },
         get diffuse(): DiffusePool | undefined {
             return diffusePool;
+        },
+        settle(encoder: GPUCommandEncoder): void {
+            encoder.clearBuffer(velocityBuffer);
         },
         step(encoder: GPUCommandEncoder, dt: number): void {
             // finalize divides by dt; a zero/NaN dt (e.g. the very first frame)

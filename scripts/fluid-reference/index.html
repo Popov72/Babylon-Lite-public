@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <title>FLIP Reference comparison</title>
+        <style>
+            html,
+            body {
+                margin: 0;
+                background: #090c11;
+                color: #e8edf7;
+                font-family: system-ui, sans-serif;
+            }
+            canvas {
+                display: block;
+                width: 100vw;
+                height: 100vh;
+            }
+            #status {
+                position: fixed;
+                top: 14px;
+                left: 18px;
+                padding: 8px 12px;
+                background: #101824d9;
+                font-size: 14px;
+                pointer-events: none;
+            }
+        </style>
+    </head>
+    <body>
+        <canvas></canvas>
+        <div id="status">Loading numerical comparison...</div>
+        <script type="module" src="./browser.ts"></script>
+    </body>
+</html>

@@ -72,6 +72,7 @@ import type {
 } from "./sim-common.js";
 import { resolveFluidSimulationConfig } from "./simulation-config.js";
 import type { FluidCompatibilityProfile, FluidGridBounds, FluidSimulationSamplingType, FluidSimulationSemantics, ResolvedFluidSimulationConfig } from "./simulation-config.js";
+import type { FluidAllocationPlan, FluidDeviceLimitsSnapshot } from "./allocation-plan.js";
 
 export interface FluidSceneSdfOptions {
     /** WGSL declaration for the parameter structure read by `sdf`. */
@@ -81,11 +82,14 @@ export interface FluidSceneSdfOptions {
     /** Initial packed uniform values. The allocation remains fixed-size. */
     readonly params: Float32Array;
     /** Optional dense signed-distance grid, negative inside solid geometry. */
-    readonly sdfGrid?: Float32Array;
+    readonly sdfGrid?: Float32Array | Uint32Array;
+    /** Storage encoding used by `sdfGrid`. Defaults to `f32`. */
+    readonly sdfGridFormat?: "f32" | "packed-f16";
     /** Whether MLS-MPM should confine at grid nodes. */
     readonly gridConfine?: boolean;
+    /** Whether solvers apply temporal moving-boundary velocity. */
+    readonly movingBoundaries?: boolean;
 }
-
 export interface FluidSdfGridData extends CompositeSceneSdfGridData {}
 
 export interface FluidLocalSdfData extends CompositeSceneSdfLocalGridData {}
@@ -101,6 +105,8 @@ export interface FluidCompositeSceneSdfOptions {
     readonly container?: FluidSceneSdfBounds;
     /** Whether MLS-MPM should confine at grid nodes. */
     readonly gridConfine?: boolean;
+    /** Whether solvers apply temporal moving-boundary velocity. */
+    readonly movingBoundaries?: boolean;
 }
 
 export interface FluidSceneSdfTransformUpdate {
@@ -173,6 +179,19 @@ export interface FluidSimulationProfilerResults {
     readonly stages: Readonly<Record<string, number>>;
     readonly total: number;
     readonly frameTotal: number;
+    /** Query capacity was exceeded; timings are incomplete and must not be displayed as a full sample. */
+    readonly overflowed?: boolean;
+}
+
+export interface FluidSimulationProfilerOptions {
+    readonly queryCapacity?: number;
+}
+
+export interface FluidSimulationProfilerFrameOptions {
+    /** Omit the render-encoder envelope for a separately submitted simulation-only operation. */
+    readonly captureEnvelope?: boolean;
+    /** Close the render envelope now, but resolve only after separately submitted GPU work. */
+    readonly deferResolve?: boolean;
 }
 
 /** Opaque, pure-state GPU profiler. Frame behavior is exposed by standalone functions. */
@@ -319,8 +338,37 @@ export interface FluidSimulationDiagnostics {
     readonly polygon: FluidSimulationPolygonDiagnostics | null;
 }
 
+/** Opt-in backend provider. Intrinsic method semantics remain separate from implementation selection. */
+export interface FluidSimulationBackend {
+    readonly id: string;
+    readonly name: string;
+    readonly method: FluidSimulationOptions["method"];
+    readonly steppingMode: "frame" | "async";
+    readonly renderModes: readonly FluidSimulationRenderMode[];
+    readonly supportsFoam: boolean;
+    readonly supportsForces: boolean;
+    readonly supportsContinuousFlow: boolean;
+    readonly physicsParameters: readonly string[];
+    readonly description: string;
+    /** @internal */
+    readonly _create: (engine: EngineContext, options: FluidSimulationOptions, config: ResolvedFluidSimulationConfig) => FluidSim;
+    /** @internal Override intrinsic-method memory projection for a different buffer layout. */
+    readonly _allocationPlan?: (options: FluidSimulationOptions, config: ResolvedFluidSimulationConfig, limits?: FluidDeviceLimitsSnapshot) => FluidAllocationPlan;
+}
+
+export interface FluidSimulationStepOptions {
+    /**
+     * Advance scene inputs before a CPU-scheduled submission, outside render-frame recording.
+     * GPU-resident backends call once with the complete frame delta and sample temporal collisions
+     * within that frame; readback-driven backends may call separately for each physical substep.
+     */
+    readonly beforeSubstep?: (deltaSeconds: number) => void;
+}
+
 export interface FluidSimulationOptions {
     method: "PBF" | "FLIP" | "MLS-MPM" | "PB-MPM";
+    /** Explicitly loaded implementation override; omitted for the production method. */
+    backend?: FluidSimulationBackend;
     particleCount: number;
     bounds: FluidGridBounds;
     physicsScale: number;
@@ -343,6 +391,7 @@ export interface FluidSimulationOptions {
     pagedGridMaxPages?: number;
     fusedBlockDiscovery?: boolean;
     initialPositions?: Float32Array;
+    initialVelocities?: Float32Array;
     sceneSdf?: FluidSceneSdf | null;
     forceField?: FluidForceField | null;
     profiler?: FluidSimulationProfiler | null;
@@ -354,6 +403,7 @@ export interface FluidSimulationOptions {
 export interface FluidSimulation {
     readonly method: FluidSimulationOptions["method"];
     readonly options: FluidSimulationOptions;
+    readonly steppingMode: "frame" | "async";
     readonly count: number;
     readonly activeCount: number | undefined;
     readonly renderCount: number | undefined;
@@ -394,6 +444,9 @@ export interface FluidFoamRenderSettings {
     readonly surfaceFiltering?: boolean;
     readonly opacity?: number;
     readonly sizeScale?: number;
+    readonly spraySize?: number;
+    readonly sprayIntensity?: number;
+    readonly spraySeparation?: number;
     readonly debugByKind?: boolean;
     readonly softness?: number;
     readonly density?: number;
@@ -775,6 +828,15 @@ function normalizeFluidSimulationOptions(options: FluidSimulationOptions): Fluid
     if (!["PBF", "FLIP", "MLS-MPM", "PB-MPM"].includes(options.method)) {
         throw new TypeError(`[fluid] unsupported simulation method '${String(options.method)}'.`);
     }
+    if (options.backend && (options.backend.method !== options.method || typeof options.backend._create !== "function")) {
+        throw new TypeError("[fluid] backend provider must support the selected intrinsic method.");
+    }
+    if (options.backend && !options.backend.supportsFoam && options.foam) {
+        throw new Error("[fluid] " + options.backend.name + " does not support foam.");
+    }
+    if (options.backend && !options.backend.supportsForces && options.forceField) {
+        throw new Error("[fluid] " + options.backend.name + " does not support custom force fields.");
+    }
     finitePositive(options.particleCount, "particleCount");
     finitePositive(options.physicsScale, "physicsScale");
     const min = [...options.bounds.min] as [number, number, number];
@@ -806,10 +868,19 @@ function normalizeFluidSimulationOptions(options: FluidSimulationOptions): Fluid
         flow: options.flow ? structuredClone(options.flow) : undefined,
         foam: options.foam ? { ...options.foam } : options.foam,
         initialPositions: options.initialPositions?.slice(),
+        initialVelocities: options.initialVelocities?.slice(),
     };
 }
 
 function createBackend(engine: EngineContext, options: FluidSimulationOptions, config: ResolvedFluidSimulationConfig): FluidSim {
+    if (options.backend) {
+        const backend = options.backend._create(engine, options, config);
+        if (options.backend.steppingMode === "async" && !backend.submitStep) {
+            backend.dispose();
+            throw new Error("[fluid] asynchronous backend provider did not supply asynchronous stepping.");
+        }
+        return backend;
+    }
     const physics = config.physics;
     const base = {
         count: options.particleCount,
@@ -838,6 +909,7 @@ function createBackend(engine: EngineContext, options: FluidSimulationOptions, c
     if (options.method === "FLIP") {
         const flip: FlipOptions = {
             ...base,
+            ...(options.initialVelocities ? { initialVelocities: options.initialVelocities } : {}),
             ...(options.gridResolution !== undefined ? { gridResolution: options.gridResolution } : { dx: config.cellSize }),
             markersPerCell: options.markersPerCell,
             pagedGrid: options.pagedGrid,
@@ -1058,6 +1130,15 @@ function applyFoamRenderSettings(task: FoamRenderTask, settings: FluidFoamRender
     if (settings.sizeScale !== undefined) {
         task.setSizeScale(settings.sizeScale);
     }
+    if (settings.spraySize !== undefined) {
+        task.setSpraySize(settings.spraySize);
+    }
+    if (settings.sprayIntensity !== undefined) {
+        task.setSprayIntensity(settings.sprayIntensity);
+    }
+    if (settings.spraySeparation !== undefined) {
+        task.setSpraySeparation(settings.spraySeparation);
+    }
     if (settings.debugByKind !== undefined) {
         task.setDebugByKind(settings.debugByKind);
     }
@@ -1130,6 +1211,9 @@ export function createFluidSimulation(engine: EngineContext, options: FluidSimul
             get options(): FluidSimulationOptions {
                 return simulation._options;
             },
+            get steppingMode(): "frame" | "async" {
+                return simulation._options.backend?.steppingMode ?? "frame";
+            },
             get count(): number {
                 return backendOf(simulation).count;
             },
@@ -1199,6 +1283,9 @@ export function createFluidSimulation(engine: EngineContext, options: FluidSimul
 export function prepareFluidReconfiguration(simulation: FluidSimulation, options: FluidSimulationOptions, preserveState = false): PreparedFluidReconfiguration {
     if (simulation.disposed) {
         throw new Error("[fluid] cannot reconfigure a disposed simulation.");
+    }
+    if (preserveState && (simulation._options.backend || options.backend)) {
+        throw new Error("[fluid] state-preserving reconfiguration is not supported by implementation overrides; reset the selected backend instead.");
     }
     const normalized = normalizeFluidSimulationOptions(options);
     const engine = engineOf(simulation);
@@ -1440,12 +1527,85 @@ export function stepFluidSimulation(simulation: FluidSimulation, deltaSeconds: n
     if (simulation.disposed) {
         throw new Error("[fluid] cannot step a disposed simulation.");
     }
+    if (simulation.steppingMode === "async") {
+        throw new Error("[fluid] this backend requires awaited submitFluidSimulationStep outside render-frame recording.");
+    }
 
     if (!Number.isFinite(deltaSeconds) || deltaSeconds <= 0) {
         return;
     }
     const engine = engineOf(simulation);
     backendOf(simulation).step(currentFrameEncoder(engine, "simulation stepping"), deltaSeconds);
+}
+
+/** Submit one fixed simulation frame outside the live render loop and resolve when its GPU work completes. */
+export async function submitFluidSimulationStep(simulation: FluidSimulation, deltaSeconds: number, options: FluidSimulationStepOptions = {}): Promise<void> {
+    if (simulation.disposed) {
+        throw new Error("[fluid] cannot step a disposed simulation.");
+    }
+    if (!Number.isFinite(deltaSeconds) || deltaSeconds <= 0) {
+        throw new RangeError("[fluid] offline simulation stepping requires a finite positive timestep.");
+    }
+    const engine = engineOf(simulation);
+    if (engine._currentEncoder) {
+        throw new Error("[fluid] cannot submit an offline simulation step while a render frame is being recorded.");
+    }
+    const backend = backendOf(simulation);
+    if (backend.submitStep) {
+        await backend.submitStep(deltaSeconds, options.beforeSubstep);
+        return;
+    }
+    options.beforeSubstep?.(deltaSeconds);
+    const encoder = engine._device.createCommandEncoder({ label: "fluid-offline-step" });
+    backend.step(encoder, deltaSeconds);
+    engine._device.queue.submit([encoder.finish()]);
+    await engine._device.queue.onSubmittedWorkDone();
+}
+
+/** Submit multiple fixed production-solver frames in ordered command buffers and resolve after completion. */
+export async function submitFluidSimulationSteps(simulation: FluidSimulation, deltaSeconds: number, count: number): Promise<void> {
+    if (simulation.disposed) {
+        throw new Error("[fluid] cannot step a disposed simulation.");
+    }
+    if (!Number.isFinite(deltaSeconds) || deltaSeconds <= 0 || !Number.isInteger(count) || count <= 0) {
+        throw new RangeError("[fluid] batched simulation stepping requires a finite positive timestep and positive integer count.");
+    }
+    const engine = engineOf(simulation);
+    if (engine._currentEncoder) {
+        throw new Error("[fluid] cannot submit batched simulation steps while a render frame is being recorded.");
+    }
+    const backend = backendOf(simulation);
+    if (backend.submitStep) {
+        for (let step = 0; step < count; step++) {
+            await backend.submitStep(deltaSeconds);
+        }
+        return;
+    }
+    for (let step = 0; step < count; step++) {
+        const encoder = engine._device.createCommandEncoder({ label: "fluid-offline-step-batch" });
+        backend.step(encoder, deltaSeconds);
+        engine._device.queue.submit([encoder.finish()]);
+    }
+    await engine._device.queue.onSubmittedWorkDone();
+}
+
+/** Clear the active backend's motion state without changing its current particle positions. */
+export async function settleFluidSimulation(simulation: FluidSimulation): Promise<void> {
+    if (simulation.disposed) {
+        throw new Error("[fluid] cannot settle a disposed simulation.");
+    }
+    const engine = engineOf(simulation);
+    if (engine._currentEncoder) {
+        throw new Error("[fluid] cannot settle simulation motion while a render frame is being recorded.");
+    }
+    const settle = backendOf(simulation).settle;
+    if (!settle) {
+        return;
+    }
+    const encoder = engine._device.createCommandEncoder({ label: "fluid-settle-motion" });
+    settle(encoder);
+    engine._device.queue.submit([encoder.finish()]);
+    await engine._device.queue.onSubmittedWorkDone();
 }
 
 /** @internal Warm-up and scene integration may encode a facade simulation outside the live frame. */
@@ -2210,7 +2370,7 @@ export function createFluidRenderEnvironment(source: FluidRenderEnvironmentSourc
     return { _source: source };
 }
 
-export function updateFluidSceneSdf(sceneSdf: FluidSceneSdf, params: Float32Array, sdfGrid?: Float32Array): void {
+export function updateFluidSceneSdf(sceneSdf: FluidSceneSdf, params: Float32Array, sdfGrid?: Float32Array | Uint32Array): void {
     if (sceneSdf.disposed) {
         throw new Error("[fluid] cannot update a disposed scene SDF.");
     }
@@ -2247,6 +2407,23 @@ export function updateFluidSceneSdfStaticOffset(sceneSdf: FluidSceneSdf, offset:
         throw new Error("[fluid] this scene SDF does not support static-grid offsets.");
     }
     updateStaticOffset(offset, options.resetMotion === true);
+}
+
+/** Uniformly scale the static collision grid around a world-space pivot without rebuilding its atlas. */
+export function updateFluidSceneSdfStaticScale(
+    sceneSdf: FluidSceneSdf,
+    scale: number,
+    pivot: readonly [number, number, number],
+    options: { readonly resetMotion?: boolean } = {}
+): void {
+    if (sceneSdf.disposed) {
+        throw new Error("[fluid] cannot update a disposed scene SDF.");
+    }
+    const updateStaticScale = sceneSdfBindingOf(sceneSdf).updateStaticScale;
+    if (!updateStaticScale) {
+        throw new Error("[fluid] this scene SDF does not support static-grid scaling.");
+    }
+    updateStaticScale(scale, pivot, options.resetMotion === true);
 }
 
 /** Update or disable the optional closed container used by a composite collision binding. */
@@ -2387,8 +2564,8 @@ export function disposeFluidForceField(forceField: FluidForceField): void {
     retireGpuResources(forceField._engine as EngineContext, () => forceFieldBindingOf(forceField).dispose());
 }
 
-export function createFluidSimulationProfiler(engine: EngineContext): FluidSimulationProfiler {
-    const impl = createGpuFluidProfiler(engine._device);
+export function createFluidSimulationProfiler(engine: EngineContext, options: FluidSimulationProfilerOptions = {}): FluidSimulationProfiler {
+    const impl = createGpuFluidProfiler(engine._device, options.queryCapacity);
     const profiler = {
         get disposed(): boolean {
             return profiler._disposed;
@@ -2401,24 +2578,44 @@ export function createFluidSimulationProfiler(engine: EngineContext): FluidSimul
     return profiler;
 }
 
-export function beginFluidSimulationProfilerFrame(profiler: FluidSimulationProfiler): void {
+export function beginFluidSimulationProfilerFrame(profiler: FluidSimulationProfiler, options: FluidSimulationProfilerFrameOptions = {}): void {
     if (profiler.disposed) {
         throw new Error("[fluid] cannot begin a disposed profiler.");
     }
     const impl = profilerImplOf(profiler);
-    const encoder = currentFrameEncoder(profiler._engine as EngineContext, "profiler frame begin");
+    const encoder = options.captureEnvelope === false ? null : currentFrameEncoder(profiler._engine as EngineContext, "profiler frame begin");
     impl.beginFrame();
-    impl.frameStart(encoder);
+    if (encoder) {
+        impl.frameStart(encoder);
+    }
 }
 
-export function endFluidSimulationProfilerFrame(profiler: FluidSimulationProfiler): void {
+export function endFluidSimulationProfilerFrame(profiler: FluidSimulationProfiler, options: FluidSimulationProfilerFrameOptions = {}): void {
     if (profiler.disposed) {
         throw new Error("[fluid] cannot end a disposed profiler.");
     }
     const impl = profilerImplOf(profiler);
     const encoder = currentFrameEncoder(profiler._engine as EngineContext, "profiler frame end");
     impl.frameStop(encoder);
+    if (!options.deferResolve) {
+        impl.resolveInto(encoder);
+    }
+}
+
+/** Resolve a profiling window after its independently submitted GPU work has been recorded. */
+export async function submitFluidSimulationProfiler(profiler: FluidSimulationProfiler): Promise<void> {
+    if (profiler.disposed) {
+        throw new Error("[fluid] cannot submit a disposed profiler.");
+    }
+    const engine = profiler._engine as EngineContext;
+    if (engine._currentEncoder) {
+        throw new Error("[fluid] submit profiler results outside render-frame recording.");
+    }
+    const impl = profilerImplOf(profiler);
+    const encoder = engine._device.createCommandEncoder({ label: "fluid-profiler-submit" });
     impl.resolveInto(encoder);
+    engine._device.queue.submit([encoder.finish()]);
+    await impl.collectSubmitted();
 }
 
 export function readFluidSimulationProfiler(profiler: FluidSimulationProfiler): FluidSimulationProfilerResults | null {
@@ -2426,7 +2623,7 @@ export function readFluidSimulationProfiler(profiler: FluidSimulationProfiler): 
         throw new Error("[fluid] cannot read a disposed profiler.");
     }
     const result = profilerImplOf(profiler).results();
-    return result ? { stages: { ...result.stages }, total: result.total, frameTotal: result.frameTotal } : null;
+    return result ? { stages: { ...result.stages }, total: result.total, frameTotal: result.frameTotal, ...(result.overflowed ? { overflowed: true } : {}) } : null;
 }
 
 export function setFluidSimulationProfiler(simulation: FluidSimulation, profiler: FluidSimulationProfiler | null): void {

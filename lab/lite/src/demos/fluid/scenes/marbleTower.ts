@@ -671,8 +671,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     //    baked SDF (no mode toggle); this just shows the bake progress / grid stats. ──
     const bakedStatusEl = document.createElement("div");
     bakedStatusEl.style.cssText = "color:#9fb4cc;font-size:11px;margin:0 0 6px;";
-    bakedStatusEl.textContent = "baking mesh SDF…";
-    let bakeStatus = "baking mesh SDF…";
+    bakedStatusEl.textContent = "Loads when Marble Tower opens";
+    let bakeStatus = "Loads when Marble Tower opens";
 
     // Switch the live SDF spec to the baked grid (called once by bakeSceneSdf when the bake finishes;
     // desiredBaked is always true). Guards on bakeReady so we never select a null grid.
@@ -1645,7 +1645,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         console.warn(`[marbleTower] wheel pivot: axle at local (Cy=${cy.toFixed(1)}, Cz=${cz.toFixed(1)}) — node +offset, mesh −offset`);
     };
 
-    void (async (): Promise<void> => {
+    const loadTower = async (): Promise<void> => {
         try {
             const asset = await loadGltf(engine, TOWER_URL);
             // Static display — drop any (marble-run) animation clips so the tower holds a
@@ -1789,8 +1789,22 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             // Non-fatal: the demo still works with just the water + placeholder floor.
             // eslint-disable-next-line no-console
             console.warn("[marbleTower] failed to load tower model", err);
+            bakeStatus = "tower load failed — analytic only";
+            bakedStatusEl.textContent = bakeStatus;
         }
-    })();
+    };
+    let towerLoadPromise: Promise<void> | null = null;
+    const ensureTowerLoaded = (): void => {
+        if (towerRoot || towerLoadPromise) {
+            return;
+        }
+        bakeStatus = "loading tower…";
+        bakedStatusEl.textContent = bakeStatus;
+        towerLoadPromise = loadTower().finally(() => {
+            towerLoadPromise = null;
+        });
+        void towerLoadPromise;
+    };
 
     return {
         key: "marbleTower",
@@ -1808,6 +1822,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         },
         onEnter(): void {
             active = true;
+            ensureTowerLoaded();
             for (const m of towerMeshes) {
                 setMeshVisible(m, containerVisible);
             }

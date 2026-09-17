@@ -673,6 +673,12 @@ export interface FluidFoamValues {
     poolScale: number;
     /** Visual foam splat-size multiplier (× the foam renderer's base splat radius). */
     size: number;
+    /** Spray billboard-size multiplier relative to the common diffuse-particle size. Default 0.55. */
+    spraySize?: number;
+    /** Relative spray-channel contribution before foam compositing. Default 1.4. */
+    sprayIntensity?: number;
+    /** Surface-depth separation bias for strict spray filtering. Lower values reveal spray sooner. Default 1. */
+    spraySeparation?: number;
     blurRadius: number;
     lightIntensity: number;
     ambient: number;
@@ -862,6 +868,9 @@ export interface FluidControlsCallbacks {
     onFoamThresholds?(t0: number, t1: number): void;
     onFoamSubsurface?(v: number): void;
     onFoamSize?(v: number): void;
+    onFoamSpraySize?(v: number): void;
+    onFoamSprayIntensity?(v: number): void;
+    onFoamSpraySeparation?(v: number): void;
     onFoamBlur?(v: number): void;
     onFoamLight?(v: number): void;
     onFoamAmbient?(v: number): void;
@@ -952,7 +961,7 @@ export interface FluidGpuHandle {
     readonly refreshMemory: (simBytes: number, canvasW: number, canvasH: number) => void;
     /** Refresh the per-stage timing rows from the latest profiler results (or null). */
     /** @internal */
-    readonly refreshTiming: (res: { stages: Record<string, number>; total: number; frameTotal: number } | null) => void;
+    readonly refreshTiming: (res: { stages: Record<string, number>; total: number; frameTotal: number; overflowed?: boolean } | null) => void;
 }
 
 export interface FluidControlsHandle {
@@ -960,6 +969,10 @@ export interface FluidControlsHandle {
     root: HTMLElement;
     /** Empty slot at the very top the host fills with its scene-specific "Demo" section. */
     demoSlot: HTMLElement;
+    /** Empty insertion point inside General, immediately after the intrinsic method selector.
+     *  Hosts may mount an asynchronous implementation selector here without routing it through
+     *  the shared synchronous onApply transaction. */
+    implementationSlot: HTMLElement;
     /** The "Show container / nozzle meshes" toggle row (null when hidden). Host places it. */
     containerToggleRow: HTMLElement | null;
     /** Build a collapsible section with the shared header styling (for the host's Demo/Export). */
@@ -968,6 +981,11 @@ export interface FluidControlsHandle {
     /** Show or hide a shared section by its title. */
     /** @internal */
     readonly setSectionVisible: (title: string, visible: boolean) => void;
+    /** Replace host/backend capabilities and immediately refresh every capability gate without
+     *  changing any control value. The host must make unsupported live state safe before calling. */
+    readonly setCapabilities: (capabilities: Partial<FluidControlsCapabilities>) => void;
+    /** Current host overrides, shared with the transactional controls binding. */
+    readonly capabilityOverrides: Readonly<Partial<FluidControlsCapabilities>>;
 
     // ── Programmatic setters (see the module contract for which fire callbacks) ──
     /** @internal */
@@ -987,7 +1005,8 @@ export interface FluidControlsHandle {
         gpuBytes: number,
         restartActiveCount?: number,
         restartTotalCount?: number,
-        restartGpuBytes?: number
+        restartGpuBytes?: number,
+        restartActiveCountEstimated?: boolean
     ) => void;
     /** @internal */
     readonly setPolygonTriangleCount: (count: number | undefined, visible: boolean) => void;
@@ -1112,7 +1131,7 @@ export function refreshFluidGpuMemory(gpu: FluidGpuHandle, simulationBytes: numb
     gpu.refreshMemory(simulationBytes, canvasWidth, canvasHeight);
 }
 
-export function refreshFluidGpuTiming(gpu: FluidGpuHandle, results: { stages: Record<string, number>; total: number; frameTotal: number } | null): void {
+export function refreshFluidGpuTiming(gpu: FluidGpuHandle, results: { stages: Record<string, number>; total: number; frameTotal: number; overflowed?: boolean } | null): void {
     gpu.refreshTiming(results);
 }
 
@@ -1178,6 +1197,9 @@ const CALLBACK_CHANGED_KEYS: Partial<Record<keyof FluidControlsCallbacks, keyof 
     onFoamThresholds: "foam",
     onFoamSubsurface: "foam",
     onFoamSize: "foam",
+    onFoamSpraySize: "foam",
+    onFoamSprayIntensity: "foam",
+    onFoamSpraySeparation: "foam",
     onFoamBlur: "foam",
     onFoamLight: "foam",
     onFoamAmbient: "foam",
@@ -1228,7 +1250,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     const physMin = opts.physScaleMin ?? 0.5;
     const physMax = opts.physScaleMax ?? 3;
     const showActiveBlocks = !opts.hideActiveBlocks && opts.showActiveBlocks !== false;
-    const showGridControls = !opts.hideGridControls && opts.showGridControls !== false && opts.capabilities?.gridVisuals !== false;
+    const showGridControls = !opts.hideGridControls && opts.showGridControls !== false;
     const showSimulationTiming = !opts.hideSimulationTiming && opts.showSimulationTiming !== false;
 
     // Deep-copy the schemas so the component owns each ParamDef's mutable `value`.
@@ -1237,15 +1259,17 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         schemas[m] = opts.schemas[m]!.map((p) => ({ ...p }));
     }
     let currentMethod = init.method;
+    let hostCapabilities: Partial<FluidControlsCapabilities> = opts.capabilities ?? {};
     // Single source of truth for which control groups the selected backend supports, so the
     // per-method visibility gates below hide unsupported controls instead of showing no-ops.
     const methodCaps = () =>
         resolveFluidControlsCapabilities({
             method: currentMethod,
             timestampQuerySupported: opts.gpu?.supported,
-            hostCapabilities: opts.capabilities,
+            hostCapabilities,
         });
     let applyFoamMethodVisibility = (): void => {};
+    let applyCapabilityVisibility = (): void => {};
 
     // ── Labelled render-slider helper (mirrors the fluid demo's makeRenderSlider). ──
     type RenderSliderRow = HTMLDivElement & { set(v: number): void; get(): number };
@@ -1348,6 +1372,8 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         methodSel.appendChild(opt);
     }
     methodSel.value = init.method;
+    const implementationSlot = document.createElement("div");
+    implementationSlot.dataset.fluidImplementationSlot = "true";
 
     const materialRow = document.createElement("div");
     materialRow.style.cssText = "margin:2px 0 8px;";
@@ -1380,6 +1406,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         applyFlipControlVisibility();
         applyFoamMethodVisibility();
         applySurfaceVisibility(renderChk.checked);
+        applyCapabilityVisibility();
         on.onMethod?.(currentMethod);
     };
     applyMaterialVisibility();
@@ -1486,7 +1513,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     let displayedActiveParticleCount = init.count;
     let displayedParticleCount = init.count;
     let displayedGpuBytes = 0;
-    let restartParticleUsage: { activeCount: number; totalCount: number; gpuBytes: number } | null = null;
+    let restartParticleUsage: { activeCount: number; totalCount: number; gpuBytes: number; activeCountEstimated: boolean } | null = null;
     const updateParticleUsage = (): void => {
         const countLabel = currentMethod === "FLIP" ? "capacity" : "total";
         currentParticleUsageValue.textContent =
@@ -1511,7 +1538,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         restartGpuMemoryValue.style.display = restartDiffers ? "block" : "none";
         if (restartDiffers) {
             restartParticleUsageValue.textContent =
-                "After restart:\u00a0" +
+                (restartParticleUsage!.activeCountEstimated ? "After restart (estimated):\u00a0" : "After restart:\u00a0") +
                 formatParticleCount(restartParticleUsage!.activeCount) +
                 "\u00a0active\u00a0/\u00a0" +
                 formatParticleCount(restartParticleUsage!.totalCount) +
@@ -2012,7 +2039,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     physInput.onchange = () => on.onPhysScale?.(parseFloat(physInput.value));
     physRow.append(physHead, physInput);
     let physScaleVisible = !opts.hidePhysScale;
-    let gridResolution = Math.max(FLIP_GRID_RESOLUTION_MIN, Math.min(FLIP_GRID_RESOLUTION_MAX, Math.round(init.gridResolution ?? 160)));
+    let gridResolution = Math.max(FLIP_GRID_RESOLUTION_MIN, Math.round(init.gridResolution ?? 160));
     const flipResolutionRow = document.createElement("div");
     flipResolutionRow.style.cssText = "display:none;margin:2px 0 8px;";
     flipResolutionRow.dataset.fluidGridResolution = "true";
@@ -2029,7 +2056,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     const flipResolutionInput = document.createElement("input");
     flipResolutionInput.type = "range";
     flipResolutionInput.min = String(FLIP_GRID_RESOLUTION_MIN);
-    flipResolutionInput.max = String(FLIP_GRID_RESOLUTION_MAX);
+    flipResolutionInput.max = String(Math.max(FLIP_GRID_RESOLUTION_MAX, gridResolution));
     flipResolutionInput.step = "1";
     flipResolutionInput.value = String(gridResolution);
     flipResolutionInput.style.cssText = "width:100%;";
@@ -2037,7 +2064,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         flipResolutionValue.textContent = flipResolutionInput.value;
     };
     flipResolutionInput.onchange = () => {
-        gridResolution = Math.max(FLIP_GRID_RESOLUTION_MIN, Math.min(FLIP_GRID_RESOLUTION_MAX, Math.round(Number.parseFloat(flipResolutionInput.value) || 160)));
+        gridResolution = Math.max(FLIP_GRID_RESOLUTION_MIN, Math.min(Number.parseFloat(flipResolutionInput.max), Math.round(Number.parseFloat(flipResolutionInput.value) || 160)));
         flipResolutionInput.value = String(gridResolution);
         flipResolutionValue.textContent = String(gridResolution);
         on.onGridResolution?.(gridResolution);
@@ -2123,12 +2150,12 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     };
     const gridPositionControl = createGridVectorRow(
         "Grid position",
-        "World-space center of the simulation grid. Emitters and sinks use positions relative to this center. A self-contained imported scene and its collision SDF translate with it; built-in demo geometry remains fixed. FLIP changes are applied on Reset simulation.",
+        "World-space center of the simulation grid. Emitters and sinks use positions relative to this center. A self-contained imported scene and its collision SDF translate with it; built-in demo geometry remains fixed. Changes are applied on Reset simulation.",
         init.gridPosition ?? [0, 9.5, 0]
     );
     const gridSizeControl = createGridVectorRow(
         "Grid size",
-        "Exact world-space X/Y/Z extents of the simulation domain, centered around Grid position. FLIP changes are previewed and applied on Reset simulation; other methods restart immediately.",
+        "Exact world-space X/Y/Z extents of the simulation domain, centered around Grid position. Changes are previewed and applied on Reset simulation.",
         init.gridSize ?? [40, 21, 40]
     );
     const gridStatus = document.createElement("div");
@@ -2137,7 +2164,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         inputs.map((input) => Number.parseFloat(input.value)) as [number, number, number];
     const setGridStatus = (message: string): void => {
         gridStatus.textContent = message;
-        gridStatus.style.display = message ? "block" : "none";
+        gridStatus.style.display = message && showGridControls && methodCaps().gridVisuals ? "block" : "none";
     };
     const commitGridSettings = (): void => {
         const position = readGridVector(gridPositionControl.inputs);
@@ -2223,6 +2250,14 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     gridGizmoCheckbox.type = "checkbox";
     gridGizmoCheckbox.onchange = () => on.onGridGizmo?.(gridGizmoCheckbox.checked);
     gridGizmoRow.append(gridGizmoCheckbox, labelWithInfo("Gizmo", "Shows position and scale gizmos together. Scaling is rounded to 0.1 world unit when the drag ends."));
+    const gridCapabilityRows = [gridPositionControl.row, gridSizeControl.row, cellSizeRow, gridBoundsRow, gridBoundsSolidRow, gridGizmoRow];
+    const applyGridControlsVisibility = (): void => {
+        const visible = showGridControls && methodCaps().gridVisuals;
+        for (const row of gridCapabilityRows) {
+            setRowVisible(row, visible);
+        }
+        gridStatus.style.display = visible && gridStatus.textContent ? "block" : "none";
+    };
 
     const sliderHost = document.createElement("div");
     const activeBlocksRow = document.createElement("label");
@@ -2346,9 +2381,11 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             const dependency = definition?.visibleWhen;
             const dependencyApplies = !dependency || (schemas[currentMethod] ?? []).find((entry) => entry.key === dependency.key)?.value === dependency.equals;
             const hostVisible = !visibleParamKeys || visibleParamKeys.has(key);
+            const backendPhysics = methodCaps().physicsParameters;
+            const backendVisible = (backendPhysics === null || backendPhysics.includes(key)) && (key !== "polygonSurface" || methodCaps().polygonSurface);
             const hostSupported = on.onPhysicsParam !== undefined && (key !== "polygonSurface" || on.onPolygonSurface !== undefined);
             const keepVisible = definition?.control === "checkbox";
-            row.style.display = hostVisible && (dependencyApplies || keepVisible) ? "" : "none";
+            row.style.display = hostVisible && backendVisible && (dependencyApplies || keepVisible) ? "" : "none";
             const input = paramInputs.get(key);
             if (input) {
                 if (!dependencyApplies && definition?.control === "checkbox" && input instanceof HTMLInputElement && input.checked) {
@@ -2501,6 +2538,9 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     let foamT1 = init.foam.density;
     let foamSubStrength = init.foam.subsurfaceStrength;
     let foamSize = init.foam.size;
+    let foamSpraySize = init.foam.spraySize ?? 0.55;
+    let foamSprayIntensity = init.foam.sprayIntensity ?? 1.4;
+    let foamSpraySeparation = init.foam.spraySeparation ?? 1;
     let foamBlurRadius = init.foam.blurRadius;
     let foamLightIntensity = init.foam.lightIntensity;
     let foamAmbient = init.foam.ambient;
@@ -2763,7 +2803,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     const foamLifeRow = makeRenderSlider(
         "Foam lifetime (s)",
         0.3,
-        20,
+        60,
         0.1,
         foamCfg.tMax,
         (v) => v.toFixed(1),
@@ -2869,6 +2909,45 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             foamSize = v;
             on.onFoamSize?.(v);
         }
+    );
+    const foamSprayIntensityRow = makeRenderSlider(
+        "Spray intensity",
+        0,
+        10,
+        0.1,
+        foamSprayIntensity,
+        (v) => `${v.toFixed(1)}×`,
+        (v) => {
+            foamSprayIntensity = v;
+            on.onFoamSprayIntensity?.(v);
+        },
+        "Screen-space contribution of spray particles only. Increase this when spray exists in diagnostics but is visually lost in the surface foam."
+    );
+    const foamSpraySizeRow = makeRenderSlider(
+        "Spray size",
+        0.05,
+        3,
+        0.05,
+        foamSpraySize,
+        (v) => `${v.toFixed(2)}×`,
+        (v) => {
+            foamSpraySize = v;
+            on.onFoamSpraySize?.(v);
+        },
+        "Billboard radius of spray particles relative to the common Foam size. The default 0.55 keeps spray finer than surface foam."
+    );
+    const foamSpraySeparationRow = makeRenderSlider(
+        "Spray separation",
+        0,
+        4,
+        0.05,
+        foamSpraySeparation,
+        (v) => `${v.toFixed(2)}×`,
+        (v) => {
+            foamSpraySeparation = v;
+            on.onFoamSpraySeparation?.(v);
+        },
+        "Required distance in surface-depth bias units before strict filtering reveals spray. Lower values show spray closer to the liquid surface; 0 is the most permissive."
     );
     const foamBlurRow = makeRenderSlider(
         "Foam blur radius",
@@ -2990,6 +3069,9 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         foamSoftRow,
         foamDensityRow,
         foamSizeRow,
+        foamSpraySizeRow,
+        foamSprayIntensityRow,
+        foamSpraySeparationRow,
         foamBlurRow,
         foamLightRow,
         foamAmbientRow,
@@ -3036,7 +3118,9 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
 
     const generalItems: HTMLElement[] = [];
     if (!opts.hideMethod) {
-        generalItems.push(methodTitle, methodSel);
+        generalItems.push(methodTitle, methodSel, implementationSlot);
+    } else {
+        generalItems.push(implementationSlot);
     }
     if (opts.methods.includes("PB-MPM")) {
         generalItems.push(materialRow);
@@ -3311,7 +3395,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
 
         const timingHeader = makeSubHeader("Timing");
         const timingNote = document.createElement("div");
-        timingNote.style.cssText = "color:#7c8aa0;font-size:11px;margin:2px 0 6px;";
+        timingNote.style.cssText = "color:#7c8aa0;font-size:11px;line-height:1.35;max-width:240px;margin:2px 0 6px;";
         const timingBody = document.createElement("div");
         for (const s of stages) {
             timingBody.appendChild(makeTimingRow(s));
@@ -3330,7 +3414,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         panelTitle.style.cssText = "font-weight:700;font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:#7fb0e0;margin-bottom:8px;";
         panel.append(panelTitle, generalHeader, fpsRow, memRow.row, timingHeader);
         if (opts.gpu.supported) {
-            timingNote.textContent = "Per-stage GPU time (Chrome quantizes resolution).";
+            timingNote.textContent = "GPU work only; CPU waits excluded. Chrome quantizes resolution.";
             panel.append(timingNote, timingBody);
         } else {
             timingNote.textContent = "GPU timing unavailable (no timestamp-query feature)";
@@ -3345,14 +3429,29 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
                 memValueEl.textContent = "~" + formatGpuBytes(bytes);
             },
             refreshTiming(res): void {
-                if (!res) {
+                if (!res || res.overflowed) {
+                    for (const value of Object.values(timingValueEls)) {
+                        value.textContent = "\u2014 ms";
+                    }
+                    timingNote.textContent = res?.overflowed
+                        ? "GPU timing query budget exceeded; incomplete sample."
+                        : opts.gpu?.supported
+                          ? "Waiting for GPU timestamp samples."
+                          : "GPU timing unavailable (no timestamp-query feature)";
+                    panel.dataset.fluidGpuIncomplete = String(res?.overflowed === true);
+                    delete panel.dataset.fluidGpuSimulationMs;
+                    delete panel.dataset.fluidGpuTotalMs;
                     return;
                 }
+                timingNote.textContent = "GPU work only; CPU waits excluded. Chrome quantizes resolution.";
+                panel.dataset.fluidGpuIncomplete = "false";
+                panel.dataset.fluidGpuSimulationMs = String(res.stages.Simulation ?? 0);
+                panel.dataset.fluidGpuTotalMs = String(res.frameTotal);
                 for (const s of stages) {
-                    timingValueEls[s]!.textContent = `${(res.stages[s] ?? 0).toFixed(2)} ms`;
+                    timingValueEls[s]!.textContent = (res.stages[s] ?? 0).toFixed(2) + " ms";
                 }
-                timingValueEls["Other"]!.textContent = `${Math.max(0, res.frameTotal - res.total).toFixed(2)} ms`;
-                timingValueEls["Total"]!.textContent = `${res.frameTotal.toFixed(2)} ms`;
+                timingValueEls["Other"]!.textContent = Math.max(0, res.frameTotal - res.total).toFixed(2) + " ms";
+                timingValueEls["Total"]!.textContent = res.frameTotal.toFixed(2) + " ms";
             },
         };
     }
@@ -3478,6 +3577,9 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
                 tMax: foamCfg.tMax,
                 poolScale: foamCfg.poolScale,
                 size: foamSize,
+                spraySize: foamSpraySize,
+                sprayIntensity: foamSprayIntensity,
+                spraySeparation: foamSpraySeparation,
                 blurRadius: foamBlurRadius,
                 lightIntensity: foamLightIntensity,
                 ambient: foamAmbient,
@@ -3496,6 +3598,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     const handle: FluidControlsHandle = {
         root,
         demoSlot,
+        implementationSlot,
         containerToggleRow: opts.hideContainerToggle ? null : containerRow,
         makeSection,
         setSectionVisible(title: string, visible: boolean): void {
@@ -3506,6 +3609,13 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             section[0].style.display = visible ? "" : "none";
             section[1].style.display = visible ? "" : "none";
         },
+        setCapabilities(capabilities: Partial<FluidControlsCapabilities>): void {
+            hostCapabilities = capabilities;
+            applyCapabilityVisibility();
+        },
+        get capabilityOverrides(): Readonly<Partial<FluidControlsCapabilities>> {
+            return hostCapabilities;
+        },
 
         setMethod(method: string): void {
             currentMethod = method;
@@ -3515,6 +3625,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             applyFlipControlVisibility();
             applyFoamMethodVisibility();
             applySurfaceVisibility(renderChk.checked);
+            applyCapabilityVisibility();
         },
         setMaterial(material: number): void {
             materialSel.value = String(material);
@@ -3530,7 +3641,15 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             applyFlipControlVisibility();
         },
         setActiveParticleCount,
-        setParticleUsage(activeCount: number, totalCount: number, gpuBytes: number, restartActiveCount?: number, restartTotalCount?: number, restartGpuBytes?: number): void {
+        setParticleUsage(
+            activeCount: number,
+            totalCount: number,
+            gpuBytes: number,
+            restartActiveCount?: number,
+            restartTotalCount?: number,
+            restartGpuBytes?: number,
+            restartActiveCountEstimated?: boolean
+        ): void {
             displayedActiveParticleCount = Math.max(0, Math.floor(activeCount));
             displayedParticleCount = Math.max(0, Math.floor(totalCount));
             displayedGpuBytes = Math.max(0, gpuBytes);
@@ -3540,6 +3659,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
                           activeCount: Math.max(0, Math.floor(restartActiveCount)),
                           totalCount: Math.max(1, Math.floor(restartTotalCount)),
                           gpuBytes: Math.max(0, restartGpuBytes),
+                          activeCountEstimated: restartActiveCountEstimated === true,
                       }
                     : null;
             updateParticleUsage();
@@ -3670,7 +3790,8 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             applyFlipControlVisibility();
         },
         setGridResolution(resolution: number): void {
-            gridResolution = Math.max(FLIP_GRID_RESOLUTION_MIN, Math.min(FLIP_GRID_RESOLUTION_MAX, Math.round(resolution)));
+            gridResolution = Math.max(FLIP_GRID_RESOLUTION_MIN, Math.round(resolution));
+            flipResolutionInput.max = String(Math.max(FLIP_GRID_RESOLUTION_MAX, gridResolution));
             flipResolutionInput.value = String(gridResolution);
             flipResolutionValue.textContent = String(gridResolution);
         },
@@ -3759,6 +3880,9 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
                 foamLifeRow.set(foam.tMax);
                 foamPoolRow.set(foam.poolScale);
                 foamSizeRow.set(foam.size);
+                foamSpraySizeRow.set(foam.spraySize ?? 0.55);
+                foamSprayIntensityRow.set(foam.sprayIntensity ?? 1.4);
+                foamSpraySeparationRow.set(foam.spraySeparation ?? 1);
                 foamBlurRow.set(foam.blurRadius);
                 foamLightRow.set(foam.lightIntensity);
                 foamAmbientRow.set(foam.ambient);
@@ -3792,6 +3916,25 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
 
         gpu,
     };
+    applyCapabilityVisibility = (): void => {
+        applyMaterialVisibility();
+        applyActiveBlocksVisibility();
+        applyFlipControlVisibility();
+        applyFoamMethodVisibility();
+        applySurfaceVisibility(renderChk.checked);
+        applyGridControlsVisibility();
+        applyParamVisibility();
+        const foamSection = sections.get("Foam");
+        if (foamSection) {
+            const visible = methodCaps().foam;
+            foamSection[0].style.display = visible ? "" : "none";
+            foamSection[1].style.display = visible ? "" : "none";
+        }
+        if (gpu) {
+            gpu.panel.style.display = methodCaps().timing ? "" : "none";
+        }
+    };
+    applyCapabilityVisibility();
     initializeFluidControlsTransaction(controlsTransaction);
     return handle;
 }

@@ -10,6 +10,8 @@ import type {
     DirectionalLight,
     EngineContext,
     FluidFlowConfig,
+    FluidSceneSdf,
+    FluidSceneSdfBounds,
     FluidSimulation,
     ForceFieldSpec,
     HemisphericLight,
@@ -105,6 +107,9 @@ export interface FluidCtx {
      *  world-space position/size and Physics particle size together; gridless legacy demos retain
      *  their historical hidden domain multiplier. Returns whether a rebuild occurred. */
     setDomainScale(s: number): boolean;
+    /** Apply a transient uniform scale to the imported scene's visual root. This is intentionally
+     *  outside pair state and JSON authoring; callers must restore 1 when leaving their test mode. */
+    setTransientSceneMeshScale(scale: number): void;
 
     /** Configure the shared bloom post-process. The whole fluid chain composites into an
      *  offscreen target, which is then presented to the swapchain either through bloom or a
@@ -124,6 +129,8 @@ export interface FluidDemo {
     readonly label: string;
     /** Demo-specific interaction text appended to the shared camera and simulation controls. */
     readonly helperText?: string;
+    /** Multiplier applied to the shared Shift+RMB pointer force. Default 1. */
+    readonly interactiveForceScale?: number;
     /** HDR environment this demo shows as its skybox background AND reflects in the
      *  fluid surface (one of {@link ENV_STUDIO_URL} / the waterfall's own
      *  `WATERFALL_ENV_URL`). The
@@ -144,6 +151,8 @@ export interface FluidDemo {
     /** Quality tier this demo should open on the first time it is picked. Omit to carry the
      *  current tier over. Same first-visit-only rule as {@link defaultMethod}. */
     readonly defaultQuality?: "low" | "middle" | "high";
+    /** First-visit camera framing used when no quality preset supplies one. */
+    readonly defaultCamera?: { alpha: number; beta: number; radius: number; target?: [number, number, number] };
     /** Preserve solver-independent authoring state when switching methods. The target method
      *  keeps its own specialized physics schema while shared state (including gravity) carries over. */
     readonly methodIndependentAuthoring?: boolean;
@@ -157,6 +166,10 @@ export interface FluidDemo {
      *  shells like the capsule); otherwise (`gridConfine` true or absent) it's a CLOSED
      *  container confined at the grid with a separating wall. */
     readonly sdf: SceneSdfSpec;
+    /** Optional live collision binding for demos that update fixed GPU resources in place. */
+    sceneSdf?(): FluidSceneSdf | null;
+    /** Set or clear the MLS-MPM numerical-boundary container around a live scene SDF. */
+    setMlsContainer?(bounds: FluidSceneSdfBounds | null): void;
     /** Pack this demo's static params into the shared UBO (offset 0 region). */
     writeSdfParams(): void;
     /** Default, solver-independent initial volumes, inflows and recycling sinks. */
@@ -169,6 +182,16 @@ export interface FluidDemo {
     onEnter(): void;
     /** Leaving this demo: hide meshes, undo camera mode / any force. */
     onLeave(): void;
+    /** Notification when the shared simulation pause state changes. */
+    onPauseChanged?(paused: boolean): void;
+    /** Rewind demo-owned animation after a simulation reset or preset import. */
+    restartAnimation?(paused: boolean): void;
+    /** Whether non-FLIP resets should pre-roll the active solver to equilibrium before publication. */
+    initialStabilizationEnabled?(): boolean;
+    /** Resolve demo-owned collision assets needed by hidden initial stabilization. */
+    prepareInitialStabilization?(): Promise<void>;
+    /** Receive hidden initial-stabilization progress for demo-local status UI. */
+    onInitialStabilizationProgress?(state: { running: boolean; simulatedSeconds: number; converged: boolean }): void;
     /** Per-frame hook (box: spin paddle + write paddle SDF block). */
     update(dt: number): void;
     /** Whether asynchronously loaded assets required for deterministic capture are ready. */

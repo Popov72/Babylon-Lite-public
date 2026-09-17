@@ -15,11 +15,17 @@ import { CURRENT_FLUID_SIMULATION_SEMANTICS, resolveFluidSimulationSemantics, ty
 
 type KnownPresetShape = true | { readonly [key: string]: KnownPresetShape };
 
+/** @internal */
+export const FLIP_REFERENCE_BACKEND_ID = "flip-reference" as const;
+/** @internal */
+export const FLIP_REFERENCE_PHYSICS_PARAMETERS = ["gravity", "flipRatio", "minSubsteps", "maxSubsteps", "maxSubDtMs", "cflNumber"] as const;
+
 // `true` means the corresponding value is already carried by PairState. An object recursively lists
 // modeled children; omitted children are retained in forwardCompatibleFields. Empty objects mark
 // shared-format sections that this mapper does not own but must preserve for another host.
 const KNOWN_EXPORT_SHAPE: KnownPresetShape = {
     formatVersion: true,
+    backendId: true,
     simulationSemantics: true,
     meta: { demo: true, method: true },
     source: {},
@@ -50,7 +56,7 @@ const KNOWN_EXPORT_SHAPE: KnownPresetShape = {
     showGridBoundsSolid: true,
     particleCount: true,
     material: true,
-    camera: { alpha: true, beta: true, radius: true, target: true },
+    camera: { alpha: true, beta: true, radius: true, target: true, fov: true, mirrorX: true },
     freeCamera: { position: true, target: true },
     impulse: {},
     grid: {},
@@ -105,6 +111,9 @@ const KNOWN_EXPORT_SHAPE: KnownPresetShape = {
         subsurfaceBubbleStrength: true,
         subsurfaceBubbleColor: true,
         foamBlurRadius: true,
+        spraySize: true,
+        sprayIntensity: true,
+        spraySeparation: true,
         foamLightIntensity: true,
         foamAmbient: true,
         foamAO: true,
@@ -165,6 +174,8 @@ function truncateToThreeDecimals(value: number): number {
 /** The grouped, human-facing JSON shape (matches the "Export parameters" download). */
 export interface FluidExportJson {
     formatVersion?: number;
+    /** Explicit FLIP implementation identity. Absence selects the production backend. */
+    backendId?: "flip-reference";
     /** Explicit solver-value interpretation. Required on files written by format 14 and newer. */
     simulationSemantics?: FluidSimulationSemantics;
     meta: { demo: string; method: string };
@@ -223,7 +234,7 @@ export interface FluidExportJson {
     /** PB-MPM material enum: 0 liquid, 1 elastic, 2 sand, 3 viscoelastic. */
     material?: number;
     /** Optional ArcRotate camera framing — omitted for pure-default pairs that pin no viewpoint. */
-    camera?: { alpha: number; beta: number; radius: number; target?: [number, number, number] };
+    camera?: { alpha: number; beta: number; radius: number; target?: [number, number, number]; fov?: number; mirrorX?: boolean };
     /** Optional FreeCamera pose, stored separately from the incompatible ArcRotate representation. */
     freeCamera?: { position: [number, number, number]; target: [number, number, number] };
     /**
@@ -304,6 +315,9 @@ export interface FluidExportJson {
         subsurfaceBubbleStrength: number;
         subsurfaceBubbleColor: string;
         foamBlurRadius: number;
+        spraySize?: number;
+        sprayIntensity?: number;
+        spraySeparation?: number;
         foamLightIntensity: number;
         foamAmbient: number;
         foamAO: number;
@@ -328,6 +342,20 @@ export interface FluidExportJson {
         collisionByteLength?: number;
         /** Grid position at which the immutable GLB and collision coordinates were authored. */
         anchorPosition?: [number, number, number];
+        /** Optional exact FLIP marker positions and velocities sampled from the first baked frame. */
+        initialState?: {
+            /** Base64 compressed BLFI data or the shared external `.sdf` filename. */
+            data: string;
+            /** External shared-container byte offset. */
+            byteOffset?: number;
+            /** External shared-container payload length. */
+            byteLength?: number;
+            /** Number of marker position/velocity pairs. */
+            count: number;
+            /** Blender frame represented by the payload. */
+            frame: number;
+            space: "world";
+        };
         /** Rigid animated mesh collisions sampled in the linked glTF node's local space. */
         animatedCollisions?: Array<{
             /** Stable bundle-local collision identifier. */
@@ -359,12 +387,20 @@ export interface FluidExportJson {
 /** Serialise a full PairState (from a preset/default or the live UI) into the
  *  grouped export shape. Camera is written only when the state carries one. */
 export function exportJsonFromPairState(demo: string, method: string, ps: PairState): FluidExportJson {
+    if (ps.backendId && method !== "FLIP") {
+        throw new Error(`[fluid] backendId "${ps.backendId}" requires intrinsic method "FLIP".`);
+    }
     const f = ps.foam;
+    const physics =
+        ps.backendId === FLIP_REFERENCE_BACKEND_ID
+            ? Object.fromEntries(FLIP_REFERENCE_PHYSICS_PARAMETERS.flatMap((key) => (ps.schema[key] === undefined ? [] : [[key, ps.schema[key]!]])))
+            : { ...ps.schema };
     const current: FluidExportJson = {
         formatVersion: 14,
+        ...(ps.backendId ? { backendId: ps.backendId } : {}),
         simulationSemantics: ps.simulationSemantics ?? CURRENT_FLUID_SIMULATION_SEMANTICS,
         meta: { demo, method },
-        physics: { ...ps.schema },
+        physics,
         demoParams: { ...ps.demoParams },
         demoState: ps.demoState ? { ...ps.demoState } : {},
         simulationDuration: ps.simulationDuration ?? 0,
@@ -445,6 +481,9 @@ export function exportJsonFromPairState(demo: string, method: string, ps: PairSt
             subsurfaceBubbleStrength: f?.subsurfaceStrength ?? 0,
             subsurfaceBubbleColor: f?.subsurfaceColor ?? "#b8d1f2",
             foamBlurRadius: f?.blurRadius ?? 0,
+            spraySize: f?.spraySize ?? 0.55,
+            sprayIntensity: f?.sprayIntensity ?? 1.4,
+            spraySeparation: f?.spraySeparation ?? 1,
             foamLightIntensity: f?.lightIntensity ?? 0,
             foamAmbient: f?.ambient ?? 0,
             foamAO: f?.aoStrength ?? 0,
@@ -453,12 +492,24 @@ export function exportJsonFromPairState(demo: string, method: string, ps: PairSt
             foamSize: f?.size ?? 1,
         },
     };
-    return mergeFluidPresetData(ps.forwardCompatibleFields, current);
+    const exported = mergeFluidPresetData(ps.forwardCompatibleFields, current);
+    if (ps.backendId === FLIP_REFERENCE_BACKEND_ID) {
+        exported.physics = Object.fromEntries(FLIP_REFERENCE_PHYSICS_PARAMETERS.map((key) => [key, physics[key]!]));
+        const backendRejection = fluidExportBackendProfileRejection(exported);
+        if (backendRejection) {
+            throw new Error("[fluid] cannot export FLIP Reference preset: " + backendRejection);
+        }
+    }
+    return exported;
 }
 
 /** Inverse of {@link exportJsonFromPairState}: turn a loaded quality file back into a
  *  Partial<PairState> for the core to merge over its per-method defaults. */
 export function presetFromExportJson(j: FluidExportJson): Partial<PairState> {
+    const backendRejection = fluidExportBackendProfileRejection(j);
+    if (backendRejection) {
+        throw new Error("Invalid fluid export: " + backendRejection);
+    }
     const r = j.render;
     const fm = j.foam;
     const forwardCompatibleFields = forwardCompatibleFieldsFrom(j);
@@ -505,6 +556,7 @@ export function presetFromExportJson(j: FluidExportJson): Partial<PairState> {
         schema.scorr = truncateToThreeDecimals(schema.scorr);
     }
     return {
+        ...(j.backendId ? { backendId: j.backendId } : {}),
         simulationSemantics: resolveFluidSimulationSemantics({
             formatVersion: j.formatVersion,
             demo: j.meta.demo,
@@ -579,6 +631,9 @@ export function presetFromExportJson(j: FluidExportJson): Partial<PairState> {
             tMax: fm.foamLifetime,
             poolScale: fm.poolSize,
             blurRadius: fm.foamBlurRadius,
+            spraySize: fm.spraySize ?? 0.55,
+            sprayIntensity: fm.sprayIntensity ?? 1.4,
+            spraySeparation: fm.spraySeparation ?? 1,
             lightIntensity: fm.foamLightIntensity,
             ambient: fm.foamAmbient,
             aoStrength: fm.foamAO,
@@ -602,4 +657,46 @@ export function presetFromExportJson(j: FluidExportJson): Partial<PairState> {
         ...(j.fusedBlockDiscovery !== undefined ? { fusedBlockDiscovery: j.fusedBlockDiscovery } : {}),
         ...(forwardCompatibleFields ? { forwardCompatibleFields } : {}),
     };
+}
+
+/** @internal */
+export function fluidExportBackendProfileRejection(j: FluidExportJson): string | null {
+    const backendId = (j as FluidExportJson & { backendId?: unknown }).backendId;
+    if (backendId === undefined) {
+        return null;
+    }
+    if (backendId !== FLIP_REFERENCE_BACKEND_ID) {
+        return `backendId "${String(backendId)}" is not supported`;
+    }
+    if (j.meta?.method !== "FLIP") {
+        return `backendId "${FLIP_REFERENCE_BACKEND_ID}" requires meta.method "FLIP"`;
+    }
+    const physics = j.physics;
+    if (!isRecord(physics)) {
+        return "FLIP Reference physics must be an object";
+    }
+    if ((physics.polygonSurface as number | undefined) !== undefined) {
+        return "FLIP Reference does not support polygon-surface reconstruction";
+    }
+    const supported = new Set<string>(FLIP_REFERENCE_PHYSICS_PARAMETERS);
+    const unsupported = Object.keys(physics).filter((key) => !supported.has(key));
+    const missing = FLIP_REFERENCE_PHYSICS_PARAMETERS.filter((key) => physics[key] === undefined);
+    if (missing.length > 0 || unsupported.length > 0) {
+        const details = [...(missing.length > 0 ? [`missing: ${missing.join(", ")}`] : []), ...(unsupported.length > 0 ? [`unsupported: ${unsupported.join(", ")}`] : [])].join(
+            "; "
+        );
+        return `FLIP Reference physics must define exactly ${FLIP_REFERENCE_PHYSICS_PARAMETERS.join(", ")} (${details})`;
+    }
+    if (j.pagedGrid) {
+        return "FLIP Reference does not support paged grids";
+    }
+    const activeInflow = j.emitters?.find((emitter) => emitter.enabled && emitter.behavior === "inflow");
+    if (activeInflow) {
+        return `FLIP Reference is initial-only; disable inflow emitter "${activeInflow.name || activeInflow.id}"`;
+    }
+    const activeSink = j.sinks?.find((sink) => sink.enabled);
+    if (activeSink) {
+        return `FLIP Reference does not support active sink "${activeSink.name || activeSink.id}"`;
+    }
+    return null;
 }

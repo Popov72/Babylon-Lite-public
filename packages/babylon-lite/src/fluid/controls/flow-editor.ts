@@ -35,6 +35,9 @@ export interface FluidFlowEditor {
     readonly sinksHost: HTMLElement;
     /** @internal */
     readonly setFlow: (flow: FluidFlowConfig) => void;
+    /** Restrict authoring to reset-time Initial emitters. Existing unsupported entries remain
+     *  visible so the user can disable, convert, or delete them; none are silently removed. */
+    readonly setInitialOnly: (enabled: boolean) => void;
     /** @internal */
     readonly clearSelection: (refreshEditor?: boolean) => void;
     /** @internal */
@@ -225,6 +228,7 @@ const eulerDegreesFromQuat = (q: [number, number, number, number]): [number, num
 
 export function createFluidFlowEditor(options: FluidFlowEditorOptions): FluidFlowEditor {
     let flow = options.flow;
+    let initialOnly = false;
     let selectedEmitterId: string | null = null;
     let selectedSinkId: string | null = null;
     let initialEmitterParticleCountValue: HTMLElement | null = null;
@@ -534,7 +538,7 @@ export function createFluidFlowEditor(options: FluidFlowEditorOptions): FluidFlo
                     id,
                     name: "New emitter",
                     enabled: true,
-                    behavior: "inflow",
+                    behavior: initialOnly ? "initial" : "inflow",
                     transform: identityFlowTransform(),
                     shape: defaultFlowShape("box"),
                     sampling: "volume",
@@ -558,7 +562,10 @@ export function createFluidFlowEditor(options: FluidFlowEditorOptions): FluidFlo
             }
             finishChange({ type: "flow", rebuildEditor: true });
         });
-        add.disabled = objects.length >= limit;
+        add.disabled = objects.length >= limit || (initialOnly && kind === "sink");
+        if (initialOnly && kind === "sink") {
+            add.title = "This implementation is initial-only and does not support sinks.";
+        }
         const duplicate = flowButton("Duplicate", () => {
             if (!selected) {
                 return;
@@ -575,7 +582,12 @@ export function createFluidFlowEditor(options: FluidFlowEditorOptions): FluidFlo
             }
             finishChange({ type: "flow", rebuildEditor: true });
         });
-        duplicate.disabled = !selected || objects.length >= limit;
+        duplicate.disabled = !selected || objects.length >= limit || (initialOnly && (kind === "sink" || (kind === "emitter" && (selected as FluidEmitter).behavior === "inflow")));
+        if (initialOnly && kind === "sink") {
+            duplicate.title = "This implementation is initial-only and does not support sinks.";
+        } else if (initialOnly && kind === "emitter" && (selected as FluidEmitter | undefined)?.behavior === "inflow") {
+            duplicate.title = "Convert this emitter to Initial before duplicating it for an initial-only implementation.";
+        }
         const remove = flowButton("Delete", () => {
             if (!selected) {
                 return;
@@ -603,6 +615,11 @@ export function createFluidFlowEditor(options: FluidFlowEditorOptions): FluidFlo
         const enabled = document.createElement("input");
         enabled.type = "checkbox";
         enabled.checked = object.enabled;
+        const unsupportedActivation = initialOnly && (kind === "sink" || (object as FluidEmitter).behavior === "inflow");
+        enabled.disabled = unsupportedActivation && !object.enabled;
+        if (unsupportedActivation) {
+            enabled.title = kind === "sink" ? "Sinks are unavailable in initial-only mode." : "Inflow emitters are unavailable in initial-only mode.";
+        }
         enabled.onchange = () => {
             object.enabled = enabled.checked;
             updateObject(kind, object);
@@ -674,13 +691,24 @@ export function createFluidFlowEditor(options: FluidFlowEditorOptions): FluidFlo
                 emitter.volumeRate = rateLimited ? (emitter.volumeRate ?? 1) : undefined;
                 updateObject("emitter", emitter);
             };
+            const behavior = selectInput(emitter.behavior, ["initial", "inflow"] as const, (value) => {
+                emitter.behavior = value;
+                updateObject("emitter", emitter);
+            });
+            if (initialOnly) {
+                const inflowOption = Array.from(behavior.options).find((option) => option.value === "inflow");
+                if (inflowOption) {
+                    inflowOption.disabled = true;
+                }
+                behavior.title = "This implementation supports reset-time Initial emitters only.";
+            }
             editor.prepend(
                 flowField(
                     "Behavior",
-                    selectInput(emitter.behavior, ["initial", "inflow"] as const, (value) => {
-                        emitter.behavior = value;
-                        updateObject("emitter", emitter);
-                    })
+                    behavior,
+                    initialOnly
+                        ? "This implementation supports reset-time Initial emitters only. Existing Inflow entries remain visible so they can be converted or disabled."
+                        : undefined
                 ),
                 flowField(
                     "Sampling",
@@ -802,7 +830,12 @@ export function createFluidFlowEditor(options: FluidFlowEditorOptions): FluidFlo
                 );
             }
         }
-        options.emittersHost.replaceChildren(flowField("Initial emitters fill capacity", fillCapacity), flowList("emitter"), flowButtons("emitter"), editor);
+        const notice = document.createElement("div");
+        notice.dataset.fluidInitialOnlyNotice = "emitters";
+        notice.style.cssText = "display:none;margin:0 0 8px;color:#a8bed3;font-size:11px;line-height:1.4;";
+        notice.textContent = "Initial-only implementation: new emitters are created as Initial, and Inflow cannot be selected.";
+        notice.style.display = initialOnly ? "block" : "none";
+        options.emittersHost.replaceChildren(notice, flowField("Initial emitters fill capacity", fillCapacity), flowList("emitter"), flowButtons("emitter"), editor);
     };
 
     const refreshSinkUI = (): void => {
@@ -900,7 +933,12 @@ export function createFluidFlowEditor(options: FluidFlowEditorOptions): FluidFlo
                 );
             }
         }
-        options.sinksHost.replaceChildren(flowList("sink"), flowButtons("sink"), editor);
+        const notice = document.createElement("div");
+        notice.dataset.fluidInitialOnlyNotice = "sinks";
+        notice.style.cssText = "display:none;margin:0 0 8px;color:#a8bed3;font-size:11px;line-height:1.4;";
+        notice.textContent = "Sinks are unavailable in this initial-only implementation. Existing entries remain visible so they can be disabled or deleted.";
+        notice.style.display = initialOnly ? "block" : "none";
+        options.sinksHost.replaceChildren(notice, flowList("sink"), flowButtons("sink"), editor);
     };
 
     function refreshComputedValues(): void {
@@ -928,6 +966,10 @@ export function createFluidFlowEditor(options: FluidFlowEditorOptions): FluidFlo
         sinksHost: options.sinksHost,
         setFlow(nextFlow) {
             flow = nextFlow;
+            refresh();
+        },
+        setInitialOnly(enabled) {
+            initialOnly = enabled;
             refresh();
         },
         clearSelection(refreshEditor = true) {

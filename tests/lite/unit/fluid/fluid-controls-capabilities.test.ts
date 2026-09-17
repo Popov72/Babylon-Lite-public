@@ -6,7 +6,16 @@ import { DEFAULT_FLUID_SCHEMAS } from "../../../../packages/babylon-lite/src/flu
 describe("fluid controls capabilities contract", () => {
     it("gates FLIP-only control groups to FLIP", () => {
         const caps = resolveFluidControlsCapabilities({ method: "FLIP" });
-        expect(caps).toMatchObject({ flipTuning: true, polygonSurface: true, pressureDiagnostics: true, pagedGrid: true, material: false, activeBlocks: false });
+        expect(caps).toMatchObject({
+            flipTuning: true,
+            polygonSurface: true,
+            pressureDiagnostics: true,
+            pagedGrid: true,
+            foam: true,
+            physicsParameters: null,
+            material: false,
+            activeBlocks: false,
+        });
     });
 
     it("gates active blocks + paging to MLS-MPM", () => {
@@ -56,15 +65,30 @@ describe("fluid controls capabilities contract", () => {
                 hostCapabilities: {
                     independentRendering: false,
                     polygonSurface: false,
+                    foam: false,
+                    physicsParameters: ["gravity", "flipRatio"],
                     gridVisuals: false,
                 },
             })
         ).toMatchObject({
             independentRendering: false,
             polygonSurface: false,
+            foam: false,
+            physicsParameters: ["gravity", "flipRatio"],
             gridVisuals: false,
             flipTuning: true,
             pagedGrid: true,
+        });
+
+        it("restores intrinsic defaults when implementation capabilities are cleared", () => {
+            const reference = resolveFluidControlsCapabilities({
+                method: "FLIP",
+                hostCapabilities: { pagedGrid: false, polygonSurface: false, foam: false, physicsParameters: ["gravity"] },
+            });
+            const production = resolveFluidControlsCapabilities({ method: "FLIP", hostCapabilities: {} });
+
+            expect(reference).toMatchObject({ pagedGrid: false, polygonSurface: false, foam: false, physicsParameters: ["gravity"] });
+            expect(production).toMatchObject({ pagedGrid: true, polygonSurface: true, foam: true, physicsParameters: null });
         });
     });
 

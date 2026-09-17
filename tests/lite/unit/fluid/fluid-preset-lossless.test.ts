@@ -16,6 +16,30 @@ const basePairState = (): PairState => ({
 });
 
 describe("lossless fluid preset round-trip", () => {
+    it("preserves enabled Reference whitewater settings and all three kind toggles", () => {
+        const state = basePairState();
+        state.backendId = "flip-reference";
+        state.schema = { gravity: 9.8, flipRatio: 0.95, minSubsteps: 2, maxSubsteps: 24, maxSubDtMs: 10, cflNumber: 5 };
+        const exported = exportJsonFromPairState("fluid", "FLIP", state);
+        exported.foam = {
+            ...exported.foam,
+            enableFoam: true,
+            activeParticles: false,
+            generateSpray: false,
+            generateFoam: true,
+            generateBubbles: true,
+            turbulenceRate: 12,
+            foamLayerDepth: 2,
+            sprayDrag: 0.3,
+            poolSize: 4,
+        };
+        const imported = presetFromExportJson(exported);
+        const roundTrip = exportJsonFromPairState("fluid", "FLIP", { ...state, ...imported, schema: imported.schema!, demoParams: imported.demoParams! });
+        expect(roundTrip.backendId).toBe("flip-reference");
+        expect(roundTrip.foam).toEqual(exported.foam);
+        expect(roundTrip.physics).toEqual(state.schema);
+    });
+
     it("preserves unknown/forward-compatible top-level fields through import and re-export", () => {
         const json = exportJsonFromPairState("box", "PBF", basePairState());
         // Simulate a newer format revision this build does not model.
@@ -140,5 +164,49 @@ describe("lossless fluid preset round-trip", () => {
         const json = exportJsonFromPairState("box", "FLIP", basePairState());
         const preset = presetFromExportJson(json as FluidExportJson);
         expect(preset.forwardCompatibleFields).toBeUndefined();
+    });
+
+    it("round-trips Reference identity and writes only its supported physics profile", () => {
+        const state: PairState = {
+            ...basePairState(),
+            backendId: "flip-reference",
+            schema: {
+                gravity: 9.8,
+                flipRatio: 0.95,
+                minSubsteps: 1,
+                maxSubsteps: 8,
+                maxSubDtMs: 8.4,
+                cflNumber: 2,
+                kinematicViscosity: 0,
+                surfaceTension: 0,
+                polygonSurface: 0,
+            },
+            renderMode: "surface",
+            anisotropic: true,
+            pagedGrid: false,
+            forwardCompatibleFields: { physics: { futurePressureMode: 2 } },
+        };
+
+        const json = exportJsonFromPairState("box", "FLIP", state);
+        expect(json.backendId).toBe("flip-reference");
+        expect(Object.keys(json.physics)).toEqual(["gravity", "flipRatio", "minSubsteps", "maxSubsteps", "maxSubDtMs", "cflNumber"]);
+        expect(json.render.renderAsSpheres).toBe(false);
+        expect(json.render.anisotropicSurface).toBe(true);
+        expect(presetFromExportJson(json)).toMatchObject({
+            backendId: "flip-reference",
+            schema: json.physics,
+            renderMode: "surface",
+            anisotropic: true,
+        });
+    });
+
+    it("rejects invalid explicit backend identity before mapping a preset", () => {
+        const unknown = exportJsonFromPairState("box", "PBF", basePairState());
+        Object.assign(unknown, { backendId: "future-backend" });
+        expect(() => presetFromExportJson(unknown as FluidExportJson)).toThrow('backendId "future-backend" is not supported');
+
+        const nonFlip = exportJsonFromPairState("box", "PBF", basePairState()) as FluidExportJson;
+        nonFlip.backendId = "flip-reference";
+        expect(() => presetFromExportJson(nonFlip)).toThrow('requires meta.method "FLIP"');
     });
 });

@@ -77,7 +77,8 @@ fn activeListBase(side: u32, cap: u32) -> u32 { return 64u + side * activeStride
             outc.b = w;
         } else {
             let separation = surfZ - i.eyeZ;
-            outc.b = w * smoothstep(u.texel.z, 2.0 * u.texel.z, separation);
+            let separationStart = u.gains.w * u.texel.z;
+            outc.b = w * smoothstep(separationStart, separationStart + u.texel.z, separation);
         }`;
     const surfaceOrientation =
         surfaceDepthMode === "polygon"
@@ -132,7 +133,8 @@ struct Splat {
     up: vec4<f32>,
     size: vec4<f32>,   // particleRadius, sizeScale, foamScale, sceneScale (accum->scene res)
     texel: vec4<f32>,  // 1/accumW, 1/accumH, surfBias, sceneBias
-    gains: vec4<f32>,  // sprayGain, foamGain, bubbleGain, _
+    gains: vec4<f32>,  // sprayGain, foamGain, bubbleGain, spraySeparation
+    kindSize: vec4<f32>, // spraySize, foamSize, bubbleSize, _
 };
 @group(0) @binding(0) var<uniform> u: Splat;
 struct Diffuse { p: vec4<f32>, v: vec4<f32> };
@@ -168,13 +170,13 @@ struct VOut {
     }
     let kind = u32(d.v.w + 0.5);
     let baseSize = u.size.x * u.size.y * u.size.z;
-    var sz = baseSize * 0.85;   // foam
+    var sz = baseSize * u.kindSize.y;
     var gain = u.gains.y;
     if (kind == 0u) {           // spray: small + sharp
-        sz = baseSize * 0.55;
+        sz = baseSize * u.kindSize.x;
         gain = u.gains.x;
     } else if (kind == 2u) {    // bubble: a touch larger + softer
-        sz = baseSize * 1.1;
+        sz = baseSize * u.kindSize.z;
         gain = u.gains.z;
     }
     gain *= smoothstep(0.0, 0.3, d.p.w);
@@ -458,6 +460,9 @@ export function createFoamRenderTask(
     setPolygonSurfaceDepth(on: boolean): void;
     setOpacity(v: number): void;
     setSizeScale(s: number): void;
+    setSpraySize(value: number): void;
+    setSprayIntensity(value: number): void;
+    setSpraySeparation(value: number): void;
     setDebugByKind(on: boolean): void;
     setThresholds(t0: number, t1: number): void;
     setSubsurfaceStrength(v: number): void;
@@ -481,6 +486,9 @@ export function createFoamRenderTask(
     let polygonSurfaceDepth = false;
     let opacity = 1;
     let sizeScale = 1;
+    let spraySize = 0.55;
+    let sprayIntensity = 1.4;
+    let spraySeparation = 1;
     let debugByKind = false;
     let t0 = 0.25;
     let t1 = 1.6;
@@ -499,7 +507,7 @@ export function createFoamRenderTask(
     const specStrength = 0.6;
 
     // ── Screen-path resources ──
-    const splatData = new Float32Array(52); // view(16)+proj(16)+right(4)+up(4)+size(4)+texel(4)+gains(4)
+    const splatData = new Float32Array(56); // view(16)+proj(16)+right(4)+up(4)+size(4)+texel(4)+gains(4)+kindSize(4)
     const splatBuf = device.createBuffer({ label: "fluid-foam-splat", size: 256, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const blurXBuf = device.createBuffer({ label: "fluid-foam-blur-x", size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const blurYBuf = device.createBuffer({ label: "fluid-foam-blur-y", size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
@@ -610,10 +618,14 @@ export function createFoamRenderTask(
         // marker-radius band, without weakening filtering in the established path.
         splatData[46] = r * 1.5 * (polygonSurfaceDepth ? 2 : 1);
         splatData[47] = 0.02; // sceneBias (eye-Z bias vs opaque geometry)
-        splatData[48] = 1.4; // sprayGain
+        splatData[48] = sprayIntensity;
         splatData[49] = 1.0; // foamGain
         splatData[50] = 1.0; // bubbleGain
-        splatData[51] = 0;
+        splatData[51] = spraySeparation;
+        splatData[52] = spraySize;
+        splatData[53] = 0.85; // foam size
+        splatData[54] = 1.1; // bubble size
+        splatData[55] = 0;
         device.queue.writeBuffer(splatBuf, 0, splatData);
 
         device.queue.writeBuffer(blurXBuf, 0, new Float32Array([1, 0, blurRadius, 0]));
@@ -794,6 +806,18 @@ export function createFoamRenderTask(
         /** Visual foam size multiplier (screen-space splat radius). */
         setSizeScale(s: number): void {
             sizeScale = s;
+        },
+        /** Spray billboard-size multiplier relative to the common diffuse-particle size. */
+        setSpraySize(value: number): void {
+            spraySize = Math.max(0.01, value);
+        },
+        /** Relative screen-space spray contribution. */
+        setSprayIntensity(value: number): void {
+            sprayIntensity = Math.max(0, value);
+        },
+        /** Surface-depth bias multiplier required before spray is rendered. Lower is easier. */
+        setSpraySeparation(value: number): void {
+            spraySeparation = Math.max(0, value);
         },
         /** Toggle the debug "colour by kind" mode (spray red / foam green / bubble blue). */
         setDebugByKind(on: boolean): void {

@@ -124,9 +124,7 @@ export function resolveFluidSimulationSemantics(input: LegacyFluidSimulationSema
     }
     const source = `${input.demo ?? ""} ${input.sourceApplication ?? ""}`.toLowerCase();
     const aquanova = source.includes("aquanova");
-    return aquanova
-        ? { version: 1, profile: "legacy-aquanova", pbfPhysics: "literal" }
-        : { version: 1, profile: "legacy-fluid", pbfPhysics: "scale-adjusted" };
+    return aquanova ? { version: 1, profile: "legacy-aquanova", pbfPhysics: "literal" } : { version: 1, profile: "legacy-fluid", pbfPhysics: "scale-adjusted" };
 }
 
 /** The policy constants that differ between {@link FluidCompatibilityProfile}s. */
@@ -259,9 +257,7 @@ export function resolveFluidSimulationConfig(profile: FluidCompatibilityProfile,
     const domainScale = input.domainScale ?? 1;
     const semantics =
         input.semantics ??
-        (profile === "fluid"
-            ? { version: 1, profile: "legacy-fluid", pbfPhysics: "scale-adjusted" }
-            : { version: 1, profile: "legacy-aquanova", pbfPhysics: "literal" });
+        (profile === "fluid" ? { version: 1, profile: "legacy-fluid", pbfPhysics: "scale-adjusted" } : { version: 1, profile: "legacy-aquanova", pbfPhysics: "literal" });
     const physics = { ...(input.physics ?? {}) };
     if (method === "PBF" && semantics.pbfPhysics === "scale-adjusted") {
         if (physics.restDensity !== undefined) {

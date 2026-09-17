@@ -1048,58 +1048,40 @@ export function createWaterfallDemo(ctx: FluidCtx): FluidDemo {
             rockRoot.rotation.set(0, (wf.rockYaw * Math.PI) / 180, 0);
         }
     };
-    void (async (): Promise<void> => {
-        const asset = await loadGltf(engine, ROCK_URL);
-        asset.animationGroups = undefined; // static prop — hold a fixed pose the SDF matches
-        rockRoot = asset.entities[0] as SceneNode;
-        const mine: Mesh[] = [];
-        collectMeshes(rockRoot, mine);
-        // MUST be set before addToScene: `receiveShadows` is folded into the material variant
-        // when the renderable is built, so flipping it afterwards would never reach the shader.
-        for (const m of mine) {
-            m.receiveShadows = true;
+    let rockLoadPromise: Promise<void> | null = null;
+    const ensureRockLoaded = (): void => {
+        if (rockReady || rockLoadPromise) {
+            return;
         }
-        // Both of these MUST also happen before addToScene, for the same reason — a mesh's triangle
-        // winding is baked into its GPU pipeline when the renderable is built.
-        //
-        // `applyScaleTransforms` OVERWRITES the asset root's scaling, and that root is where the
-        // loader parks its right-handed→left-handed flip (`__root__`, a diag(-1,1,1)). Replacing it
-        // with a plain positive uniform scale drops the flip, so the model's world determinant comes
-        // out POSITIVE (measured +157464 = 54³) while the loader recorded `_authoredSign = -1` for
-        // it at load time. The mesh is therefore MIRRORED relative to the winding its geometry was
-        // authored for, and its triangles are wound the opposite way round.
-        //
-        // Dropping the flip is DELIBERATE, not an oversight: `rock-heightmap.bin` is rasterised in
-        // raw glTF space (`bake-rock-heightmap.ts` walks the node tree from IDENTITY), so the water
-        // only collides with the silhouette it is drawn against while the rock is drawn unflipped
-        // too. Restoring the flip would mirror the formation against its own collision field.
-        //
-        // So the mirroring stays and the winding must be corrected instead. `enableMirroredMeshes`
-        // is the engine's opt-in for exactly this: it resolves winding from the LIVE world
-        // determinant rather than the loader's one-shot load-time flag, which is what a mesh
-        // mirrored AFTER load needs. It must be installed, and the transform must be final, before
-        // the renderable is built — the per-scene watcher only rebuilds on a subsequent sign FLIP,
-        // and seeds a late-added mesh with whatever sign it was built from.
-        //
-        // Getting this wrong is not subtle. These materials used to ship `doubleSided` (stripped
-        // from the assets by `scripts/strip-double-sided.ts`), and the two-sided PBR path flips the
-        // shading normal on `!front_facing` — which WebGPU derives from the pipeline's `frontFace`.
-        // Left at the default "ccw" that test came out inverted on the VISIBLE OUTER surface, so
-        // every lit face got `N = -N` and the formation shaded as though the sun were underneath it:
-        // up-facing surfaces went black with the sun overhead, and shadows disagreed with the
-        // lighting by 180°. Now that the materials are single-sided the failure mode is different
-        // but no milder — back-face culling is live, so the wrong winding would cull the outer
-        // surface and render the rock inside-out.
-        await enableMirroredMeshes(ctx.scene);
-        applyScaleTransforms();
-        addToScene(ctx.scene, asset);
-        for (const m of mine) {
-            setMeshVisible(m, active && containerVisible);
-            meshes.push(m);
-        }
-        rockReady = true;
-        applyShadows(); // the casters only exist now
-    })().catch((e: unknown) => console.warn("[waterfall] rock model load failed", e));
+        rockLoadPromise = (async (): Promise<void> => {
+            const asset = await loadGltf(engine, ROCK_URL);
+            asset.animationGroups = undefined; // static prop — hold a fixed pose the SDF matches
+            rockRoot = asset.entities[0] as SceneNode;
+            const mine: Mesh[] = [];
+            collectMeshes(rockRoot, mine);
+            // MUST be set before addToScene: `receiveShadows` is folded into the material variant
+            // when the renderable is built, so flipping it afterwards would never reach the shader.
+            for (const m of mine) {
+                m.receiveShadows = true;
+            }
+            // `applyScaleTransforms` deliberately replaces the loader's root mirror to match the
+            // separately baked height map, so live determinant-based winding correction is required.
+            await enableMirroredMeshes(ctx.scene);
+            applyScaleTransforms();
+            addToScene(ctx.scene, asset);
+            for (const m of mine) {
+                setMeshVisible(m, active && containerVisible);
+                meshes.push(m);
+            }
+            rockReady = true;
+            applyShadows(); // the casters only exist now
+        })()
+            .catch((e: unknown) => console.warn("[waterfall] rock model load failed", e))
+            .finally(() => {
+                rockLoadPromise = null;
+            });
+        void rockLoadPromise;
+    };
 
     // ── Background scenery: the oasis ring ─────────────────────────────────────────────
     // SET DRESSING ONLY. It is never rasterised into the height map and takes no part in the
@@ -1198,69 +1180,75 @@ export function createWaterfallDemo(ctx: FluidCtx): FluidDemo {
                 onOasisLoaded?.();
             });
     };
-    showOasisTier(oasisQuality);
-
     // ── The baked height map ───────────────────────────────────────────────────────────
     // Uploaded verbatim into `hmBuffer` (already bound by the sims) and kept CPU-side for
     // seeding/placement. A bake at a different resolution is resampled onto the HM_N grid.
-    void (async (): Promise<void> => {
-        const res = await fetch(HEIGHTMAP_URL);
-        if (!res.ok) {
-            throw new Error(`${res.status} ${res.statusText}`);
+    let heightMapLoadPromise: Promise<void> | null = null;
+    const ensureHeightMapLoaded = (): void => {
+        if (heightMapReady || heightMapLoadPromise) {
+            return;
         }
-        const buf = await res.arrayBuffer();
-        const head = new DataView(buf);
-        if (head.getUint32(0, true) !== HM_MAGIC) {
-            throw new Error("not a Babylon Lite height map");
-        }
-        const nx = head.getUint32(8, true);
-        const nz = head.getUint32(12, true);
-        const ox = head.getFloat32(16, true);
-        const oz = head.getFloat32(20, true);
-        const cx = head.getFloat32(24, true);
-        const cz = head.getFloat32(28, true);
-        const src = new Float32Array(buf, HM_HEADER_BYTES, nx * nz);
-        hmOx = ox;
-        hmOz = oz;
-        if (nx === HM_N && nz === HM_N) {
-            hmData = src;
-            hmInvCx = 1 / cx;
-            hmInvCz = 1 / cz;
-        } else {
-            // Bilinear resample onto the fixed grid so the pre-allocated (and already bound)
-            // storage buffer stays valid whatever resolution the bake used.
-            console.warn(`[waterfall] height map is ${nx}×${nz}, resampling to ${HM_N}×${HM_N}`);
-            const dst = new Float32Array(HM_N * HM_N);
-            const sx = ((nx - 1) * cx) / (HM_N - 1);
-            const sz = ((nz - 1) * cz) / (HM_N - 1);
-            for (let j = 0; j < HM_N; j++) {
-                const gz = Math.min(nz - 1.0001, (j * sz) / cz);
-                const j0 = Math.floor(gz);
-                const fz = gz - j0;
-                for (let i = 0; i < HM_N; i++) {
-                    const gx = Math.min(nx - 1.0001, (i * sx) / cx);
-                    const i0 = Math.floor(gx);
-                    const fx = gx - i0;
-                    const h0 = src[j0 * nx + i0]! * (1 - fx) + src[j0 * nx + i0 + 1]! * fx;
-                    const h1 = src[(j0 + 1) * nx + i0]! * (1 - fx) + src[(j0 + 1) * nx + i0 + 1]! * fx;
-                    dst[j * HM_N + i] = h0 * (1 - fz) + h1 * fz;
-                }
+        heightMapLoadPromise = (async (): Promise<void> => {
+            const res = await fetch(HEIGHTMAP_URL);
+            if (!res.ok) {
+                throw new Error(`${res.status} ${res.statusText}`);
             }
-            hmData = dst;
-            hmInvCx = 1 / sx;
-            hmInvCz = 1 / sz;
-        }
-        engine._device.queue.writeBuffer(hmBuffer, 0, hmData);
-
-        // Derive the shelf boxes from the real data now that it is in.
-        shelves = findTopShelves();
-        heightMapReady = true;
-
-        if (active) {
-            writeSdfParams();
-            ctx.refreshFlow();
-        }
-    })().catch((e: unknown) => console.warn("[waterfall] height map load failed", e));
+            const buf = await res.arrayBuffer();
+            const head = new DataView(buf);
+            if (head.getUint32(0, true) !== HM_MAGIC) {
+                throw new Error("not a Babylon Lite height map");
+            }
+            const nx = head.getUint32(8, true);
+            const nz = head.getUint32(12, true);
+            const ox = head.getFloat32(16, true);
+            const oz = head.getFloat32(20, true);
+            const cx = head.getFloat32(24, true);
+            const cz = head.getFloat32(28, true);
+            const src = new Float32Array(buf, HM_HEADER_BYTES, nx * nz);
+            hmOx = ox;
+            hmOz = oz;
+            if (nx === HM_N && nz === HM_N) {
+                hmData = src;
+                hmInvCx = 1 / cx;
+                hmInvCz = 1 / cz;
+            } else {
+                // Bilinear resample onto the fixed grid so the pre-allocated (and already bound)
+                // storage buffer stays valid whatever resolution the bake used.
+                console.warn(`[waterfall] height map is ${nx}×${nz}, resampling to ${HM_N}×${HM_N}`);
+                const dst = new Float32Array(HM_N * HM_N);
+                const sx = ((nx - 1) * cx) / (HM_N - 1);
+                const sz = ((nz - 1) * cz) / (HM_N - 1);
+                for (let j = 0; j < HM_N; j++) {
+                    const gz = Math.min(nz - 1.0001, (j * sz) / cz);
+                    const j0 = Math.floor(gz);
+                    const fz = gz - j0;
+                    for (let i = 0; i < HM_N; i++) {
+                        const gx = Math.min(nx - 1.0001, (i * sx) / cx);
+                        const i0 = Math.floor(gx);
+                        const fx = gx - i0;
+                        const h0 = src[j0 * nx + i0]! * (1 - fx) + src[j0 * nx + i0 + 1]! * fx;
+                        const h1 = src[(j0 + 1) * nx + i0]! * (1 - fx) + src[(j0 + 1) * nx + i0 + 1]! * fx;
+                        dst[j * HM_N + i] = h0 * (1 - fz) + h1 * fz;
+                    }
+                }
+                hmData = dst;
+                hmInvCx = 1 / sx;
+                hmInvCz = 1 / sz;
+            }
+            engine._device.queue.writeBuffer(hmBuffer, 0, hmData);
+            shelves = findTopShelves();
+            heightMapReady = true;
+            if (active) {
+                writeSdfParams();
+                ctx.refreshFlow();
+            }
+        })()
+            .catch((e: unknown) => console.warn("[waterfall] height map load failed", e))
+            .finally(() => {
+                heightMapLoadPromise = null;
+            });
+        void heightMapLoadPromise;
+    };
 
     // ── Outline authoring ──────────────────────────────────────────────────────────────────
     // Tick "Author polygons" to trace the terraces by hand: the camera swings overhead, LMB
@@ -1670,6 +1658,9 @@ export function createWaterfallDemo(ctx: FluidCtx): FluidDemo {
         },
         onEnter(): void {
             active = true;
+            ensureRockLoaded();
+            ensureHeightMapLoaded();
+            showOasisTier(oasisQuality);
             for (const m of meshes) {
                 setMeshVisible(m, containerVisible);
             }

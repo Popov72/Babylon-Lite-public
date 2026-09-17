@@ -17,6 +17,7 @@ import {
     fluidParticleBytesPerSlot,
     mlsMpmDefaultPageCapacity,
     resolveFluidAllocationPlan,
+    resolveFluidGridCompatibility,
     resolveFluidParticleCapacity,
 } from "../../../../packages/babylon-lite/src/fluid/core/allocation-plan";
 import { estimateFlipGpuBytes, flipMacFaceBufferBytes, pagedFlipStorageCounts } from "../../../../packages/babylon-lite/src/fluid/solvers/flip-sim";
@@ -212,6 +213,22 @@ describe("fluid allocation plan", () => {
             particleCount: 250,
             gridDim: [8, 8, 8],
             limits: { maxStorageBufferBindingSize: 19_999, maxBufferSize: 100_000 },
+        });
+
+        it("reports requested and available device buffer memory with production-safe spacing", () => {
+            const result = resolveFluidGridCompatibility(
+                "FLIP",
+                [215, 127, 565],
+                {
+                    maxStorageBufferBindingSize: 256 * 1024 * 1024,
+                    maxBufferSize: 256 * 1024 * 1024,
+                },
+                { enabled: false, maxPages: 1 }
+            );
+
+            expect(result.message).toBe(
+                "Grid 215 x 127 x 565 requires 354.8 MiB (372,020,080 bytes) for one FLIP MAC storage buffer; this WebGPU device allows 256.0 MiB (268,435,456 bytes) per storage buffer (maxStorageBufferBindingSize and maxBufferSize)."
+            );
         });
         expect(storageTight.errors).toContain("mpm-particles-working requires 20000 bytes in one storage binding, exceeding maxStorageBufferBindingSize 19999.");
 

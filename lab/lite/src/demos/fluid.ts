@@ -20,7 +20,6 @@ import {
     attachPositionGizmoToNode,
     attachRotationGizmoToNode,
     attachScaleGizmoToNode,
-    attachControl,
     createArcRotateCamera,
     createDepthResolveTask,
     createDirectionalLight,
@@ -40,6 +39,7 @@ import {
     createSceneContext,
     createStandardMaterial,
     createUtilityLayer,
+    enableMirroredMeshes,
     fluidSimulationCellSize,
     getEffectiveAspectRatio,
     getFrameGraph,
@@ -53,13 +53,17 @@ import {
     loadEnvironment,
     loadHdrEnvironment,
     mat4Decompose,
+    mat4Multiply,
+    mat4Translation,
     createBlurPostProcessTask,
     markMaterialUboDirty,
     onBeforeRender,
+    onSceneDispose,
     playAnimation,
     registerSceneWithShadowSupport,
     registerUtilityLayer,
     removeFromScene,
+    renderFrame,
     setPositionGizmoLocalCoordinates,
     setRotationGizmoLocalCoordinates,
     setScaleGizmoLocalCoordinates,
@@ -67,7 +71,9 @@ import {
     setEnvironmentRotation,
     setShadowTaskCasterMeshes,
     startEngine,
+    stopEngine,
     updateLineSystem,
+    waitForGpuIdle,
 } from "babylon-lite";
 import {
     resolveFluidSimulationConfig,
@@ -100,6 +106,7 @@ import {
     createFluidCompositeSceneSdf,
     createFluidInitialStatePlanCache,
     createFluidSimulation,
+    loadFlipReferenceBackend,
     createFluidSimulationCollection,
     createFluidControlsPanel,
     createFluidFlowEditor,
@@ -127,8 +134,8 @@ import {
     editFluidPresetSession,
     exportFluidPresetSession,
     fluidInitialEmitterVolume,
-    planFluidInitialState,
     prepareFluidReconfigurationUpdate,
+    readFluidSimulationPositions,
     readFluidSimulationProfiler,
     refreshFluidSimulationPolygonSurface,
     resetFluidSimulation,
@@ -140,16 +147,23 @@ import {
     setFluidSimulationParameter,
     setFluidSimulationProfiler,
     setFluidSimulationSceneSdf,
+    settleFluidSimulation,
     stepFluidSimulation,
+    submitFluidSimulationStep,
+    submitFluidSimulationSteps,
+    submitFluidSimulationProfiler,
     syncFluidControls,
     updateFluidSimulationEmitter,
     updateFluidSceneSdfContainer,
     updateFluidSceneSdfGridSettings,
     updateFluidSceneSdfStaticOffset,
+    updateFluidSceneSdfStaticScale,
     updateFluidSceneSdfTransforms,
 } from "babylon-lite";
 import type { FluidEmitter, FluidFlowConfig, FluidSceneSdf, FluidShape, FluidSimulationSemantics, FluidSink, ForceFieldSpec, Mat4 } from "babylon-lite";
 import type {
+    BlenderFluidCollision,
+    BlenderFluidInitialState,
     BlenderFluidScene,
     FluidExportJson,
     FluidFlowEditor,
@@ -157,6 +171,7 @@ import type {
     FluidDebug,
     FluidForceField,
     FluidSimulation,
+    FluidSimulationBackend,
     FluidSimulationOptions,
     FluidSimulationProfiler,
     FluidControlsBinding,
@@ -177,12 +192,16 @@ import { createPostProcessTask } from "babylon-lite";
 import { demoAssetUrl } from "./demo-asset-url.js";
 import type { DemoParam, FluidCtx, FluidDemo, FluidDomainBounds, FluidGridSettings, PairState, PendingForce } from "./fluid/demo.js";
 import { getQualityPreset, QUALITIES, DEFAULT_QUALITY, loadQualityPresets, type Quality } from "./fluid/quality-presets.js";
+import { createFluidReferencePump, queueFluidReferenceChange, startFluidReferencePump, stopFluidReferencePump } from "./fluid/reference-pump.js";
+import type { FluidReferencePump } from "./fluid/reference-pump.js";
+import { fluidReferenceTiming } from "./fluid/reference-timing.js";
+import { createEmitterSourceTransform, resolveEmitterSourceTransform } from "./fluid/emitter-source-transform.js";
+import type { EmitterSourceTransform } from "./fluid/emitter-source-transform.js";
 import { ENV_STUDIO_URL, INTERACTIVE_FORCE_SAMPLE_HOLD_MS } from "./fluid/demo.js";
 import {
     cellSizeForPhysicsScale,
     FLIP_DEFAULT_MARKERS_PER_CELL,
     FLIP_HIGH_MARKERS_PER_CELL,
-    GRID_RESOLUTION_MAX,
     GRID_RESOLUTION_MIN,
     gridBounds,
     gridCellsForSize,
@@ -200,10 +219,12 @@ import {
     scaleLimitsForMethod,
 } from "babylon-lite";
 import { screenRay } from "./fluid/pick.js";
+import { attachFluidCameraControls } from "./fluid/camera-controls.js";
 import { createCapsuleDemo } from "./fluid/scenes/capsule.js";
 import { createBoxDemo } from "./fluid/scenes/box.js";
 import { createFountainDemo } from "./fluid/scenes/fountain.js";
 import { createMarbleTowerDemo } from "./fluid/scenes/marbleTower.js";
+import { createJumpingWhaleDemo } from "./fluid/scenes/jumpingWhale.js";
 import { createWaterfallDemo, WATERFALL_ENV_URL, WATERFALL_BELFAST_ENV_URL } from "./fluid/scenes/waterfall.js";
 import { createWhiteboardDemo } from "./fluid/scenes/whiteboard.js";
 
@@ -281,13 +302,23 @@ async function main(): Promise<void> {
     const helperText = document.querySelector<HTMLElement>(".hint");
     const syncHelperText = (demo: FluidDemo): void => {
         if (helperText) {
-            helperText.textContent = demo.helperText ? `${SHARED_HELPER_TEXT} — ${demo.helperText}` : SHARED_HELPER_TEXT;
+            helperText.textContent = referenceSelected()
+                ? "FLIP Reference: " + SHARED_HELPER_TEXT
+                : demo.helperText
+                  ? `${SHARED_HELPER_TEXT} — ${demo.helperText}`
+                  : SHARED_HELPER_TEXT;
         }
     };
     const params = new URLSearchParams(location.search);
     const captureSeconds = Number(params.get("captureSeconds"));
     const captureFixedDt = Number(params.get("fixedDt"));
     const captureMode = Number.isFinite(captureSeconds) && captureSeconds > 0 && Number.isFinite(captureFixedDt) && captureFixedDt > 0;
+    const offlineMode = params.get("offline") === "1";
+    const offlineFixedDt = Number(params.get("fixedDt"));
+    if (offlineMode && (!Number.isFinite(offlineFixedDt) || offlineFixedDt <= 0)) {
+        throw new RangeError("[fluid] offline rendering requires a finite positive fixedDt query parameter.");
+    }
+    const deterministicMode = captureMode || offlineMode;
     const captureTargetSteps = captureMode ? Math.ceil(captureSeconds / captureFixedDt) : 0;
     const captureDemoKey = params.get("demo");
     const captureMethod = params.get("method");
@@ -314,8 +345,9 @@ async function main(): Promise<void> {
     // We own the frame graph: scene render task → particle render task, both
     // writing the swapchain colour and sharing a depth buffer we control.
     const scene = createSceneContext(engine, { defaultRenderTask: false });
+    await enableMirroredMeshes(scene);
 
-    const DEFAULT_CAMERA = { alpha: -Math.PI / 2, beta: 1.1, radius: 30, target: [0, 6, 0] as const };
+    const DEFAULT_CAMERA = { alpha: -Math.PI / 2, beta: 1.1, radius: 30, target: [0, 6, 0] as const, fov: 0.8, mirrorX: false };
     const cam = createArcRotateCamera(DEFAULT_CAMERA.alpha, DEFAULT_CAMERA.beta, DEFAULT_CAMERA.radius, {
         x: DEFAULT_CAMERA.target[0],
         y: DEFAULT_CAMERA.target[1],
@@ -323,6 +355,17 @@ async function main(): Promise<void> {
     });
     cam.nearPlane = 0.1;
     cam.farPlane = 200;
+    let cameraMirrorX = false;
+    let updateCameraMirrorPresentation: (() => void) | null = null;
+    const setCameraMirrorX = (enabled: boolean): void => {
+        if (cameraMirrorX === enabled) {
+            canvas.dataset.cameraMirrorX = String(enabled);
+            return;
+        }
+        cameraMirrorX = enabled;
+        canvas.dataset.cameraMirrorX = String(enabled);
+        updateCameraMirrorPresentation?.();
+    };
     scene.camera = cam;
     // Shift+RMB is the "push the fluid" gesture in every demo; the camera must
     // ignore it (no pan) so the core's force-drag can own it. A demo may also claim
@@ -330,11 +373,14 @@ async function main(): Promise<void> {
     // claimsPointer — the camera ignores those too. Everything else rotates (LMB) /
     // slides (RMB) / zooms (wheel) through the built-in arc control.
     const isForceGesture = (e: PointerEvent): boolean => e.button === 2 && e.shiftKey;
-    attachControl(cam, canvas, scene, {
-        shouldHandlePointerDown: (e) => !isGizmoInteracting(canvas) && !isForceGesture(e) && !activeDemo?.claimsPointer?.(e),
-        isExternalDragActive: () => isGizmoDragging(canvas),
-        isExternalPickPending: () => isGizmoPickPending(canvas),
-    });
+    onSceneDispose(
+        scene,
+        attachFluidCameraControls(cam, canvas, scene, () => cameraMirrorX, {
+            shouldHandlePointerDown: (e) => !isGizmoInteracting(canvas) && !isForceGesture(e) && !activeDemo?.claimsPointer?.(e),
+            isExternalDragActive: () => isGizmoDragging(canvas),
+            isExternalPickPending: () => isGizmoPickPending(canvas),
+        })
+    );
 
     // Ambient fill. It exists for the STANDARD-material demos (capsule / box / fountain), which
     // sample no environment map at all and would otherwise be lit by the sun alone. The waterfall
@@ -561,6 +607,41 @@ async function main(): Promise<void> {
     let domainScale = 1;
     let builtDomainScale = 1;
     let methodName = "PBF";
+    let flipBackendId: "flip-reference" | undefined;
+    let referenceBackend: FluidSimulationBackend | undefined;
+    let referenceBackendLoading: Promise<FluidSimulationBackend> | undefined;
+    let referencePump: FluidReferencePump | null = null;
+    let referencePausedByError = false;
+    let engineLoopReady = false;
+    let normalEngineLoopRunning = false;
+    let insideReferenceSubstep = false;
+    let stagingBackendSwitch = false;
+    const referenceSelected = (): boolean => methodName === "FLIP" && flipBackendId === "flip-reference";
+    const activeBackendId = (): "flip-reference" | undefined => (activeSim.options.backend?.id === "flip-reference" ? "flip-reference" : undefined);
+    const sharedStateKey = (demoKey: string, backendId?: "flip-reference"): string => (backendId ? demoKey + ":b" + backendId : demoKey);
+    function selectedPhysics(values: Readonly<Record<string, number>>): Record<string, number> {
+        if (!referenceSelected()) {
+            return { ...values };
+        }
+        const result: Record<string, number> = {};
+        for (const key of referenceBackend!.physicsParameters) {
+            if (values[key] !== undefined) {
+                result[key] = values[key]!;
+            }
+        }
+        return result;
+    }
+    async function ensureReferenceBackend(): Promise<void> {
+        referenceBackendLoading ??= loadFlipReferenceBackend();
+        referenceBackend = await referenceBackendLoading;
+    }
+    function deferReferenceMutation(action: () => void | Promise<void>): boolean {
+        if (!referencePump?.pending || insideReferenceSubstep) {
+            return false;
+        }
+        void queueFluidReferenceChange(referencePump, action);
+        return true;
+    }
     let controlsBinding: FluidControlsBinding | null = null;
     let simulationSemantics: FluidSimulationSemantics = CURRENT_FLUID_SIMULATION_SEMANTICS;
     let gridSettings: FluidGridSettings | undefined;
@@ -577,6 +658,8 @@ async function main(): Promise<void> {
     let builtFlipGridResolution = flipGridResolution;
     let flipMarkersPerCell = FLIP_DEFAULT_MARKERS_PER_CELL;
     let builtFlipMarkersPerCell = flipMarkersPerCell;
+    let importedInitialState: BlenderFluidInitialState | null = null;
+    let builtImportedInitialState: BlenderFluidInitialState | null = null;
 
     // ── Single active fluid backend (review finding 11) ──────────────────────
     // Only the SELECTED solver is ever constructed. Capacity / grid / paging /
@@ -591,6 +674,7 @@ async function main(): Promise<void> {
     let lastTransitionPeakBytes = 0;
     function publishBackendDiagnostics(): void {
         canvas.dataset.simulationActiveBackend = activeSimMethod;
+        canvas.dataset.fluidBackend = referenceSelected() ? "flip-reference" : "production";
         canvas.dataset.simulationBackendBuilds = String(totalBackendBuilds);
         canvas.dataset.backendBuildsPbf = String(backendBuildCounts.PBF ?? 0);
         canvas.dataset.backendBuildsFlip = String(backendBuildCounts.FLIP ?? 0);
@@ -705,6 +789,12 @@ async function main(): Promise<void> {
                       domainScale: ds,
                       gridResolution: flipGridResolution,
                       markersPerCell: flipMarkersPerCell,
+                      ...(importedInitialState
+                          ? {
+                                initialPositions: importedInitialState.positions,
+                                initialVelocities: importedInitialState.velocities,
+                            }
+                          : {}),
                       groundY: pbfGroundY,
                       physics: {
                           gravity: 9.8,
@@ -832,9 +922,18 @@ async function main(): Promise<void> {
 
         // Exactly one candidate matched methodName; the rest stayed null and cost no
         // GPU allocation. Fail loudly rather than silently on an unknown method.
-        const built = pbf ?? flip ?? mpm ?? pbmpm;
+        const built: FluidSimulationOptions | null = pbf ?? flip ?? mpm ?? pbmpm;
         if (!built) {
             throw new Error(`Cannot build fluid backend for unknown method "${methodName}".`);
+        }
+        built.backend = undefined;
+        if (referenceSelected()) {
+            if (!referenceBackend) {
+                throw new Error("[fluid] FLIP Reference must finish loading before creating its simulation.");
+            }
+            built.backend = referenceBackend;
+            built.physics = selectedPhysics(built.physics ?? {});
+            built.pagedGrid = false;
         }
         return built;
     }
@@ -896,6 +995,7 @@ async function main(): Promise<void> {
     interface ImportedEmitterSourceBinding {
         emitterId: string;
         node: SceneNode;
+        transform: EmitterSourceTransform;
         lastPosition: [number, number, number];
     }
     interface ImportedAnimatedCollisionBinding {
@@ -910,20 +1010,36 @@ async function main(): Promise<void> {
         asset: AssetContainer;
         assetRoot: SceneNode;
         assetRootPosition: [number, number, number];
+        assetRootScaling: [number, number, number];
         referenceGridPosition: [number, number, number];
         gridOffset: [number, number, number];
         groundWasVisible: boolean;
         bundle: BlenderFluidScene;
         sourceBindings: ImportedEmitterSourceBinding[];
         animatedCollisionBindings: ImportedAnimatedCollisionBinding[];
-        sourceBindingHook?: (deltaMs: number) => void;
+        collisionDebugMeshes: Map<string, Mesh>;
+        collisionOffsets: Map<string, [number, number, number]>;
     }
     let importedScene: ImportedFluidScene | null = null;
+    let transientSceneMeshScale = 1;
     let collisionControlsHost: HTMLDivElement | null = null;
     let externalSceneExportRow: HTMLLabelElement | null = null;
     let embedExternalSceneChk: HTMLInputElement | null = null;
     let suppressPairSnapshot = false;
     let importGeneration = 0;
+
+    const scaleGridSettingsAroundPivot = (grid: FluidGridSettings, scale: number, pivot: readonly [number, number, number]): FluidGridSettings => ({
+        position: [pivot[0] + (grid.position[0] - pivot[0]) * scale, pivot[1] + (grid.position[1] - pivot[1]) * scale, pivot[2] + (grid.position[2] - pivot[2]) * scale],
+        size: [grid.size[0] * scale, grid.size[1] * scale, grid.size[2] * scale],
+    });
+    const scaleFlowTransforms = (flow: FluidFlowConfig, scale: number): FluidFlowConfig => {
+        const scaled = structuredClone(flow);
+        for (const object of [...scaled.emitters, ...scaled.sinks]) {
+            object.transform.position = object.transform.position.map((value) => value * scale) as [number, number, number];
+            object.transform.scale = object.transform.scale.map((value) => value * scale) as [number, number, number];
+        }
+        return scaled;
+    };
 
     // Composite target for the whole fluid chain. The surface / foam / container-overlay
     // passes write HERE instead of straight to the swapchain, so a post-process stage can
@@ -1090,13 +1206,15 @@ return vec4f(isFluid*step(bloomExtractParams.threshold,luma)*color.rgb,color.a);
             _shader: {
                 extraTextures: [bloomC],
                 extraTextureWGSL: "@group(0) @binding(2) var bloomBlur:texture_2d<f32>;",
-                uniformWGSL: "struct M{weight:f32,p0:f32,p1:f32,p2:f32}\n@group(0) @binding(3) var<uniform> bloomMergeParams:M;",
+                vertexMainWGSL: "out.uv.x=mix(out.uv.x,1.0-out.uv.x,bloomMergeParams.mirrorX);",
+                uniformWGSL: "struct M{weight:f32,mirrorX:f32,p1:f32,p2:f32}\n@group(0) @binding(3) var<uniform> bloomMergeParams:M;",
                 uniformBinding: 3,
                 uniformByteLength: 16,
                 writeUniforms(data) {
                     // Weight 0 makes the merge an exact passthrough, which is what "bloom off"
                     // is: this task ALWAYS runs because it is the single owner of the swapchain.
                     data[0] = bloomEnabled ? bloomParams.intensity : 0;
+                    data[1] = cameraMirrorX ? 1 : 0;
                 },
                 fragmentWGSL: `fn applyPostProcess(color:vec4f, uv:vec2f)->vec4f{
 let b=textureSampleLevel(bloomBlur,sourceSampler,clamp(uv,vec2f(0),vec2f(1)),0).rgb;
@@ -1106,6 +1224,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         engine,
         scene
     );
+    updateCameraMirrorPresentation = () => bloomMerge.updateUniforms();
     let bloomEnabled = false;
     /** Register `task` but let it execute only while `active()` holds. Keeps it in the graph
      *  (so it is recorded + resized normally) while costing nothing when switched off. */
@@ -1256,11 +1375,24 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     // we wire null everywhere so there is zero timing cost.
     const timingSupported = engine._device.features.has("timestamp-query");
     let profiler: FluidSimulationProfiler | null = null;
+    let referenceProfiler: FluidSimulationProfiler | null = null;
     let timingEnabled = false;
+    function currentGpuProfiler(): FluidSimulationProfiler | null {
+        if (!timingSupported || !profiler) {
+            return null;
+        }
+        if (referenceSelected()) {
+            referenceProfiler ??= createFluidSimulationProfiler(engine);
+            return referenceProfiler;
+        }
+        return profiler;
+    }
     // Push the profiler (or null) to both backends + every render task. Re-called after
     // a sim rebuild / backend switch (the sims are recreated; the tasks persist).
     function applyProfiler(): void {
-        const activeProfiler = timingEnabled ? profiler : null;
+        const activeProfiler = currentGpuProfiler();
+        timingEnabled = activeProfiler !== null;
+        canvas.dataset.timing = timingEnabled ? "on" : "off";
         setFluidSimulationProfiler(activeSim, activeProfiler);
         configureFluidSimulationRenderLayer(particleTask, { profiler: activeProfiler });
         configureFluidSimulationRenderLayer(surfaceTask, { profiler: activeProfiler });
@@ -1294,10 +1426,11 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             /* nothing to record — encoder-level work happens in execute() */
         },
         execute(): number {
-            if (timingEnabled && profiler) {
+            const activeProfiler = currentGpuProfiler();
+            if (timingEnabled && activeProfiler) {
                 // Close the whole-frame envelope (frameStop) AFTER every other pass, then
                 // resolve. The envelope's end-to-start span is the frame's total GPU time.
-                endFluidSimulationProfilerFrame(profiler);
+                endFluidSimulationProfilerFrame(activeProfiler, { deferResolve: referenceShouldStep() });
             }
             return 0;
         },
@@ -1572,7 +1705,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     let forceLastT = 0;
 
     const effectiveGridSettings = (method = methodName, scale = domainScale): FluidGridSettings => gridSettings ?? defaultGridSettings(method, scale);
-    function whiteboardMlsContainerBounds(): { min: [number, number, number]; max: [number, number, number] } {
+    function mlsContainerBounds(): { min: [number, number, number]; max: [number, number, number] } {
         const grid = effectiveGridSettings();
         const dx = gridSettings ? fluidSimulationCellSize("MLS-MPM", fluidDiscretization(physicsScale)) : cellSizeForPhysicsScale("MLS-MPM", physicsScale);
         const dims = gridCellsForSize(grid.size, dx);
@@ -1582,7 +1715,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         return { min: lo, max: hi };
     }
     function writeWhiteboardMlsContainer(buffer: GPUBuffer, byteOffset: number): void {
-        const { min: lo, max: hi } = whiteboardMlsContainerBounds();
+        const { min: lo, max: hi } = mlsContainerBounds();
         engine._device.queue.writeBuffer(buffer, byteOffset, new Float32Array([lo[0], lo[1], lo[2], 0, hi[0], hi[1], hi[2], 0]));
         canvas.dataset.mlsContainerLo = lo.join(",");
         canvas.dataset.mlsContainerHi = hi.join(",");
@@ -1647,17 +1780,22 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         if (methodName !== "FLIP") {
             return counts;
         }
-        const plan = flipParticlePlan(flipParticleCapacityRequest);
         const resetCounts = activeSim.initialEmitterParticleCounts;
-        const resetMatchesCurrentPlan =
-            plan.initialStateKey === builtInitialStateKey &&
-            gridSettingsEqual(gridSettings, builtGridSettings) &&
-            builtGridMethod === "FLIP" &&
-            builtFlipGridResolution === flipGridResolution &&
-            builtDomainScale === domainScale &&
-            builtFlipMarkersPerCell === flipMarkersPerCell &&
-            activeSim.count === flipParticleCapacityRequest;
-        if (resetCounts && resetMatchesCurrentPlan) {
+        const pendingInitialPlan =
+            !gridSettingsEqual(gridSettings, builtGridSettings) ||
+            builtGridMethod !== "FLIP" ||
+            builtFlipGridResolution !== flipGridResolution ||
+            builtDomainScale !== domainScale ||
+            builtFlipMarkersPerCell !== flipMarkersPerCell ||
+            activeSim.count !== flipParticleCapacityRequest;
+        if (resetCounts && pendingInitialPlan) {
+            for (const emitter of activeFlow.emitters) {
+                counts.set(emitter.id, resetCounts.get(emitter.id) ?? 0);
+            }
+            return counts;
+        }
+        const plan = flipParticlePlan(flipParticleCapacityRequest);
+        if (resetCounts && plan.initialStateKey === builtInitialStateKey) {
             for (const emitter of activeFlow.emitters) {
                 counts.set(emitter.id, resetCounts.get(emitter.id) ?? 0);
             }
@@ -1671,9 +1809,8 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     function refreshInitialEmitterParticleCount(): void {
         flowEditor?.refreshComputedValues();
     }
-    const flipParticleCapacity = (requested: number, flow = activeFlow, resolution = flipGridResolution): number => {
-        return flipParticlePlan(requested, flow, resolution).total;
-    };
+    const flipParticleCapacity = (requested: number, _flow = activeFlow, _resolution = flipGridResolution): number =>
+        Math.max(1, Math.min(Number.MAX_SAFE_INTEGER, Math.round(requested)));
     const requestedParticleCount = (): number => (methodName === "FLIP" ? flipParticleCapacityRequest : particleCount);
     function fitFlipResolutionToDevice(): { requestedResolution: number; fittedResolution: number } {
         const grid = effectiveGridSettings("FLIP");
@@ -1715,34 +1852,21 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             return "";
         }
         const grid = effectiveGridSettings("FLIP");
-        const requestedResolution = flipGridResolution;
-        const requestedPlan = flipParticlePlan(flipParticleCapacityRequest);
         const deviceParticleCapacity = deviceParticleCapacityForMethod("FLIP");
-        if (requestedPlan.total <= deviceParticleCapacity && requestedPlan.required <= requestedPlan.total && gridAllocationError(grid, "FLIP", physicsScale) === undefined) {
-            return "";
-        }
-        try {
-            const fit = fitFlipResolutionToDevice();
-            const gridError = gridAllocationError(grid, "FLIP", physicsScale);
-            const reason =
-                requestedPlan.required > requestedPlan.total
-                    ? "The initial fluid requires " +
-                      requestedPlan.required.toLocaleString() +
-                      " particles, but Particle capacity is " +
-                      requestedPlan.total.toLocaleString() +
-                      ". "
-                    : `${gridError ?? "This configuration exceeds this WebGPU device's grid capacity."}\u00a0`;
+        if (flipParticleCapacityRequest > deviceParticleCapacity) {
             return (
-                reason +
-                "When the simulation is restarted, Resolution divisions will be adjusted from\u00a0" +
-                requestedResolution.toLocaleString() +
-                "\u00a0to\u00a0" +
-                fit.fittedResolution.toLocaleString() +
-                " to stay inside the limits."
+                "Particle capacity is " +
+                flipParticleCapacityRequest.toLocaleString() +
+                "; this WebGPU device supports at most " +
+                deviceParticleCapacity.toLocaleString() +
+                " FLIP particles."
             );
-        } catch (error) {
-            return error instanceof Error ? error.message : String(error);
         }
+        const gridError = gridAllocationError(grid, "FLIP", physicsScale);
+        if (gridError) {
+            return `${gridError}\u00a0Reset simulation will fit Resolution divisions to the available device limits.`;
+        }
+        return "";
     }
     function refreshFoamParticleCounts(): void {
         const enabled = controls.getValues().foam.enabled;
@@ -1802,6 +1926,24 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             delete canvas.dataset.restartParticleCapacity;
             delete canvas.dataset.restartParticleRequired;
             delete canvas.dataset.restartSimulationGpuBytes;
+            return;
+        }
+        if (controlsBinding?.plan.restartRequired) {
+            const memory = controlsBinding.memory;
+            controls.setParticleUsage(
+                activeCount,
+                activeSim.count,
+                activeSim.gpuBytes,
+                memory.restartActiveCount,
+                memory.restartParticleCount,
+                memory.steadyBytes,
+                memory.restartActiveCountEstimated
+            );
+            canvas.dataset.gridRestartPending = "true";
+            canvas.dataset.restartParticleCount = String(memory.restartActiveCount);
+            canvas.dataset.restartParticleCapacity = String(memory.restartParticleCount);
+            canvas.dataset.restartParticleRequired = String(memory.restartActiveCount);
+            canvas.dataset.restartSimulationGpuBytes = String(memory.steadyBytes);
             return;
         }
         const plan = flipParticlePlan(flipParticleCapacityRequest);
@@ -1937,6 +2079,9 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     }
 
     function resetActiveFlow(clearHoles: boolean, preserveSceneAnimations = false): void {
+        if (stagingBackendSwitch || deferReferenceMutation(() => resetActiveFlow(clearHoles, preserveSceneAnimations))) {
+            return;
+        }
         let resolutionAdjustment = "";
         if (methodName === "FLIP") {
             const fit = fitFlipResolutionToDevice();
@@ -1955,20 +2100,28 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         }
         const pendingBackendRebuild =
             controlsBinding?.plan.restartRequired === true ||
+            (methodName === "FLIP" && importedInitialState !== builtImportedInitialState) ||
+            !gridSettingsEqual(gridSettings, builtGridSettings) ||
+            builtGridMethod !== methodName ||
+            activeBackendId() !== (referenceSelected() ? flipBackendId : undefined) ||
             (methodName === "FLIP" &&
                 (flipParticleCapacity(flipParticleCapacityRequest) !== activeSim.count ||
                     flipGridResolution !== builtFlipGridResolution ||
-                    !gridSettingsEqual(gridSettings, builtGridSettings) ||
-                    builtGridMethod !== methodName ||
                     flipMarkersPerCell !== builtFlipMarkersPerCell));
         if (pendingBackendRebuild) {
             syncImportedMeshAnimations(!preserveSceneAnimations);
             rebuildSims(requestedParticleCount(), physicsScale);
             if (resolutionAdjustment) {
                 controls.setGridStatus(resolutionAdjustment);
+            } else {
+                controls.setGridStatus("");
             }
             if (clearHoles) {
                 clearSceneHoles();
+            }
+            completeReferenceReset();
+            if (!preserveSceneAnimations && !importedScene) {
+                restartOrStabilizeActiveDemo();
             }
             return;
         }
@@ -1979,6 +2132,10 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         restartSimulationLifecycle();
         if (clearHoles) {
             clearSceneHoles();
+        }
+        completeReferenceReset();
+        if (!preserveSceneAnimations && !importedScene) {
+            restartOrStabilizeActiveDemo();
         }
     }
 
@@ -2039,7 +2196,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         if (importedScene) {
             syncImportedSceneGridTransform(importedScene);
             if (demo.key === "whiteboard" && methodName === "MLS-MPM") {
-                const bounds = whiteboardMlsContainerBounds();
+                const bounds = mlsContainerBounds();
                 updateFluidSceneSdfContainer(importedScene.sceneSdf, bounds);
                 canvas.dataset.mlsContainerLo = bounds.min.join(",");
                 canvas.dataset.mlsContainerHi = bounds.max.join(",");
@@ -2051,6 +2208,21 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             return importedScene.sceneSdf;
         } else {
             demo.writeSdfParams();
+        }
+        const demoMlsContainer = methodName === "MLS-MPM" ? mlsContainerBounds() : null;
+        demo.setMlsContainer?.(demoMlsContainer);
+        if (demo.setMlsContainer) {
+            if (demoMlsContainer) {
+                canvas.dataset.mlsContainerLo = demoMlsContainer.min.join(",");
+                canvas.dataset.mlsContainerHi = demoMlsContainer.max.join(",");
+            } else {
+                delete canvas.dataset.mlsContainerLo;
+                delete canvas.dataset.mlsContainerHi;
+            }
+        }
+        const liveSceneSdf = demo.sceneSdf?.();
+        if (liveSceneSdf) {
+            return liveSceneSdf;
         }
         const sdf = demo.sdf;
         let mlsSdf = sdf;
@@ -2066,6 +2238,9 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         return adoptFluidSceneSdf(engine, methodName === "MLS-MPM" ? mlsSdf : sdf);
     }
     function applySceneSdf(): void {
+        if (stagingBackendSwitch) {
+            return;
+        }
         setFluidSimulationSceneSdf(activeSim, currentSceneSdf());
         applyFlow();
     }
@@ -2076,6 +2251,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             return;
         }
         importedScene = null;
+        importedInitialState = null;
         refreshImportedCollisionControls(null);
         if (externalSceneExportRow) {
             externalSceneExportRow.style.display = "none";
@@ -2103,14 +2279,13 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         delete canvas.dataset.importedCameraAlpha;
         delete canvas.dataset.importedCameraRadius;
         delete canvas.dataset.importedCameraTarget;
+        delete canvas.dataset.importedInitialStateCount;
+        delete canvas.dataset.importedInitialStateFrame;
         setMeshVisible(ground, previous.groundWasVisible);
-        if (previous.sourceBindingHook) {
-            const index = scene._beforeRender.indexOf(previous.sourceBindingHook);
-            if (index >= 0) {
-                scene._beforeRender.splice(index, 1);
-            }
-        }
         setFluidSimulationSceneSdf(activeSim, null);
+        for (const mesh of previous.collisionDebugMeshes.values()) {
+            removeFromScene(scene, mesh);
+        }
         removeFromScene(scene, previous.asset);
         disposeFluidSceneSdf(previous.sceneSdf);
         restoreHostScenePresentation(restoreDemo);
@@ -2161,6 +2336,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             resolution: number,
             dims: readonly [number, number, number],
             settings: { enabled: boolean; trilinear: boolean },
+            debugId: string,
             apply: (settings: { enabled: boolean; trilinear: boolean }) => void
         ): void => {
             const row = document.createElement("div");
@@ -2172,7 +2348,16 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             const info = document.createElement("span");
             info.style.cssText = "color:#8fa4ba;font-size:11px;";
             info.textContent = `${resolution} (${dims.join(" × ")})`;
-            heading.append(name, info);
+            const show = document.createElement("button");
+            show.textContent = "Show";
+            show.style.cssText = "padding:2px 8px;cursor:pointer;background:#26415f;color:#eef3f8;border:1px solid #3a567a;border-radius:4px;";
+            show.onclick = () => {
+                const mesh = importedCollisionDebugMesh(imported, debugId);
+                const visible = mesh.visible === false;
+                setMeshVisible(mesh, visible);
+                show.textContent = visible ? "Hide" : "Show";
+            };
+            heading.append(name, info, show);
             const toggles = document.createElement("div");
             toggles.style.cssText = "display:flex;gap:14px;flex-wrap:wrap;";
             const checkbox = (label: string, checked: boolean, onchange: (checked: boolean) => void): HTMLLabelElement => {
@@ -2195,7 +2380,43 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
                     apply(settings);
                 })
             );
-            row.append(heading, toggles);
+            const position = document.createElement("div");
+            position.style.cssText = "display:grid;grid-template-columns:auto repeat(3,minmax(0,1fr));gap:6px;align-items:center;margin-top:7px;";
+            const positionLabel = document.createElement("span");
+            positionLabel.textContent = "Position";
+            positionLabel.style.cssText = "color:#9fb4cc;font-size:11px;";
+            position.appendChild(positionLabel);
+            const currentOffset = importedCollisionOffset(imported, debugId);
+            for (let axis = 0; axis < 3; axis++) {
+                const field = document.createElement("label");
+                field.style.cssText = "display:flex;align-items:center;gap:3px;min-width:0;";
+                const axisLabel = document.createElement("span");
+                axisLabel.textContent = "XYZ"[axis]!;
+                axisLabel.style.cssText = "color:#7c8aa0;font-size:10px;";
+                const input = document.createElement("input");
+                input.type = "number";
+                input.step = "0.01";
+                input.value = String(currentOffset[axis]);
+                input.style.cssText = "width:100%;min-width:0;box-sizing:border-box;";
+                input.onchange = () => {
+                    const value = Number.parseFloat(input.value);
+                    if (!Number.isFinite(value)) {
+                        input.value = String(importedCollisionOffset(imported, debugId)[axis]);
+                        return;
+                    }
+                    const next = [...importedCollisionOffset(imported, debugId)] as [number, number, number];
+                    next[axis] = value;
+                    imported.collisionOffsets.set(debugId, next);
+                    if (debugId === STATIC_COLLISION_DEBUG_ID) {
+                        syncImportedSceneGridTransform(imported);
+                    } else {
+                        updateImportedCollisionTransforms(imported, 0, true);
+                    }
+                };
+                field.append(axisLabel, input);
+                position.appendChild(field);
+            }
+            row.append(heading, toggles, position);
             collisionControlsHost!.appendChild(row);
         };
 
@@ -2203,7 +2424,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             enabled: payload.collisionEnabled ?? true,
             trilinear: payload.collisionTrilinear ?? true,
         };
-        addGrid("Static scene", Math.max(...imported.bundle.collision.dims), imported.bundle.collision.dims, staticSettings, (settings) => {
+        addGrid("Static scene", Math.max(...imported.bundle.collision.dims), imported.bundle.collision.dims, staticSettings, STATIC_COLLISION_DEBUG_ID, (settings) => {
             payload.collisionEnabled = settings.enabled;
             payload.collisionTrilinear = settings.trilinear;
             imported.bundle.collisionEnabled = settings.enabled;
@@ -2213,7 +2434,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         for (const collision of imported.bundle.animatedCollisions) {
             const manifest = payload.animatedCollisions?.find((entry) => entry.id === collision.id);
             const settings = { enabled: collision.enabled, trilinear: collision.trilinear };
-            addGrid(collision.node, collision.resolution, collision.collision.dims, settings, (next) => {
+            addGrid(collision.node, collision.resolution, collision.collision.dims, settings, collision.id, (next) => {
                 collision.enabled = next.enabled;
                 collision.trilinear = next.trilinear;
                 if (manifest) {
@@ -2277,10 +2498,6 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         });
     }
 
-    function importedSourceTransform(node: SceneNode): ReturnType<typeof mat4Decompose> {
-        return mat4Decompose(node.worldMatrix);
-    }
-
     function useImportedFluidBundleBasis(asset: AssetContainer): SceneNode {
         const root = asset.entities[0];
         if (!root || "lightType" in root || root.name !== "__root__") {
@@ -2290,12 +2507,149 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         return root;
     }
 
+    function applyTransientSceneScale(imported: ImportedFluidScene): void {
+        imported.assetRoot.scaling.set(
+            imported.assetRootScaling[0] * transientSceneMeshScale,
+            imported.assetRootScaling[1] * transientSceneMeshScale,
+            imported.assetRootScaling[2] * transientSceneMeshScale
+        );
+        updateFluidSceneSdfStaticScale(imported.sceneSdf, transientSceneMeshScale, imported.assetRootPosition, { resetMotion: true });
+        canvas.dataset.whiteboardMeshScale = String(transientSceneMeshScale);
+        canvas.dataset.importedCollisionCellSize = String(imported.bundle.collision.cellSize * transientSceneMeshScale);
+        syncImportedStaticCollisionDebug(imported);
+    }
+
+    const STATIC_COLLISION_DEBUG_ID = "__static__";
+    const importedCollisionOffset = (imported: ImportedFluidScene, id: string): [number, number, number] => imported.collisionOffsets.get(id) ?? [0, 0, 0];
+    function collisionIsoLines(collision: BlenderFluidCollision, offset: readonly [number, number, number] = [0, 0, 0]): Vec3[][] {
+        const [dimX, dimY, dimZ] = collision.dims;
+        const stride = Math.max(1, Math.ceil(Math.max(dimX, dimY, dimZ) / 48));
+        const half = collision.cellSize * stride * 0.2;
+        const lines: Vec3[][] = [];
+        const maximumCrossings = 12_000;
+        const value = (i: number, j: number, k: number): number => collision.distances[i + dimX * (j + dimY * k)]!;
+        const point = (i: number, j: number, k: number): [number, number, number] => [
+            collision.origin[0] + i * collision.cellSize + offset[0],
+            collision.origin[1] + j * collision.cellSize + offset[1],
+            collision.origin[2] + k * collision.cellSize + offset[2],
+        ];
+        const appendCrossing = (a: readonly [number, number, number], b: readonly [number, number, number], va: number, vb: number): boolean => {
+            if (va < 0 === vb < 0) {
+                return true;
+            }
+            const t = va / (va - vb);
+            const x = a[0] + (b[0] - a[0]) * t;
+            const y = a[1] + (b[1] - a[1]) * t;
+            const z = a[2] + (b[2] - a[2]) * t;
+            lines.push(
+                [flowPoint(x - half, y, z), flowPoint(x + half, y, z)],
+                [flowPoint(x, y - half, z), flowPoint(x, y + half, z)],
+                [flowPoint(x, y, z - half), flowPoint(x, y, z + half)]
+            );
+            return lines.length < maximumCrossings * 3;
+        };
+        for (let k = 0; k < dimZ; k += stride) {
+            for (let j = 0; j < dimY; j += stride) {
+                for (let i = 0; i < dimX; i += stride) {
+                    const a = point(i, j, k);
+                    const va = value(i, j, k);
+                    if (i + stride < dimX && !appendCrossing(a, point(i + stride, j, k), va, value(i + stride, j, k))) {
+                        return lines;
+                    }
+                    if (j + stride < dimY && !appendCrossing(a, point(i, j + stride, k), va, value(i, j + stride, k))) {
+                        return lines;
+                    }
+                    if (k + stride < dimZ && !appendCrossing(a, point(i, j, k + stride), va, value(i, j, k + stride))) {
+                        return lines;
+                    }
+                }
+            }
+        }
+        return lines;
+    }
+
+    function syncImportedStaticCollisionDebug(imported: ImportedFluidScene): void {
+        const mesh = imported.collisionDebugMeshes.get(STATIC_COLLISION_DEBUG_ID);
+        if (!mesh) {
+            return;
+        }
+        mesh.position.set(
+            imported.assetRootPosition[0] + imported.gridOffset[0] + importedCollisionOffset(imported, STATIC_COLLISION_DEBUG_ID)[0],
+            imported.assetRootPosition[1] + imported.gridOffset[1] + importedCollisionOffset(imported, STATIC_COLLISION_DEBUG_ID)[1],
+            imported.assetRootPosition[2] + imported.gridOffset[2] + importedCollisionOffset(imported, STATIC_COLLISION_DEBUG_ID)[2]
+        );
+        mesh.scaling.set(transientSceneMeshScale, transientSceneMeshScale, transientSceneMeshScale);
+    }
+
+    function animatedCollisionTransform(imported: ImportedFluidScene, binding: ImportedAnimatedCollisionBinding): Mat4 {
+        const offset = importedCollisionOffset(imported, binding.id);
+        return offset[0] === 0 && offset[1] === 0 && offset[2] === 0
+            ? (binding.node.worldMatrix as Mat4)
+            : mat4Multiply(mat4Translation(offset[0], offset[1], offset[2]), binding.node.worldMatrix);
+    }
+
+    function syncImportedAnimatedCollisionDebug(
+        imported: ImportedFluidScene,
+        binding: ImportedAnimatedCollisionBinding,
+        transform = animatedCollisionTransform(imported, binding)
+    ): void {
+        const mesh = imported.collisionDebugMeshes.get(binding.id);
+        if (!mesh) {
+            return;
+        }
+        const decomposed = mat4Decompose(transform);
+        mesh.position.set(decomposed.translation.x, decomposed.translation.y, decomposed.translation.z);
+        mesh.rotationQuaternion.set(decomposed.rotation.x, decomposed.rotation.y, decomposed.rotation.z, decomposed.rotation.w);
+        mesh.scaling.set(decomposed.scale.x, decomposed.scale.y, decomposed.scale.z);
+    }
+
+    function importedCollisionDebugMesh(imported: ImportedFluidScene, id: string): Mesh {
+        const existing = imported.collisionDebugMeshes.get(id);
+        if (existing) {
+            return existing;
+        }
+        const animated = imported.bundle.animatedCollisions.find((entry) => entry.id === id);
+        const collision = animated?.collision ?? imported.bundle.collision;
+        const mesh = createLineSystem(engine, {
+            name: `fluid-collision-sdf-${id}`,
+            lines: collisionIsoLines(collision, animated ? [0, 0, 0] : [-imported.assetRootPosition[0], -imported.assetRootPosition[1], -imported.assetRootPosition[2]]),
+            material: createLineMaterial({
+                name: `fluid-collision-sdf-${id}-material`,
+                color: animated ? { r: 1, g: 0.25, b: 0.85, a: 0.9 } : { r: 0.15, g: 1, b: 0.85, a: 0.9 },
+                useVertexAlpha: true,
+                depthWrite: false,
+                depthCompare: "always",
+            }),
+        });
+        mesh.pickable = false;
+        mesh.renderOrder = 10_000;
+        addToScene(scene, mesh);
+        imported.collisionDebugMeshes.set(id, mesh);
+        if (animated) {
+            const node = imported.animatedCollisionBindings.find((binding) => binding.id === id)?.node;
+            if (!node) {
+                removeFromScene(scene, mesh);
+                throw new Error(`Animated fluid collision debug mesh "${id}" has no driving node.`);
+            }
+            syncImportedAnimatedCollisionDebug(imported, { id, node });
+        } else {
+            syncImportedStaticCollisionDebug(imported);
+        }
+        setMeshVisible(mesh, false);
+        return mesh;
+    }
+
     function syncImportedSceneGridTransform(imported: ImportedFluidScene): void {
         const gridPosition = effectiveGridSettings().position;
+        const scaledReferenceGridPosition: [number, number, number] = [
+            imported.assetRootPosition[0] + (imported.referenceGridPosition[0] - imported.assetRootPosition[0]) * transientSceneMeshScale,
+            imported.assetRootPosition[1] + (imported.referenceGridPosition[1] - imported.assetRootPosition[1]) * transientSceneMeshScale,
+            imported.assetRootPosition[2] + (imported.referenceGridPosition[2] - imported.assetRootPosition[2]) * transientSceneMeshScale,
+        ];
         const nextOffset: [number, number, number] = [
-            gridPosition[0] - imported.referenceGridPosition[0],
-            gridPosition[1] - imported.referenceGridPosition[1],
-            gridPosition[2] - imported.referenceGridPosition[2],
+            gridPosition[0] - scaledReferenceGridPosition[0],
+            gridPosition[1] - scaledReferenceGridPosition[1],
+            gridPosition[2] - scaledReferenceGridPosition[2],
         ];
         const offsetDelta: [number, number, number] = [nextOffset[0] - imported.gridOffset[0], nextOffset[1] - imported.gridOffset[1], nextOffset[2] - imported.gridOffset[2]];
         const moved = offsetDelta.some((component) => Math.abs(component) > 1e-8);
@@ -2310,15 +2664,19 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             binding.lastPosition[2] += offsetDelta[2];
         }
         imported.gridOffset = nextOffset;
+        const staticOffset = importedCollisionOffset(imported, STATIC_COLLISION_DEBUG_ID);
         const origin: [number, number, number] = [
-            imported.collisionOrigin[0] + nextOffset[0],
-            imported.collisionOrigin[1] + nextOffset[1],
-            imported.collisionOrigin[2] + nextOffset[2],
+            imported.assetRootPosition[0] + (imported.collisionOrigin[0] - imported.assetRootPosition[0]) * transientSceneMeshScale + nextOffset[0] + staticOffset[0],
+            imported.assetRootPosition[1] + (imported.collisionOrigin[1] - imported.assetRootPosition[1]) * transientSceneMeshScale + nextOffset[1] + staticOffset[1],
+            imported.assetRootPosition[2] + (imported.collisionOrigin[2] - imported.assetRootPosition[2]) * transientSceneMeshScale + nextOffset[2] + staticOffset[2],
         ];
+        updateFluidSceneSdfStaticOffset(imported.sceneSdf, [nextOffset[0] + staticOffset[0], nextOffset[1] + staticOffset[1], nextOffset[2] + staticOffset[2]], {
+            resetMotion: true,
+        });
         if (moved) {
-            updateFluidSceneSdfStaticOffset(imported.sceneSdf, nextOffset, { resetMotion: true });
             updateImportedCollisionTransforms(imported, 0, true);
         }
+        syncImportedStaticCollisionDebug(imported);
         canvas.dataset.importedCollisionOrigin = origin.join(",");
         canvas.dataset.importedSceneOffset = nextOffset.join(",");
     }
@@ -2344,8 +2702,8 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             if (emitter.sourcePresentation === false) {
                 setImportedNodePresentation(node, false);
             }
-            const translation = importedSourceTransform(node).translation;
-            bindings.push({ emitterId: emitter.id, node, lastPosition: [translation.x, translation.y, translation.z] });
+            const transform = createEmitterSourceTransform(node.worldMatrix, emitter.transform);
+            bindings.push({ emitterId: emitter.id, node, transform, lastPosition: [...emitter.transform.position] });
         }
         canvas.dataset.importedMissingEmitterSourceCount = String(missing);
         return bindings;
@@ -2444,11 +2802,8 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             if (!emitter) {
                 continue;
             }
-            const { translation, rotation, scale } = importedSourceTransform(binding.node);
-            const position: [number, number, number] = [translation.x, translation.y, translation.z];
-            emitter.transform.position = position;
-            emitter.transform.rotation = [rotation.x, rotation.y, rotation.z, rotation.w];
-            emitter.transform.scale = [scale.x, scale.y, scale.z];
+            emitter.transform = resolveEmitterSourceTransform(binding.transform, binding.node.worldMatrix);
+            const position = emitter.transform.position;
             if (emitter.sourceVelocityFactor !== undefined && deltaSeconds > 0) {
                 emitter.sourceVelocity = [
                     (position[0] - binding.lastPosition[0]) / deltaSeconds,
@@ -2473,17 +2828,16 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     }
 
     function updateImportedCollisionTransforms(imported: ImportedFluidScene, deltaMs: number, resetMotion = false): void {
-        updateFluidSceneSdfTransforms(
-            imported.sceneSdf,
-            imported.animatedCollisionBindings.map((binding) => ({
-                id: binding.id,
-                localToWorld: binding.node.worldMatrix as Mat4,
-            })),
-            deltaMs / 1000,
-            { resetMotion }
-        );
+        const transforms = imported.animatedCollisionBindings.map((binding) => ({
+            id: binding.id,
+            localToWorld: animatedCollisionTransform(imported, binding),
+        }));
+        updateFluidSceneSdfTransforms(imported.sceneSdf, transforms, deltaMs / 1000, { resetMotion });
+        for (let index = 0; index < imported.animatedCollisionBindings.length; index++) {
+            syncImportedAnimatedCollisionDebug(imported, imported.animatedCollisionBindings[index]!, transforms[index]!.localToWorld);
+        }
         canvas.dataset.importedAnimatedCollisionCount = String(imported.animatedCollisionBindings.length);
-        const first = imported.animatedCollisionBindings[0]?.node.worldMatrix;
+        const first = transforms[0]?.localToWorld;
         if (first) {
             canvas.dataset.importedAnimatedCollisionPosition = [first[12], first[13], first[14]].join(",");
         }
@@ -2519,7 +2873,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             // demo keeps whatever the user last set it to.
             const first = !visitedDemos.has(demo.key);
             visitedDemos.add(demo.key);
-            switchPair(demo, (first && demo.defaultMethod) || methodName, (first && demo.defaultQuality) || quality);
+            requestPairSwitch(demo, (first && demo.defaultMethod) || methodName, (first && demo.defaultQuality) || quality);
             // switchPair adopts the pair it actually loaded — mirror that back into the two
             // selectors so the panel never disagrees with the running sim.
             qualitySel.value = quality;
@@ -2540,7 +2894,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     qualitySel.value = quality;
     qualitySel.onchange = () => {
         if (activeDemo) {
-            switchPair(activeDemo, methodName, qualitySel.value as Quality);
+            requestPairSwitch(activeDemo, methodName, qualitySel.value as Quality);
         }
     };
     // Demo + quality dropdowns, side by side, at the top of the "Demo" section.
@@ -2700,6 +3054,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     function finishFluidControlPlan(bindingPlan: FluidControlsApplicationPlan, changedKeys: readonly (keyof FluidControlValues)[]): void {
         if (bindingPlan.reconfigure) {
             particleCount = activeSim.count;
+            builtImportedInitialState = importedInitialState;
             lastTransitionPeakBytes = controlsBinding!.memory.transitionPeakBytes;
             trackSimBuild(methodName);
             builtGridSettings = gridSettings ? cloneGridSettings(gridSettings) : undefined;
@@ -2727,7 +3082,8 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         if (bindingPlan.restartRequired) {
             syncGridControls();
             refreshParticleUsageStatus();
-            controls.setGridStatus(flipPendingCapacityStatus());
+            const deferInitialPlan = methodName === "FLIP" && changedKeys.includes("markersPerCell");
+            controls.setGridStatus((deferInitialPlan ? "" : flipPendingCapacityStatus()) || "Simulation changes pending. Reset simulation to apply.");
         }
     }
 
@@ -2819,7 +3175,10 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             },
         },
         gpu: { stages: ["Simulation", "Foam gen", "Surface", "Foam render", "Particles"], supported: profiler !== null },
-        onApply: (values, changedKeys) => {
+        onApply: function applyControlSnapshot(values, changedKeys) {
+            if (deferReferenceMutation(() => applyControlSnapshot(structuredClone(values), [...changedKeys]))) {
+                return;
+            }
             const applyingPairState = loadingPairState;
             const pairChange = changedKeys.includes("method") || changedKeys.includes("material");
             const bindingPlan =
@@ -2839,7 +3198,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             if (!applyingPairState && (changed("method") || changed("material"))) {
                 const nextMethod = values.method;
                 const nextMaterial = values.material;
-                queueMicrotask(() => switchPair(activeDemo!, nextMethod, quality, nextMaterial));
+                queueMicrotask(() => requestPairSwitch(activeDemo!, nextMethod, quality, nextMaterial));
             }
             if (changed("count")) {
                 if (methodName === "FLIP") {
@@ -3021,6 +3380,9 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
                         subsurfaceStrength: foam.subsurfaceStrength,
                         subsurfaceColor: foam.subsurfaceColor,
                         sizeScale: foam.size,
+                        spraySize: foam.spraySize ?? 0.55,
+                        sprayIntensity: foam.sprayIntensity ?? 1.4,
+                        spraySeparation: foam.spraySeparation ?? 1,
                         blurRadius: foam.blurRadius,
                         lightIntensity: foam.lightIntensity,
                         ambient: foam.ambient,
@@ -3039,6 +3401,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         },
     });
     const fluidControlHostState = () => ({
+        flipBackendId,
         particleCount,
         physicsScale,
         flipParticleCapacityRequest,
@@ -3059,6 +3422,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     });
     const restoreFluidControlHostState = (state: ReturnType<typeof fluidControlHostState>): void => {
         ({
+            flipBackendId,
             particleCount,
             physicsScale,
             flipParticleCapacityRequest,
@@ -3105,14 +3469,14 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         const base = simulationOptions(requested, snapshot.physScale);
         return {
             simulation,
-            preserveState: !loadingPairState,
+            preserveState: !loadingPairState && !base.backend && !simulation.options.backend,
             activeCount: simulation.activeCount ?? simulation.count,
             options: {
                 ...base,
                 flow: flowToWorld(activeFlow),
                 sceneSdf: currentSceneSdf(),
-                forceField: simulation.forceField,
-                profiler: simulation.profiler,
+                forceField: base.backend?.supportsForces === false ? null : simulation.forceField,
+                profiler: currentGpuProfiler(),
             },
         };
     };
@@ -3149,6 +3513,245 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     configureFluidSimulationRenderLayer(polygonSurfaceTask, { profile: { polygonShader: controls.getValues().polygonShader } });
     canvas.dataset.surfaceShader = controls.getValues().polygonShader;
     canvas.dataset.polygonShader = controls.getValues().polygonShader;
+
+    const implementationRow = document.createElement("label");
+    implementationRow.style.cssText = "display:none;gap:6px;flex-direction:column;margin:10px 0;font-size:12px;";
+    const implementationLabel = document.createElement("span");
+    implementationLabel.textContent = "FLIP implementation";
+    const implementationSelect = document.createElement("select");
+    implementationSelect.dataset.fluidBackend = "true";
+    implementationSelect.style.cssText = "width:100%;padding:5px;background:#1a2230;color:#eef3f8;border:1px solid #33415a;border-radius:4px;";
+    for (const [value, label] of [
+        ["production", "Production FLIP"],
+        ["flip-reference", "FLIP Reference (experimental)"],
+    ]) {
+        const option = document.createElement("option");
+        option.value = value!;
+        option.textContent = label!;
+        implementationSelect.appendChild(option);
+    }
+    const referenceNotice = document.createElement("div");
+    referenceNotice.dataset.fluidReferenceInfo = "true";
+    referenceNotice.style.cssText = "display:none;color:#a8bed3;font-size:11px;line-height:1.4;margin-bottom:8px;";
+    const referenceError = document.createElement("div");
+    referenceError.style.cssText = "color:#ffb7a0;font-size:11px;line-height:1.4;";
+    const referenceBudgetWarning = document.createElement("div");
+    referenceBudgetWarning.dataset.fluidReferenceBudgetWarning = "true";
+    referenceBudgetWarning.style.cssText = "color:#f2ce7d;font-size:11px;line-height:1.4;";
+    implementationRow.append(implementationLabel, implementationSelect, referenceBudgetWarning, referenceError);
+    controls.implementationSlot.append(implementationRow, referenceNotice);
+
+    function updateBackendControls(): void {
+        const reference = referenceSelected();
+        implementationRow.style.display = methodName === "FLIP" ? "flex" : "none";
+        implementationSelect.value = reference ? "flip-reference" : "production";
+        implementationSelect.disabled = !engineLoopReady;
+        referenceNotice.style.display = reference ? "" : "none";
+        referenceNotice.textContent = reference
+            ? referenceBackend!.description + " Use modest resolution (40-80 to start). GPU-resident stepping; timestep-budget warnings do not stop playback."
+            : "";
+        refreshReferenceBudgetWarning();
+        controls.setCapabilities(
+            reference
+                ? {
+                      pagedGrid: false,
+                      polygonSurface: false,
+                      foam: referenceBackend!.supportsFoam,
+                      timing: timingSupported,
+                      pressureDiagnostics: false,
+                      physicsParameters: referenceBackend!.physicsParameters,
+                  }
+                : {}
+        );
+        controls.setVisiblePhysicsParams(reference ? [...referenceBackend!.physicsParameters] : methodName === "PB-MPM" ? pbmpmParamKeysForMaterial(pbmpmMaterial) : null);
+        flowEditor?.setInitialOnly(reference);
+        if (controlsBinding) {
+            syncFluidControls(controlsBinding);
+        }
+        canvas.dataset.fluidBackend = reference ? "flip-reference" : "production";
+        canvas.dataset.referenceStatus = reference ? (paused ? "paused" : "ready") : "off";
+        if (activeDemo) {
+            syncHelperText(activeDemo);
+        }
+    }
+
+    function reportReferenceError(error: unknown): void {
+        if (error instanceof Error && error.name === "AbortError") {
+            return;
+        }
+        const message = error instanceof Error ? error.message : String(error);
+        referenceError.textContent = message;
+        canvas.dataset.referenceError = message;
+        canvas.dataset.referenceStatus = "error";
+        if (referenceSelected()) {
+            referencePausedByError ||= !paused;
+            paused = true;
+            canvas.dataset.paused = "true";
+        }
+        implementationSelect.value = activeBackendId() ?? "production";
+        containerSel.value = activeDemo?.key ?? containerSel.value;
+        controls.setMethod(methodName);
+        console.error("[fluid] Reference operation failed", error);
+    }
+
+    function refreshReferenceBudgetWarning(): void {
+        const timestep = referenceSelected() ? getFluidSimulationDiagnostics(activeSim).timestep : null;
+        const dropped = timestep?.droppedSeconds ?? 0;
+        const warning =
+            dropped > 0
+                ? "Substep budget reached. Simulation continues with stable steps; " +
+                  dropped.toFixed(3) +
+                  " s of fluid time skipped since reset. Increase Maximum substeps or reduce the timestep/time scale."
+                : "";
+        if (referenceBudgetWarning.textContent !== warning) {
+            referenceBudgetWarning.textContent = warning;
+        }
+        canvas.dataset.referenceBudgetLimited = String(timestep?.saturated ?? false);
+        canvas.dataset.referenceDroppedSeconds = String(dropped);
+    }
+
+    function completeReferenceReset(): void {
+        if (!referenceSelected()) {
+            return;
+        }
+        referenceError.textContent = "";
+        delete canvas.dataset.referenceError;
+        if (referencePump) {
+            referencePump.error = null;
+        }
+        refreshReferenceBudgetWarning();
+        if (referencePausedByError) {
+            paused = false;
+            canvas.dataset.paused = "false";
+        }
+        referencePausedByError = false;
+        canvas.dataset.referenceStatus = paused ? "paused" : "ready";
+    }
+
+    function assertReferenceState(state: PairState, demo: FluidDemo): void {
+        const flow = state.legacyFlow ? demo.flow() : { emitters: state.emitters ?? [], sinks: state.sinks ?? [] };
+        if (flow.emitters.some((emitter) => emitter.enabled && emitter.behavior !== "initial") || flow.sinks.some((sink) => sink.enabled)) {
+            throw new Error("[FLIP Reference] only initial fluid is supported. Disable active inflows and sinks before selecting this implementation.");
+        }
+        if ((state.schema.kinematicViscosity ?? 0) !== 0 || (state.schema.surfaceTension ?? 0) !== 0) {
+            throw new Error("[FLIP Reference] viscosity and surface tension are not supported. Set them to zero in Production FLIP first.");
+        }
+    }
+
+    function referencePairState(state: PairState, demo: FluidDemo): PairState {
+        assertReferenceState(state, demo);
+        return {
+            ...structuredClone(state),
+            backendId: "flip-reference",
+            schema: { ...state.schema, polygonSurface: 0, reseedParticles: 0, particleSheeting: 0, kinematicViscosity: 0, surfaceTension: 0 },
+            pagedGrid: false,
+            activeBlocks: false,
+            fusedBlockDiscovery: false,
+            renderMode: state.renderMode === "spheres" ? "spheres" : "surface",
+        };
+    }
+
+    function carryBackendScene(target: PairState, current: PairState): PairState {
+        const schema = { ...target.schema };
+        for (const key of referenceBackend!.physicsParameters) {
+            if (current.schema[key] !== undefined) {
+                schema[key] = current.schema[key]!;
+            }
+        }
+        return {
+            ...structuredClone(target),
+            schema,
+            simulationSemantics: current.simulationSemantics,
+            demoParams: { ...current.demoParams },
+            demoState: current.demoState ? structuredClone(current.demoState) : undefined,
+            emitters: structuredClone(current.emitters ?? []),
+            sinks: structuredClone(current.sinks ?? []),
+            initialEmittersFillCapacity: current.initialEmittersFillCapacity,
+            legacyFlow: false,
+            grid: current.grid ? cloneGridSettings(current.grid) : undefined,
+            gridResolution: current.gridResolution,
+            markersPerCell: current.markersPerCell,
+            physScale: current.physScale,
+            count: current.count,
+            camera: current.camera ? structuredClone(current.camera) : undefined,
+            simulationDuration: current.simulationDuration,
+            alphaDecay: current.alphaDecay,
+            simulationTimeScale: current.simulationTimeScale,
+        };
+    }
+
+    function pairKeyFor(demo: FluidDemo, method: string, tier: Quality, material: number, backendId?: "flip-reference"): string {
+        const tierKey = demo.methodIndependentAuthoring ? "" : ":" + tier;
+        const materialKey = method === "PB-MPM" ? ":m" + material : "";
+        return demo.key + ":" + method + tierKey + materialKey + (method === "FLIP" && backendId ? ":b" + backendId : "");
+    }
+
+    async function selectImplementation(value: "production" | "flip-reference"): Promise<void> {
+        if (!referencePump || !activeDemo || methodName !== "FLIP") {
+            return;
+        }
+        await queueFluidReferenceChange(referencePump, async () => {
+            if ((activeBackendId() ?? "production") === value) {
+                return;
+            }
+            const previous = readLivePairState(methodName);
+            const previousId = flipBackendId;
+            const previousKey = currentPairKey;
+            if (value === "flip-reference") {
+                assertReferenceState(previous, activeDemo!);
+                referenceTiming();
+                await ensureReferenceBackend();
+            }
+            const targetId = value === "flip-reference" ? value : undefined;
+            const targetKey = pairKeyFor(activeDemo!, "FLIP", quality, pbmpmMaterial, targetId);
+            const previousTarget = pairStates.get(targetKey);
+            const targetSharedKey = sharedStateKey(activeDemo!.key, targetId);
+            const previousShared = methodIndependentStates.get(targetSharedKey);
+            const target = previousTarget ?? (targetId ? previous : presetOrDefault(activeDemo!, "FLIP", quality, pbmpmMaterial));
+            let next: PairState = { ...carryBackendScene(target, previous), backendId: targetId };
+            if (targetId) {
+                next = referencePairState(next, activeDemo!);
+            }
+            pairStates.set(targetKey, next);
+            methodIndependentStates.set(targetSharedKey, next);
+            try {
+                switchPair(activeDemo!, "FLIP", quality, pbmpmMaterial, true, value);
+                referenceError.textContent = "";
+                delete canvas.dataset.referenceError;
+            } catch (error) {
+                if (previousTarget) {
+                    pairStates.set(targetKey, previousTarget);
+                } else {
+                    pairStates.delete(targetKey);
+                }
+                if (previousShared) {
+                    methodIndependentStates.set(targetSharedKey, previousShared);
+                } else {
+                    methodIndependentStates.delete(targetSharedKey);
+                }
+                flipBackendId = previousId;
+                currentPairKey = previousKey;
+                loadPairState(previous);
+                throw error;
+            }
+        });
+    }
+    implementationSelect.onchange = () => {
+        const value = implementationSelect.value;
+        if (value !== "production" && value !== "flip-reference") {
+            reportReferenceError(new Error("Unknown FLIP implementation."));
+            return;
+        }
+        void selectImplementation(value);
+    };
+
+    function requestPairSwitch(demo: FluidDemo, method: string, tier: Quality = quality, material: number = pbmpmMaterial): void {
+        if (referencePump && (referencePump.pending || activeSim.steppingMode === "async" || (method === "FLIP" && flipBackendId === "flip-reference"))) {
+            void queueFluidReferenceChange(referencePump, () => switchPair(demo, method, tier, material));
+        } else {
+            switchPair(demo, method, tier, material);
+        }
+    }
 
     // Prepend the scene-specific "Demo" section (scene dropdown + demo params + the
     // container-visibility toggle) into the component's demo slot.
@@ -3225,8 +3828,12 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         if (!importedMethod || !supportedMethods.has(importedMethod)) {
             throw new Error(`Unsupported fluid method "${importedMethod}"`);
         }
-        if (switchMethod && importedMethod !== methodName) {
-            switchPair(activeDemo!, importedMethod, quality);
+        presetFromExportJson(json);
+        if (json.backendId && !referenceBackend) {
+            throw new Error("[fluid] FLIP Reference must be loaded before importing its preset.");
+        }
+        if (switchMethod && (importedMethod !== methodName || activeBackendId() !== json.backendId)) {
+            switchPair(activeDemo!, importedMethod, quality, pbmpmMaterial, true, json.backendId ?? "production");
         }
         const current = readLivePairState(methodName);
         const previousDomainScale = domainScale;
@@ -3290,6 +3897,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             asset,
             assetRoot,
             assetRootPosition: [assetRoot.position.x, assetRoot.position.y, assetRoot.position.z],
+            assetRootScaling: [assetRoot.scaling.x, assetRoot.scaling.y, assetRoot.scaling.z],
             referenceGridPosition: [...referenceGridPosition],
             gridOffset: [0, 0, 0],
             ...collision,
@@ -3297,23 +3905,34 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             bundle,
             sourceBindings: [],
             animatedCollisionBindings: [],
+            collisionDebugMeshes: new Map(),
+            collisionOffsets: new Map(),
         };
         const replacingImported = importedScene !== null;
         let assetAdded = false;
+        let primedPairKey: string | null = null;
+        let previousPrimedState: PairState | undefined;
         try {
             clearImportedScene(false);
             if (!replacingImported && importedMethod === methodName && currentPairKey !== null) {
                 pairStates.set(currentPairKey, readLivePairState(methodName));
             }
-            if (importedMethod !== methodName) {
+            if (importedMethod !== methodName || activeBackendId() !== bundle.preset.backendId) {
+                const incoming = importFluidPresetSession(bundle.preset, defaultPairState(targetDemo, importedMethod, bundle.preset.material ?? pbmpmMaterial)).state;
+                primedPairKey = pairKeyFor(targetDemo, importedMethod, quality, incoming.material ?? pbmpmMaterial, bundle.preset.backendId);
+                previousPrimedState = pairStates.get(primedPairKey);
+                pairStates.set(primedPairKey, incoming);
+                importedInitialState = bundle.initialState;
+                importedCollisionActive = true;
                 suppressPairSnapshot = replacingImported;
                 try {
-                    switchPair(activeDemo!, importedMethod, quality, pbmpmMaterial, false);
+                    switchPair(activeDemo!, importedMethod, quality, pbmpmMaterial, false, bundle.preset.backendId ?? "production");
                 } finally {
                     suppressPairSnapshot = false;
                 }
             }
             suspendHostScenePresentation();
+            applyTransientSceneScale(nextImported);
             assetAdded = true;
             addToScene(scene, asset);
             for (const group of asset.animationGroups ?? []) {
@@ -3323,6 +3942,14 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             nextImported.animatedCollisionBindings = createImportedAnimatedCollisionBindings(asset, bundle);
             updateImportedCollisionTransforms(nextImported, 0, true);
             importedScene = nextImported;
+            importedInitialState = bundle.initialState;
+            if (bundle.initialState) {
+                canvas.dataset.importedInitialStateCount = String(bundle.initialState.positions.length / 3);
+                canvas.dataset.importedInitialStateFrame = String(bundle.initialState.frame);
+            } else {
+                delete canvas.dataset.importedInitialStateCount;
+                delete canvas.dataset.importedInitialStateFrame;
+            }
             refreshImportedCollisionControls(nextImported);
             syncExternalSceneExportChoice(true);
             importedCollisionActive = true;
@@ -3350,24 +3977,24 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             }
             nextImported.sourceBindings = createImportedEmitterSourceBindings(asset);
             updateImportedSceneBindings(nextImported, 0, true);
-            if (nextImported.sourceBindings.length > 0 || nextImported.animatedCollisionBindings.length > 0) {
-                const sourceBindingHook = (deltaMs: number): void => updateImportedSceneBindings(nextImported, deltaMs);
-                nextImported.sourceBindingHook = sourceBindingHook;
-                const animationHook = asset._beforeRenderHook;
-                if (animationHook) {
-                    const animationIndex = scene._beforeRender.indexOf(animationHook);
-                    if (animationIndex >= 0) {
-                        scene._beforeRender.splice(animationIndex, 1);
-                    }
-                    scene._beforeRender.unshift(animationHook, sourceBindingHook);
-                } else {
-                    scene._beforeRender.unshift(sourceBindingHook);
+            const animationHook = asset._beforeRenderHook;
+            if (animationHook) {
+                const animationIndex = scene._beforeRender.indexOf(animationHook);
+                if (animationIndex >= 0) {
+                    scene._beforeRender.splice(animationIndex, 1);
                 }
             }
             canvas.dataset.importedBoundEmitterCount = String(nextImported.sourceBindings.length);
             resetActiveFlow(false);
             canvas.dataset.importedFrameClearing = String(sceneTask._config.clr && (!msaaOn || msaaSceneTask?._config.clr === true));
         } catch (error) {
+            if (primedPairKey) {
+                if (previousPrimedState) {
+                    pairStates.set(primedPairKey, previousPrimedState);
+                } else {
+                    pairStates.delete(primedPairKey);
+                }
+            }
             if (importedScene === nextImported) {
                 clearImportedScene(true);
             } else {
@@ -3389,94 +4016,39 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     importBtn.textContent = "Import fluid files";
     importBtn.style.cssText = exportBtn.style.cssText;
     importBtn.onclick = () => importInput.click();
-    const importedParticleCount = (count: number): number => {
-        if (count <= 100_000) {
-            return count;
+    const completePresetImport = (): void => {
+        if (offlineMode) {
+            const values = controls.getValues();
+            const diagnostics = getFluidSimulationDiagnostics(activeSim);
+            const grid = effectiveGridSettings();
+            const flipDiscretization = methodName === "FLIP" ? flipDiscretizationForGrid(grid, flipGridResolution) : undefined;
+            const gridCellSize = flipDiscretization?.dx ?? fluidSimulationCellSize(methodName, fluidDiscretization(physicsScale));
+            const gridCells = flipDiscretization?.gridDim ?? gridCellsForSize(grid.size, gridCellSize);
+            const pageDiagnostics = controlsBinding?.pageDiagnostics;
+            canvas.dataset.offlineSummary = JSON.stringify({
+                method: activeSim.options.backend?.name ?? diagnostics.method,
+                gridResolution: flipDiscretization?.gridResolution ?? gridResolutionForScale(methodName, physicsScale, Math.max(...grid.size)),
+                gridCells,
+                gridSize: grid.size,
+                gridCellSize,
+                markersPerCell: methodName === "FLIP" ? flipMarkersPerCell : null,
+                activeParticles: diagnostics.activeCount,
+                particleCapacity: diagnostics.count,
+                simulationGpuBytes: diagnostics.gpuBytes,
+                deviceBufferLimitBytes: particleBufferLimit,
+                deviceParticleCapacity: deviceParticleCapacityForMethod(methodName),
+                deviceParticleBytesPerSlot: fluidParticleBytesPerSlot(methodName),
+                pagedGrid: (methodName === "FLIP" || methodName === "MLS-MPM") && values.pagedGrid,
+                residentPages: pageDiagnostics?.requiredPages ?? null,
+                pageCapacity: values.pagedGridMaxPages,
+                pressureSolver: referenceSelected() ? "pcg" : methodName === "FLIP" ? ((values.schema.pressureSolver ?? 0) >= 0.5 ? "multigrid" : "jacobi") : null,
+                renderMode: values.renderMode,
+                polygonSurface: diagnostics.polygon !== null,
+                foamEnabled: values.foam.enabled,
+                foamCapacity: diagnostics.diffuse?.capacity ?? 0,
+            });
         }
-        const requested = count.toLocaleString("en-US");
-        return window.confirm(
-            `High particle count: ${requested}\n\nThis fluid JSON requests ${requested} particles, which may use substantial GPU memory or make the dashboard unstable.\n\nPlay it safe and use 40,000 particles instead?\n\nOK: use 40,000\nCancel: keep ${requested}`
-        )
-            ? 40_000
-            : count;
-    };
-    const applyImportedParticleWarning = (json: FluidExportJson): void => {
-        if (json.meta?.method !== "FLIP" || (json.formatVersion ?? 0) < 10 || !Array.isArray(json.emitters)) {
-            json.particleCount = importedParticleCount(json.particleCount);
-            return;
-        }
-        const partial = presetFromExportJson(json);
-        const flow: FluidFlowConfig = {
-            emitters: partial.emitters ?? [],
-            sinks: partial.sinks ?? [],
-            ...(partial.initialEmittersFillCapacity !== undefined ? { initialEmittersFillCapacity: partial.initialEmittersFillCapacity } : {}),
-        };
-        const initial = flow.emitters.filter((emitter) => emitter.enabled && emitter.behavior === "initial");
-        if (
-            flow.initialEmittersFillCapacity ||
-            initial.length === 0 ||
-            initial.some((emitter) => emitter.sampling !== "volume") ||
-            !partial.grid ||
-            partial.gridResolution === undefined ||
-            partial.markersPerCell === undefined
-        ) {
-            json.particleCount = importedParticleCount(json.particleCount);
-            return;
-        }
-        const plan = calculateFlipParticlePlan(json.particleCount, partial.gridResolution, partial.markersPerCell, flow, partial.grid);
-        const particleVolume = flipDiscretizationForGrid(partial.grid, partial.gridResolution, partial.markersPerCell).markerVolume;
-        const worldFlow = transformFluidFlow(flow, { translation: partial.grid.position });
-        const halfSize = partial.grid.size.map((value) => value * 0.5) as [number, number, number];
-        const bounds = {
-            min: partial.grid.position.map((value, axis) => value - halfSize[axis]!) as [number, number, number],
-            max: partial.grid.position.map((value, axis) => value + halfSize[axis]!) as [number, number, number],
-        };
-        const initialState = planFluidInitialState({
-            particleCapacity: plan.required,
-            particleVolume,
-            flow: worldFlow,
-            bounds,
-            deriveInitialCount: true,
-        });
-        const required = initialState.requiredCount;
-        const importedCapacity = Math.max(json.particleCount, required);
-        if (required <= 100_000) {
-            json.particleCount = Math.max(required, importedParticleCount(importedCapacity));
-            return;
-        }
-        const safeCount = 40_000;
-        const acceptedVolume = initialState.clippedVolume;
-        const fit = fitFluidGridResolution(partial.gridResolution, GRID_RESOLUTION_MIN, (resolution) => {
-            const markerVolume = flipDiscretizationForGrid(partial.grid!, resolution, partial.markersPerCell!).markerVolume;
-            return Math.ceil(acceptedVolume / markerVolume) <= safeCount;
-        });
-        const requested = required.toLocaleString("en-US");
-        const safeAction =
-            fit === null
-                ? "use 40,000 particles instead"
-                : "reduce Resolution divisions from " + partial.gridResolution.toLocaleString("en-US") + " to " + fit.fittedResolution.toLocaleString("en-US");
-        const useSafeSettings = window.confirm(
-            "High particle count: " +
-                requested +
-                "\n\nThis fluid JSON will generate " +
-                requested +
-                " particles from its initial fluid volume, Resolution divisions, and Markers per cell. This may use substantial GPU memory or make the dashboard unstable.\n\nPlay it safe and " +
-                safeAction +
-                "?\n\nOK: " +
-                safeAction +
-                "\nCancel: keep " +
-                requested
-        );
-        if (!useSafeSettings) {
-            json.particleCount = importedCapacity;
-            return;
-        }
-        json.particleCount = safeCount;
-        if (fit) {
-            json.gridResolution = fit.fittedResolution;
-        } else {
-            json.initialEmittersFillCapacity = true;
-        }
+        canvas.dataset.presetImportStatus = "ready";
     };
     importInput.onchange = async () => {
         const files = [...(importInput.files ?? [])];
@@ -3486,51 +4058,81 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         if (!file || !targetDemo) {
             return;
         }
+        canvas.dataset.presetImportStatus = "loading";
+        delete canvas.dataset.presetImportError;
         const generation = ++importGeneration;
-        try {
-            const contents = await file.text();
-            if (generation !== importGeneration || activeDemo !== targetDemo) {
-                return;
-            }
-            const parsed = JSON.parse(contents) as Partial<FluidExportJson>;
-            if (parsed.scene) {
-                const externalResources = new Map<string, ArrayBuffer>();
-                if (parsed.scene.encoding === "external") {
-                    await Promise.all(
-                        files
-                            .filter((candidate) => candidate !== file)
-                            .map(async (candidate) => {
-                                externalResources.set(candidate.name.replaceAll("\\", "/"), await candidate.arrayBuffer());
-                            })
-                    );
+        const importFiles = async (): Promise<void> => {
+            try {
+                if (generation !== importGeneration || activeDemo !== targetDemo) {
+                    return;
                 }
-                const bundle = parseBlenderFluidJson(contents, externalResources);
-                applyImportedParticleWarning(bundle.preset);
-                await installImportedBundle(bundle, generation, targetDemo);
-                return;
+                const contents = await file.text();
+                if (generation !== importGeneration || activeDemo !== targetDemo) {
+                    return;
+                }
+                const parsed = JSON.parse(contents) as Partial<FluidExportJson>;
+                if (parsed.backendId === "flip-reference") {
+                    await ensureReferenceBackend();
+                    if (generation !== importGeneration || activeDemo !== targetDemo) {
+                        return;
+                    }
+                }
+                if (parsed.scene) {
+                    const externalResources = new Map<string, ArrayBuffer>();
+                    if (parsed.scene.encoding === "external") {
+                        await Promise.all(
+                            files
+                                .filter((candidate) => candidate !== file)
+                                .map(async (candidate) => {
+                                    externalResources.set(candidate.name.replaceAll("\\", "/"), await candidate.arrayBuffer());
+                                })
+                        );
+                    }
+                    const bundle = parseBlenderFluidJson(contents, externalResources);
+                    await installImportedBundle(bundle, generation, targetDemo);
+                    if (generation === importGeneration && activeDemo === targetDemo) {
+                        completePresetImport();
+                    }
+                    return;
+                }
+                if (
+                    referenceSelected() &&
+                    Array.isArray(parsed.emitters) &&
+                    !parsed.render &&
+                    (parsed.emitters.some((emitter) => emitter.enabled && emitter.behavior !== "initial") || parsed.sinks?.some((sink) => sink.enabled))
+                ) {
+                    throw new Error("[FLIP Reference] flow imports must contain only initial emitters and no enabled sinks.");
+                }
+                clearImportedScene(true);
+                if (Array.isArray(parsed.emitters) && !parsed.render) {
+                    const importedFlow = {
+                        emitters: structuredClone(parsed.emitters),
+                        sinks: structuredClone(parsed.sinks ?? []).map((sink) => ({
+                            ...sink,
+                            mode: sink.mode ?? ((parsed.formatVersion ?? 0) <= 6 ? "recycle" : "delete"),
+                        })),
+                    };
+                    activeFlow = (parsed.formatVersion ?? 0) < 4 ? flowToGridLocal(importedFlow) : importedFlow;
+                    resetActiveFlow(false);
+                    refreshFlowUI();
+                    completePresetImport();
+                    return;
+                }
+                applyImportedPreset(parsed as FluidExportJson, true);
+                restartOrStabilizeActiveDemo();
+                completePresetImport();
+            } catch (error) {
+                if (generation === importGeneration && activeDemo === targetDemo) {
+                    canvas.dataset.presetImportStatus = "error";
+                    canvas.dataset.presetImportError = error instanceof Error ? error.message : String(error);
+                    console.error("[fluid] failed to import preset", error);
+                }
             }
-            if (typeof parsed.particleCount === "number") {
-                applyImportedParticleWarning(parsed as FluidExportJson);
-            }
-            clearImportedScene(true);
-            if (Array.isArray(parsed.emitters) && !parsed.render) {
-                const importedFlow = {
-                    emitters: structuredClone(parsed.emitters),
-                    sinks: structuredClone(parsed.sinks ?? []).map((sink) => ({
-                        ...sink,
-                        mode: sink.mode ?? ((parsed.formatVersion ?? 0) <= 6 ? "recycle" : "delete"),
-                    })),
-                };
-                activeFlow = (parsed.formatVersion ?? 0) < 4 ? flowToGridLocal(importedFlow) : importedFlow;
-                resetActiveFlow(false);
-                refreshFlowUI();
-                return;
-            }
-            applyImportedPreset(parsed as FluidExportJson, true);
-        } catch (error) {
-            if (generation === importGeneration && activeDemo === targetDemo) {
-                console.error("[fluid] failed to import preset", error);
-            }
+        };
+        if (referencePump) {
+            await queueFluidReferenceChange(referencePump, importFiles);
+        } else {
+            await importFiles();
         }
     };
     controls.root.append(...controls.makeSection("Presets", [importBtn, importInput, externalSceneExportRow, exportBtn]));
@@ -4009,8 +4611,15 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             },
         },
         getEmitterRateMode: () => (methodName === "FLIP" ? "occupancy-refill" : "unlimited-toggle"),
-        getInitialEmitterParticleCount: (emitter) =>
-            methodName === "FLIP" && emitter.behavior === "initial" ? (flipInitialEmitterParticleCounts().get(emitter.id) ?? 0) : undefined,
+        getInitialEmitterParticleCount: (emitter) => {
+            if (methodName !== "FLIP" || emitter.behavior !== "initial") {
+                return undefined;
+            }
+            if (referenceSelected() && importedInitialState && !activeSim.initialEmitterParticleCounts.has(emitter.id)) {
+                return undefined;
+            }
+            return flipInitialEmitterParticleCounts().get(emitter.id) ?? 0;
+        },
         onInitialEmitterParticleCountDisplayed: (count) => {
             if (count === undefined) {
                 delete canvas.dataset.selectedInitialEmitterParticleCount;
@@ -4023,6 +4632,9 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         flowEditor?.setFlow(activeFlow);
     }
     function applyParam(sim: FluidSimulation, key: string, value: number): void {
+        if (sim.options.backend && !sim.options.backend.physicsParameters.includes(key)) {
+            return;
+        }
         setFluidSimulationParameter(sim, key, value);
         if (key === "gravity" && sim === activeSim) {
             canvas.dataset.gravity = String(value);
@@ -4073,16 +4685,20 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             restartSimulationLifecycle();
             clearSceneHoles();
         }
-        renderPolygonSurface = name === "FLIP" && (controls.getPhysicsValues("FLIP").polygonSurface ?? 0) >= 0.5;
+        renderPolygonSurface = name === "FLIP" && !referenceSelected() && (controls.getPhysicsValues("FLIP").polygonSurface ?? 0) >= 0.5;
         applyEffectiveRenderMode();
         applyFoam(); // rebind the foam renderer + (re)enable foam on the new active sim
         applyProfiler(); // re-wire the GPU timing hook onto the rebuilt sims (tasks persist)
         controls.setMethod(name); // sync the method dropdown + component's current method (no side effect)
         controls.rebuildPhysics(name); // rebuild the physics-slider block for the new method
         // Show only the physics sliders the current method/material uses (PB-MPM branches on material).
-        controls.setVisiblePhysicsParams(name === "PB-MPM" ? pbmpmParamKeysForMaterial(pbmpmMaterial) : null);
+        updateBackendControls();
         controls.setMaterial(pbmpmMaterial);
         canvas.dataset.method = methodName;
+        canvas.dataset.activeParticleCount = String(activeSim.activeCount ?? activeSim.count);
+        if (referenceSelected()) {
+            canvas.dataset.pressureSolver = "pcg";
+        }
         const pageCapacityLimit =
             name === "FLIP" ? maxFlipPagedGridPagesFor(effectiveGridSettings(), flipGridResolution) : maxMlsPagedGridPagesFor(effectiveGridSettings(), physicsScale);
         if (name === "FLIP") {
@@ -4115,7 +4731,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             method: methodName as FluidSimulationOptions["method"],
             renderSpheres,
             anisotropicSurface: renderAnisotropic,
-            polygonSurface: renderPolygonSurface,
+            polygonSurface: !referenceSelected() && renderPolygonSurface,
             foamEnabled: controls.getValues().foam.enabled,
             surfaceDebugActive,
         });
@@ -4193,7 +4809,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     }
 
     function setGridResolution(resolution: number): void {
-        const nextResolution = Math.max(GRID_RESOLUTION_MIN, Math.min(GRID_RESOLUTION_MAX, Math.round(resolution)));
+        const nextResolution = Math.max(GRID_RESOLUTION_MIN, Math.round(resolution));
         if (nextResolution === flipGridResolution) {
             return;
         }
@@ -4275,6 +4891,9 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     // After the render tasks are retargeted, its facade-owned resources retire behind the
     // next submission fence. FLIP can additionally copy compatible state before retirement.
     function rebuildSims(count: number, scale: number, preserveFlipState = false): void {
+        if (stagingBackendSwitch || deferReferenceMutation(() => rebuildSims(count, scale, preserveFlipState))) {
+            return;
+        }
         const previousParticleCount = particleCount;
         const previousPhysicsScale = physicsScale;
         const previousCapacityRequest = flipParticleCapacityRequest;
@@ -4287,7 +4906,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         try {
             const base = simulationOptions(particleCount, scale);
             const physics = { ...(base.physics ?? {}) };
-            for (const [key, value] of Object.entries(controls.getPhysicsValues(methodName))) {
+            for (const [key, value] of Object.entries(selectedPhysics(controls.getPhysicsValues(methodName)))) {
                 physics[key] = value;
             }
             const foamValues = controls.getValues().foam;
@@ -4297,12 +4916,12 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
                     ...base,
                     physics,
                     flow: flowToWorld(activeFlow),
-                    foam: foamValues.enabled ? currentFoamConfig() : null,
+                    foam: base.backend?.supportsFoam !== false && foamValues.enabled ? currentFoamConfig() : null,
                     sceneSdf: currentSceneSdf(),
-                    forceField: activeSim.forceField,
-                    profiler: activeSim.profiler,
+                    forceField: base.backend?.supportsForces === false ? null : activeSim.forceField,
+                    profiler: currentGpuProfiler(),
                 },
-                preserveFlipState
+                preserveFlipState && !base.backend && !activeSim.options.backend
             );
             lastTransitionPeakBytes = prepared.transitionPeakBytes;
             commitFluidReconfiguration(prepared);
@@ -4316,6 +4935,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             throw error;
         }
         trackSimBuild(methodName);
+        builtImportedInitialState = importedInitialState;
         canvas.dataset.simulationTransitionBytes = String(lastTransitionPeakBytes);
         builtGridSettings = gridSettings ? cloneGridSettings(gridSettings) : undefined;
         builtGridMethod = methodName;
@@ -4395,11 +5015,11 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     const methodIndependentStates = new Map<string, PairState>();
     let currentPairKey: string | null = null;
 
-    function defaultPairState(demo: FluidDemo, method: string, material = 0): PairState {
+    function defaultPairState(demo: FluidDemo, method: string, material = 0, backendId?: "flip-reference"): PairState {
         const flowPosition = defaultGridSettings(method, demo.getDomainScale?.() ?? 1).position;
         const flow = flowToGridLocal(demo.flow(), flowPosition);
         const sand = method === "PB-MPM" && material === PBMPM_SAND_MATERIAL;
-        return {
+        const state: PairState = {
             simulationSemantics: CURRENT_FLUID_SIMULATION_SEMANTICS,
             schema: { ...SCHEMA_DEFAULTS[method]! },
             demoParams: { ...(DEMO_PARAM_DEFAULTS[demo.key] ?? {}) },
@@ -4422,6 +5042,14 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             showGridBoundsSolid: false,
             count: RENDER_DEFAULTS.count,
             material: method === "PB-MPM" ? material : undefined,
+            camera: demo.defaultCamera
+                ? {
+                      alpha: demo.defaultCamera.alpha,
+                      beta: demo.defaultCamera.beta,
+                      radius: demo.defaultCamera.radius,
+                      ...(demo.defaultCamera.target ? { target: [...demo.defaultCamera.target] as [number, number, number] } : {}),
+                  }
+                : undefined,
             renderMode: sand ? "spheres" : RENDER_DEFAULTS.renderMode,
             polygonShader: RENDER_DEFAULTS.polygonShader,
             refraction: RENDER_DEFAULTS.refraction,
@@ -4444,12 +5072,13 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             foam: { ...FOAM_DEFAULTS, surfaceFiltering: method === "FLIP" },
             showContainer: true,
         };
+        return backendId ? referencePairState(state, demo) : state;
     }
     // First-visit state: the on-disk quality preset for this (demo, method, quality),
     // if any, merged over the core defaults. Pairs with no file use pure defaults.
-    function presetOrDefault(demo: FluidDemo, method: string, q: Quality, material = 0): PairState {
-        const base = defaultPairState(demo, method, material);
-        if (demo.usesQualityPresets === false) {
+    function presetOrDefault(demo: FluidDemo, method: string, q: Quality, material = 0, backendId?: "flip-reference"): PairState {
+        const base = defaultPairState(demo, method, material, backendId);
+        if (backendId || demo.usesQualityPresets === false) {
             return base;
         }
         const p = getQualityPreset(demo.key, method, q, material);
@@ -4524,20 +5153,29 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     function readLivePairState(method: string): PairState {
         const v = controls.getValues();
         const retainedState = currentPairKey ? pairStates.get(currentPairKey) : undefined;
+        const transientScale = importedScene && activeDemo?.key === "whiteboard" ? transientSceneMeshScale : 1;
+        const snapshotFlow = transientScale === 1 ? activeFlow : scaleFlowTransforms(activeFlow, 1 / transientScale);
+        const snapshotGrid =
+            gridSettings && importedScene && transientScale !== 1
+                ? scaleGridSettingsAroundPivot(gridSettings, 1 / transientScale, importedScene.assetRootPosition)
+                : gridSettings
+                  ? cloneGridSettings(gridSettings)
+                  : undefined;
         const demoParams: Record<string, number> = { ...(retainedState?.demoParams ?? {}) };
         for (const p of activeDemo!.demoParams()) {
             if (p.type === "number") demoParams[p.key] = p.value;
         }
         return {
             simulationSemantics,
+            backendId: method === "FLIP" ? activeBackendId() : undefined,
             schema: controls.getPhysicsValues(method),
             demoParams,
             simulationDuration: v.simulationDuration,
             alphaDecay: v.alphaDecay,
             simulationTimeScale,
-            emitters: structuredClone(activeFlow.emitters),
-            sinks: structuredClone(activeFlow.sinks),
-            initialEmittersFillCapacity: activeFlow.initialEmittersFillCapacity,
+            emitters: structuredClone(snapshotFlow.emitters),
+            sinks: structuredClone(snapshotFlow.sinks),
+            initialEmittersFillCapacity: snapshotFlow.initialEmittersFillCapacity,
             color: v.color,
             independentRendering: v.independentRendering,
             half: v.half,
@@ -4547,12 +5185,19 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             physScale: method === "FLIP" ? 1 : physicsScale,
             gridResolution: method === "FLIP" ? flipGridResolution : undefined,
             markersPerCell: method === "FLIP" ? flipMarkersPerCell : undefined,
-            grid: gridSettings ? cloneGridSettings(gridSettings) : undefined,
+            grid: snapshotGrid,
             showGridBounds,
             showGridBoundsSolid,
             count: method === "FLIP" ? flipParticleCapacityRequest : particleCount,
             material: method === "PB-MPM" ? pbmpmMaterial : undefined,
-            camera: { alpha: cam.alpha, beta: cam.beta, radius: cam.radius, target: [cam.target.x, cam.target.y, cam.target.z] },
+            camera: {
+                alpha: cam.alpha,
+                beta: cam.beta,
+                radius: cam.radius,
+                target: [cam.target.x, cam.target.y, cam.target.z],
+                fov: cam.fov,
+                ...(cameraMirrorX ? { mirrorX: true } : {}),
+            },
             renderMode: v.renderMode,
             polygonShader: v.polygonShader,
             refraction: v.refraction,
@@ -4586,15 +5231,31 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     let loadingPairState = false;
     function loadPairState(st: PairState): void {
         const demo = activeDemo!;
+        if (methodName === "FLIP") {
+            if (st.backendId && !referenceBackend) {
+                throw new Error("[fluid] load FLIP Reference before restoring its preset.");
+            }
+            flipBackendId = st.backendId;
+            if (st.backendId) {
+                assertReferenceState(st, demo);
+            }
+        }
+        controls.setCapabilities({});
         simulationSemantics = st.simulationSemantics ?? CURRENT_FLUID_SIMULATION_SEMANTICS;
-        const nextGridSettings = st.grid ? cloneGridSettings(st.grid) : undefined;
+        const transientScale = importedScene && demo.key === "whiteboard" ? transientSceneMeshScale : 1;
+        const nextGridSettings =
+            st.grid && importedScene && transientScale !== 1
+                ? scaleGridSettingsAroundPivot(st.grid, transientScale, importedScene.assetRootPosition)
+                : st.grid
+                  ? cloneGridSettings(st.grid)
+                  : undefined;
         if (nextGridSettings && !validGridSettings(nextGridSettings)) {
             throw new Error("Invalid fluid grid: position must be finite and size must be positive.");
         }
         const [minScale, maxScale] = scaleLimitsForMethod(methodName);
         const nextGridResolution =
             methodName === "FLIP"
-                ? Math.max(GRID_RESOLUTION_MIN, Math.min(GRID_RESOLUTION_MAX, Math.round(st.gridResolution ?? 160)))
+                ? Math.max(GRID_RESOLUTION_MIN, Math.round(st.gridResolution ?? 160))
                 : gridResolutionForScale(methodName, st.physScale, Math.max(...(nextGridSettings ?? defaultGridSettings(methodName, domainScale)).size));
         const nextPhysicsScale = methodName === "FLIP" ? 1 : Math.min(maxScale, Math.max(minScale, Math.round(st.physScale * 100) / 100));
         const nextMarkersPerCell = methodName === "FLIP" ? Math.max(1, Math.min(64, Math.round(st.markersPerCell ?? FLIP_DEFAULT_MARKERS_PER_CELL))) : flipMarkersPerCell;
@@ -4651,13 +5312,15 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
                     : nextGridSettings
                       ? fluidSimulationCellSize(methodName, fluidDiscretization(nextPhysicsScale))
                       : cellSizeForPhysicsScale(methodName, nextPhysicsScale) * domainScale;
-            activeFlow = st.legacyFlow
+            const restoredFlow = st.legacyFlow
                 ? flowToGridLocal(demo.flow(), targetGrid.position)
                 : {
                       emitters: structuredClone(st.emitters ?? []),
                       sinks: structuredClone(st.sinks ?? []),
                       ...(st.initialEmittersFillCapacity !== undefined ? { initialEmittersFillCapacity: st.initialEmittersFillCapacity } : {}),
                   };
+            activeFlow = transientScale === 1 ? restoredFlow : scaleFlowTransforms(restoredFlow, transientScale);
+            stagingBackendSwitch = false;
             // Publish one complete target snapshot. During pair loading, onApply lets the
             // shared binding derive every changed key from this snapshot so host state is
             // committed before resolveTarget evaluates the new method, scale, and grid.
@@ -4766,6 +5429,9 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
                         ambient: f.ambient,
                         aoStrength: f.aoStrength,
                         normalStrength: f.normalStrength,
+                        spraySize: f.spraySize ?? cur.spraySize ?? 0.55,
+                        sprayIntensity: f.sprayIntensity ?? cur.sprayIntensity ?? 1.4,
+                        spraySeparation: f.spraySeparation ?? cur.spraySeparation ?? 1,
                         debugTexture: f.debugTexture,
                         softness: f.softness ?? cur.softness,
                         density: f.density ?? cur.density,
@@ -4783,6 +5449,10 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
                 controls.setShowGridBounds(showGridBounds);
                 controls.setShowGridBoundsSolid(showGridBoundsSolid);
             });
+            if (controlsBinding && activeSim.options.backend !== (referenceSelected() ? referenceBackend : undefined)) {
+                const plan = applyFluidControls(controlsBinding, controls.getValues());
+                finishFluidControlPlan(plan, plan.changedKeys);
+            }
         } catch (error) {
             gridSettings = previousGridSettings;
             throw error;
@@ -4829,6 +5499,8 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             domainScale !== builtDomainScale ||
             gridChanged ||
             builtGridMethod !== methodName ||
+            activeSim.options.backend !== (referenceSelected() ? referenceBackend : undefined) ||
+            (methodName === "FLIP" && importedInitialState !== builtImportedInitialState) ||
             builtWithGridFloor !== (importedCollisionActive || demo.useGridFloor === true) ||
             activeBlocksChanged ||
             gridResolutionChanged ||
@@ -4851,6 +5523,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         refreshFlowUI();
         // Apply the pair's camera framing (preset default on first visit, or the
         // viewpoint captured when this pair was last left). ArcRotate self-clamps.
+        setCameraMirrorX(st.camera?.mirrorX === true);
         if (st.camera) {
             cam.alpha = st.camera.alpha;
             cam.beta = st.camera.beta;
@@ -4860,11 +5533,14 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
                 cam.target.y = st.camera.target[1];
                 cam.target.z = st.camera.target[2];
             }
+            cam.fov = st.camera.fov ?? DEFAULT_CAMERA.fov;
             canvas.dataset.cameraAlpha = String(cam.alpha);
             canvas.dataset.cameraBeta = String(cam.beta);
             canvas.dataset.cameraRadius = String(cam.radius);
             canvas.dataset.cameraTarget = [cam.target.x, cam.target.y, cam.target.z].join(",");
+            canvas.dataset.cameraFov = String(cam.fov);
         }
+        updateBackendControls();
     }
     // Switch to a (demo, method) pair: snapshot the pair we're leaving, set up the
     // demo visuals if the demo changed, then load the target pair's state.
@@ -4875,97 +5551,139 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         cam.target.x = DEFAULT_CAMERA.target[0];
         cam.target.y = DEFAULT_CAMERA.target[1];
         cam.target.z = DEFAULT_CAMERA.target[2];
+        cam.fov = DEFAULT_CAMERA.fov;
+        setCameraMirrorX(DEFAULT_CAMERA.mirrorX);
     }
 
-    function switchPair(nextDemo: FluidDemo, nextMethod: string, nextQuality: Quality = quality, nextMaterial: number = pbmpmMaterial, invalidateImport = true): void {
-        const demoChanged = activeDemo !== nextDemo || currentPairKey === null;
-        const preservingImportedScene = importedScene !== null && !demoChanged && nextDemo.methodIndependentAuthoring === true;
-        const leavingImportedScene = importedScene !== null && !preservingImportedScene;
-        if (invalidateImport) {
-            importGeneration++;
+    function switchPair(
+        nextDemo: FluidDemo,
+        nextMethod: string,
+        nextQuality: Quality = quality,
+        nextMaterial: number = pbmpmMaterial,
+        invalidateImport = true,
+        implementation?: "production" | "flip-reference"
+    ): void {
+        if (deferReferenceMutation(() => switchPair(nextDemo, nextMethod, nextQuality, nextMaterial, invalidateImport, implementation))) {
+            return;
         }
-        // Switching demo or fluid method resumes the sim if it was paused.
-        if (paused) {
-            paused = false;
-            canvas.dataset.paused = "false";
-        }
-        if (currentPairKey !== null && (!importedScene || preservingImportedScene) && !suppressPairSnapshot) {
-            const snapshot = readLivePairState(methodName);
-            pairStates.set(currentPairKey, snapshot);
-            const session = presetSessions.get(currentPairKey);
-            if (session) {
-                presetSessions.set(currentPairKey, editFluidPresetSession(session, { state: snapshot }));
+        initialStabilizationGeneration++;
+        const nextBackendId = nextMethod === "FLIP" ? (implementation === "production" ? undefined : (implementation ?? flipBackendId)) : undefined;
+        if (nextBackendId) {
+            if (!referenceBackend) {
+                throw new Error("[fluid] FLIP Reference has not been loaded.");
             }
-            if (activeDemo?.methodIndependentAuthoring) {
-                methodIndependentStates.set(activeDemo.key, snapshot);
-            }
+            const key = pairKeyFor(nextDemo, nextMethod, nextQuality, nextMaterial, nextBackendId);
+            assertReferenceState(pairStates.get(key) ?? presetOrDefault(nextDemo, nextMethod, nextQuality, nextMaterial, nextBackendId), nextDemo);
         }
-        if (leavingImportedScene) {
-            resetCameraBase();
-            clearImportedScene(true);
-        }
-        // Adopt the target method before applying scene state.
-        methodName = nextMethod;
-        if (demoChanged) {
-            if (activeDemo) {
-                activeDemo.onLeave();
+        const previousStaging = stagingBackendSwitch;
+        stagingBackendSwitch ||= activeBackendId() !== undefined || nextBackendId !== undefined;
+        try {
+            const demoChanged = activeDemo !== nextDemo || currentPairKey === null;
+            const qualityChanged = !demoChanged && quality !== nextQuality;
+            const preservingImportedScene = importedScene !== null && !demoChanged && nextDemo.methodIndependentAuthoring === true;
+            const leavingImportedScene = importedScene !== null && !preservingImportedScene;
+            if (invalidateImport) {
+                importGeneration++;
             }
-            flowEditor?.clearSelection(false);
-            showEmitterWireframe = false;
-            showSinkWireframe = false;
-            flowGizmoOwner = null;
-            setMeshVisible(emitterFlowWireframe, false);
-            setMeshVisible(sinkFlowWireframe, false);
-            syncFlowGizmo();
-            activeDemo = nextDemo;
-            activeFlow = flowToGridLocal(nextDemo.flow(), defaultGridSettings(nextMethod, nextDemo.getDomainScale?.() ?? 1).position);
-            resetCameraBase();
-            activeDemo.onEnter(); // meshes, camera mode
-            applyDemoEnv(activeDemo); // swap skybox background + surface-reflection cube
-            applyEnvRotation(activeDemo.envRotationDeg ?? 0); // aim the backdrop the way this demo wants it
-            envRotInput.value = String(activeDemo.envRotationDeg ?? 0);
-            applySceneSdf();
-            refreshDemoParams();
-            pendingForce = null;
-            resetFluidSimulation(activeSim);
+            // Switching demo or fluid method resumes the sim if it was paused.
+            if (paused) {
+                paused = false;
+                canvas.dataset.paused = "false";
+            }
+            if (currentPairKey !== null && (!importedScene || preservingImportedScene) && !suppressPairSnapshot) {
+                const snapshot = readLivePairState(methodName);
+                pairStates.set(currentPairKey, snapshot);
+                const session = presetSessions.get(currentPairKey);
+                if (session) {
+                    presetSessions.set(currentPairKey, editFluidPresetSession(session, { state: snapshot }));
+                }
+                if (activeDemo?.methodIndependentAuthoring) {
+                    methodIndependentStates.set(sharedStateKey(activeDemo.key, snapshot.backendId), snapshot);
+                }
+            }
+            if (leavingImportedScene) {
+                resetCameraBase();
+                clearImportedScene(true);
+            }
+            if (preservingImportedScene && (activeBackendId() !== undefined || nextBackendId)) {
+                syncImportedMeshAnimations(true);
+            }
+            // Adopt the target method before applying scene state.
+            methodName = nextMethod;
+            if (nextMethod === "FLIP") {
+                flipBackendId = nextBackendId;
+            }
+            if (demoChanged) {
+                if (activeDemo) {
+                    activeDemo.onLeave();
+                }
+                flowEditor?.clearSelection(false);
+                showEmitterWireframe = false;
+                showSinkWireframe = false;
+                flowGizmoOwner = null;
+                setMeshVisible(emitterFlowWireframe, false);
+                setMeshVisible(sinkFlowWireframe, false);
+                syncFlowGizmo();
+                activeDemo = nextDemo;
+                activeFlow = flowToGridLocal(nextDemo.flow(), defaultGridSettings(nextMethod, nextDemo.getDomainScale?.() ?? 1).position);
+                resetCameraBase();
+                activeDemo.onEnter(); // meshes, camera mode
+                applyDemoEnv(activeDemo); // swap skybox background + surface-reflection cube
+                applyEnvRotation(activeDemo.envRotationDeg ?? 0); // aim the backdrop the way this demo wants it
+                envRotInput.value = String(activeDemo.envRotationDeg ?? 0);
+                applySceneSdf();
+                refreshDemoParams();
+                pendingForce = null;
+                if (!stagingBackendSwitch) {
+                    resetFluidSimulation(activeSim);
+                }
+                restartSimulationLifecycle();
+                clearSceneHoles();
+            }
+            quality = nextQuality;
+            const usesQualityPresets = nextDemo.usesQualityPresets !== false && !nextBackendId;
+            qualitySel.style.display = usesQualityPresets ? "" : "none";
+            canvas.dataset.qualityPresets = String(usesQualityPresets);
+            controls.containerToggleRow!.style.display = nextDemo.setContainerVisible ? "" : "none";
+            canvas.dataset.demo = nextDemo.key;
+            syncHelperText(nextDemo);
+            // PB-MPM keeps a separate physics/render/colour pair per material for every fluid demo.
+            const withMaterial = nextMethod === "PB-MPM";
+            if (nextMethod === "PB-MPM") {
+                pbmpmMaterial = withMaterial ? nextMaterial : 0;
+            }
+            const key = pairKeyFor(nextDemo, nextMethod, nextQuality, pbmpmMaterial, nextBackendId);
+            const defaultState = nextBackendId && pairStates.has(key) ? pairStates.get(key)! : presetOrDefault(nextDemo, nextMethod, nextQuality, pbmpmMaterial, nextBackendId);
+            const targetState = pairStates.get(key) ?? defaultState;
+            const sharedState = nextDemo.methodIndependentAuthoring ? methodIndependentStates.get(sharedStateKey(nextDemo.key, nextBackendId)) : undefined;
+            const st = sharedState ? carryMethodIndependentState(targetState, sharedState, { retainTargetPresentation: withMaterial }) : targetState;
+            currentPairKey = key;
+            domainScale = typeof st.demoParams.meshScale === "number" ? st.demoParams.meshScale : (nextDemo.getDomainScale?.() ?? 1);
+            loadPairState(st);
+            pairStates.set(key, structuredClone(st));
+            if ((demoChanged || qualityChanged) && !importedScene) {
+                restartOrStabilizeActiveDemo();
+            }
+            if (demoChanged || leavingImportedScene) {
+                const authoredCamera = defaultState.camera ?? DEFAULT_CAMERA;
+                cam.alpha = authoredCamera.alpha;
+                cam.beta = authoredCamera.beta;
+                cam.radius = authoredCamera.radius;
+                cam.fov = authoredCamera.fov ?? DEFAULT_CAMERA.fov;
+                setCameraMirrorX(authoredCamera.mirrorX === true);
+            }
+            canvas.dataset.cameraAlpha = String(cam.alpha);
+            canvas.dataset.cameraBeta = String(cam.beta);
+            canvas.dataset.cameraRadius = String(cam.radius);
+            canvas.dataset.cameraTarget = [cam.target.x, cam.target.y, cam.target.z].join(",");
             restartSimulationLifecycle();
-            clearSceneHoles();
+            // Re-apply the container-mesh visibility choice (onEnter shows it by default).
+            nextDemo.setContainerVisible?.(importedScene ? false : controls.getValues().showContainer);
+            updateBackendControls();
+            reconcileRenderingLoop();
+        } finally {
+            stagingBackendSwitch = previousStaging;
         }
-        quality = nextQuality;
-        const usesQualityPresets = nextDemo.usesQualityPresets !== false;
-        qualitySel.style.display = usesQualityPresets ? "" : "none";
-        canvas.dataset.qualityPresets = String(usesQualityPresets);
-        controls.containerToggleRow!.style.display = nextDemo.setContainerVisible ? "" : "none";
-        canvas.dataset.demo = nextDemo.key;
-        syncHelperText(nextDemo);
-        // PB-MPM keeps a separate physics/render/colour pair per material for every fluid demo.
-        const withMaterial = nextMethod === "PB-MPM";
-        if (nextMethod === "PB-MPM") {
-            pbmpmMaterial = withMaterial ? nextMaterial : 0;
-        }
-        const qualityKey = nextDemo.methodIndependentAuthoring ? "" : `:${nextQuality}`;
-        const key = withMaterial ? `${nextDemo.key}:${nextMethod}${qualityKey}:m${pbmpmMaterial}` : `${nextDemo.key}:${nextMethod}${qualityKey}`;
-        const defaultState = presetOrDefault(nextDemo, nextMethod, nextQuality, pbmpmMaterial);
-        const targetState = pairStates.get(key) ?? defaultState;
-        const sharedState = nextDemo.methodIndependentAuthoring ? methodIndependentStates.get(nextDemo.key) : undefined;
-        const st = sharedState ? carryMethodIndependentState(targetState, sharedState, { retainTargetPresentation: withMaterial }) : targetState;
-        currentPairKey = key;
-        domainScale = typeof st.demoParams.meshScale === "number" ? st.demoParams.meshScale : (nextDemo.getDomainScale?.() ?? 1);
-        loadPairState(st);
-        pairStates.set(key, structuredClone(st));
-        if (demoChanged || leavingImportedScene) {
-            const authoredCamera = defaultState.camera ?? DEFAULT_CAMERA;
-            cam.alpha = authoredCamera.alpha;
-            cam.beta = authoredCamera.beta;
-            cam.radius = authoredCamera.radius;
-        }
-        canvas.dataset.cameraAlpha = String(cam.alpha);
-        canvas.dataset.cameraBeta = String(cam.beta);
-        canvas.dataset.cameraRadius = String(cam.radius);
-        canvas.dataset.cameraTarget = [cam.target.x, cam.target.y, cam.target.z].join(",");
-        restartSimulationLifecycle();
-        // Re-apply the container-mesh visibility choice (onEnter shows it by default).
-        nextDemo.setContainerVisible?.(importedScene ? false : controls.getValues().showContainer);
     }
 
     // ── Services handed to each demo ──────────────────────────────────────
@@ -4980,7 +5698,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         rebindSceneSdf: applySceneSdf,
         resetActiveSim: () => resetActiveFlow(false),
         refreshFlow: () => {
-            if (loadingPairState) {
+            if (loadingPairState || stagingBackendSwitch) {
                 return;
             }
             activeFlow = flowToGridLocal(activeDemo!.flow());
@@ -5001,6 +5719,10 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         },
         viewProjection: () => getViewProjectionMatrix(cam, getEffectiveAspectRatio(cam, canvas.width, canvas.height)),
         setDomainScale: (s: number) => {
+            if (stagingBackendSwitch) {
+                domainScale = s;
+                return false;
+            }
             if (s === domainScale) {
                 return false;
             }
@@ -5028,6 +5750,37 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             rebuildSims(requestedParticleCount(), physicsScale);
             return true;
         },
+        setTransientSceneMeshScale: (scale: number) => {
+            if (!Number.isFinite(scale) || scale < 0.01 || scale > 100) {
+                throw new RangeError("[fluid] transient scene mesh scale must be between 0.01 and 100.");
+            }
+            const previousScale = transientSceneMeshScale;
+            if (scale === previousScale) {
+                return;
+            }
+            const imported = importedScene;
+            if (imported) {
+                const ratio = scale / previousScale;
+                gridSettings = scaleGridSettingsAroundPivot(effectiveGridSettings(), ratio, imported.assetRootPosition);
+                activeFlow = scaleFlowTransforms(activeFlow, ratio);
+            }
+            transientSceneMeshScale = scale;
+            if (imported) {
+                applyTransientSceneScale(imported);
+                syncImportedSceneGridTransform(imported);
+                updateImportedSceneBindings(imported, 0, true);
+                syncGridControls();
+                syncGridBoundsWireframe();
+                syncGridGizmo();
+                refreshFlowUI();
+                syncFlowWireframe("emitter");
+                syncFlowWireframe("sink");
+                syncFlowGizmo();
+                controls.setGridStatus("Simulation changes pending. Reset simulation to apply.");
+            } else {
+                canvas.dataset.whiteboardMeshScale = String(scale);
+            }
+        },
         setBloom: (cfg: { enabled: boolean; intensity: number; threshold: number }) => {
             bloomEnabled = cfg.enabled;
             bloomParams.intensity = cfg.intensity;
@@ -5046,6 +5799,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         await createBoxDemo(ctx),
         createFountainDemo(ctx),
         createWaterfallDemo(ctx),
+        await createJumpingWhaleDemo(ctx),
         createMarbleTowerDemo(ctx),
     ];
     for (const d of demos) {
@@ -5075,12 +5829,16 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     }
 
     let paused = false;
-    let captureDemoActivated = !captureMode;
+    let captureDemoActivated = !deterministicMode;
     let captureWarmupFrames = 0;
     let captureStarted = false;
     let captureStep = 0;
     let captureReadyPending = false;
     let captureReadyTime = 0;
+    let offlineCompletedSteps = 0;
+    let initialStabilizationGeneration = 0;
+    let initialStabilizationRunning = false;
+    let initialStabilizationTask: Promise<void> = Promise.resolve();
     function syncSimulationLifecycle(): void {
         const lifecycle = fluidSimulationLifecycle(simulationElapsed, simulationDuration, simulationAlphaDecay);
         simulationOpacity = lifecycle.opacity;
@@ -5095,7 +5853,161 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
 
     function restartSimulationLifecycle(): void {
         simulationElapsed = 0;
+        captureStep = 0;
+        captureReadyPending = false;
+        captureReadyTime = 0;
+        delete canvas.dataset.captureReady;
+        delete canvas.dataset.captureTime;
+        if (offlineMode) {
+            offlineCompletedSteps = 0;
+            canvas.dataset.offlineStep = "0";
+            canvas.dataset.offlineSimulationTime = "0";
+        }
+        if (referenceSelected()) {
+            canvas.dataset.referenceSimulationTime = "0";
+        }
         syncSimulationLifecycle();
+    }
+
+    async function readInitialStabilizationSample(activeCount: number): Promise<Float32Array> {
+        const blockSize = Math.min(2048, activeCount);
+        if (blockSize <= 0) {
+            return new Float32Array(0);
+        }
+        const maximumOffset = Math.max(0, activeCount - blockSize);
+        const offsets = [...new Set([0, Math.floor(maximumOffset / 3), Math.floor((maximumOffset * 2) / 3), maximumOffset])];
+        const sample = new Float32Array(offsets.length * blockSize * 3);
+        let cursor = 0;
+        for (const particleOffset of offsets) {
+            const positions = await readFluidSimulationPositions(activeSim, { particleOffset, particleCount: blockSize });
+            for (let index = 0; index < positions.length; index += 4) {
+                sample[cursor++] = positions[index]!;
+                sample[cursor++] = positions[index + 1]!;
+                sample[cursor++] = positions[index + 2]!;
+            }
+        }
+        return sample;
+    }
+
+    function initialStabilizationMotion(previous: Float32Array, current: Float32Array): { rms: number; p95: number } {
+        if (previous.length !== current.length || current.length === 0) {
+            return { rms: Infinity, p95: Infinity };
+        }
+        const previousHeights = new Float32Array(previous.length / 3);
+        const currentHeights = new Float32Array(current.length / 3);
+        for (let index = 0; index < currentHeights.length; index++) {
+            previousHeights[index] = previous[index * 3 + 1]!;
+            currentHeights[index] = current[index * 3 + 1]!;
+        }
+        previousHeights.sort();
+        currentHeights.sort();
+        let squared = 0;
+        const differences = new Float32Array(currentHeights.length);
+        for (let index = 0; index < currentHeights.length; index++) {
+            const difference = Math.abs(currentHeights[index]! - previousHeights[index]!);
+            squared += difference * difference;
+            differences[index] = difference;
+        }
+        differences.sort();
+        return {
+            rms: Math.sqrt(squared / differences.length),
+            p95: differences[Math.floor((differences.length - 1) * 0.95)]!,
+        };
+    }
+
+    async function runInitialStabilization(generation: number, demo: FluidDemo): Promise<void> {
+        if (generation !== initialStabilizationGeneration || activeDemo !== demo || methodName === "FLIP" || demo.initialStabilizationEnabled?.() !== true) {
+            return;
+        }
+        initialStabilizationRunning = true;
+        demo.restartAnimation?.(true);
+        demo.onInitialStabilizationProgress?.({ running: true, simulatedSeconds: 0, converged: false });
+        canvas.dataset.initialStabilization = "running";
+        configureFluidSimulationRenderLayer(particleTask, { opacity: 0 });
+        configureFluidSimulationRenderLayer(surfaceTask, { opacity: 0 });
+        configureFluidSimulationRenderLayer(polygonSurfaceTask, { opacity: 0 });
+        configureFluidSimulationRenderLayer(foamTask, { opacity: 0, enabled: false });
+        suspendRenderingLoop();
+        let simulatedSeconds = 0;
+        let converged = false;
+        let failed = false;
+        try {
+            await demo.prepareInitialStabilization?.();
+            if (generation !== initialStabilizationGeneration || activeDemo !== demo) {
+                return;
+            }
+            await engine._device.queue.onSubmittedWorkDone();
+            const sampledParticleCount = activeSim.activeCount ?? activeSim.count;
+            let previous = await readInitialStabilizationSample(sampledParticleCount);
+            let stableSamples = 0;
+            const stepSeconds = 1 / 30;
+            const stepsPerBatch = 6;
+            const batchesPerSample = 5;
+            const maximumSeconds = 30;
+            while (
+                generation === initialStabilizationGeneration &&
+                activeDemo === demo &&
+                demo.initialStabilizationEnabled?.() === true &&
+                simulatedSeconds + stepSeconds * stepsPerBatch * batchesPerSample <= maximumSeconds + 1e-6
+            ) {
+                for (let batch = 0; batch < batchesPerSample; batch++) {
+                    await submitFluidSimulationSteps(activeSim, stepSeconds, stepsPerBatch);
+                    simulatedSeconds += stepSeconds * stepsPerBatch;
+                    if (generation !== initialStabilizationGeneration || activeDemo !== demo) {
+                        return;
+                    }
+                }
+                const current = await readInitialStabilizationSample(sampledParticleCount);
+                const motion = initialStabilizationMotion(previous, current);
+                previous = current;
+                stableSamples = motion.rms < 0.02 && motion.p95 < 0.03 ? stableSamples + 1 : 0;
+                demo.onInitialStabilizationProgress?.({ running: true, simulatedSeconds, converged: false });
+                canvas.dataset.initialStabilizationSeconds = simulatedSeconds.toFixed(1);
+                canvas.dataset.initialStabilizationRms = motion.rms.toFixed(4);
+                canvas.dataset.initialStabilizationP95 = motion.p95.toFixed(4);
+                if (simulatedSeconds >= 2 && stableSamples >= 2) {
+                    converged = true;
+                    break;
+                }
+            }
+            if (generation === initialStabilizationGeneration && activeDemo === demo && demo.initialStabilizationEnabled?.() === true) {
+                await settleFluidSimulation(activeSim);
+            }
+        } catch (error) {
+            failed = true;
+            console.error("[fluid] initial stabilization failed", error);
+        } finally {
+            initialStabilizationRunning = false;
+            if (generation === initialStabilizationGeneration && activeDemo === demo) {
+                demo.restartAnimation?.(paused);
+                demo.onInitialStabilizationProgress?.({ running: false, simulatedSeconds, converged });
+                canvas.dataset.initialStabilization = failed ? "error" : converged ? "converged" : "complete";
+            }
+            syncSimulationLifecycle();
+            reconcileRenderingLoop();
+        }
+    }
+
+    function restartOrStabilizeActiveDemo(): void {
+        const demo = activeDemo;
+        const generation = ++initialStabilizationGeneration;
+        if (!demo) {
+            return;
+        }
+        if (methodName === "FLIP" || demo.initialStabilizationEnabled?.() !== true) {
+            initialStabilizationRunning = false;
+            canvas.dataset.initialStabilization = methodName === "FLIP" ? "skipped" : "disabled";
+            delete canvas.dataset.initialStabilizationSeconds;
+            delete canvas.dataset.initialStabilizationRms;
+            delete canvas.dataset.initialStabilizationP95;
+            demo.restartAnimation?.(paused);
+            return;
+        }
+        initialStabilizationTask = initialStabilizationTask
+            .catch(() => {
+                // The preceding run already surfaced its error.
+            })
+            .then(() => runInitialStabilization(generation, demo));
     }
 
     function advanceSimulationLifecycle(dt: number): void {
@@ -5105,6 +6017,210 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         simulationElapsed += dt;
         syncSimulationLifecycle();
     }
+
+    let referenceTimingCache: { scene: ImportedFluidScene | null; timing: ReturnType<typeof fluidReferenceTiming> } | null = null;
+    function referenceTiming(): ReturnType<typeof fluidReferenceTiming> {
+        if (!referenceTimingCache || referenceTimingCache.scene !== importedScene) {
+            referenceTimingCache = { scene: importedScene, timing: fluidReferenceTiming(importedScene?.bundle.preset) };
+        }
+        return referenceTimingCache.timing;
+    }
+
+    function updateSceneForSimulationStep(deltaSeconds: number): void {
+        insideReferenceSubstep = true;
+        try {
+            if (importedScene) {
+                const animationDelta = deltaSeconds * (referenceSelected() ? referenceTiming().animationRate : 1);
+                importedScene.asset._beforeRenderHook?.(animationDelta * 1000);
+                updateImportedSceneBindings(importedScene, deltaSeconds * 1000);
+            } else {
+                activeDemo?.update(deltaSeconds);
+            }
+        } finally {
+            insideReferenceSubstep = false;
+        }
+    }
+
+    function completeInteractiveStep(deltaSeconds: number): void {
+        advanceSimulationLifecycle(deltaSeconds);
+        if (captureMode) {
+            captureStep++;
+            const completedAt = fluidCaptureCompletionTime(simulationElapsed, captureStep >= captureTargetSteps, simulationStopped);
+            if (completedAt !== null) {
+                paused = true;
+                canvas.dataset.paused = "true";
+                captureReadyTime = completedAt;
+                captureReadyPending = true;
+            }
+        }
+    }
+
+    function suspendRenderingLoop(): void {
+        stopEngine(engine);
+        normalEngineLoopRunning = false;
+    }
+
+    function reconcileRenderingLoop(): void {
+        if (!engineLoopReady || !referencePump || referencePump.transitions > 0 || initialStabilizationRunning) {
+            return;
+        }
+        if (offlineMode) {
+            if (!captureStarted) {
+                return;
+            }
+            stopFluidReferencePump(referencePump);
+            suspendRenderingLoop();
+        } else if (activeSim.steppingMode === "async") {
+            suspendRenderingLoop();
+            startFluidReferencePump(referencePump);
+        } else {
+            stopFluidReferencePump(referencePump);
+            if (!normalEngineLoopRunning) {
+                normalEngineLoopRunning = true;
+                void startEngine(engine).catch((error: unknown) => {
+                    normalEngineLoopRunning = false;
+                    reportReferenceError(error);
+                });
+            }
+        }
+    }
+
+    function referenceShouldStep(): boolean {
+        return (
+            !offlineMode &&
+            activeSim.steppingMode === "async" &&
+            !paused &&
+            !initialStabilizationRunning &&
+            !simulationStopped &&
+            captureDemoActivated &&
+            (!deterministicMode || captureStarted) &&
+            activeDemo?.isReady?.() !== false
+        );
+    }
+    referencePump = createFluidReferencePump({
+        render: (deltaMs) => renderFrame(engine, deltaMs),
+        shouldStep: referenceShouldStep,
+        step: async () => {
+            const fixedDelta = captureMode ? captureFixedDt : referenceTiming().frameDelta;
+            const stepDt = fluidSimulationStepDelta(simulationElapsed, fixedDelta * simulationTimeScale, simulationDuration, simulationAlphaDecay);
+            if (stepDt <= 0) {
+                syncSimulationLifecycle();
+                const activeProfiler = currentGpuProfiler();
+                if (activeProfiler) {
+                    await submitFluidSimulationProfiler(activeProfiler);
+                }
+                return;
+            }
+            canvas.dataset.referenceStatus = "stepping";
+            await submitFluidSimulationStep(activeSim, stepDt, { beforeSubstep: updateSceneForSimulationStep });
+            const activeProfiler = currentGpuProfiler();
+            if (activeProfiler) {
+                await submitFluidSimulationProfiler(activeProfiler);
+            }
+            completeInteractiveStep(stepDt);
+            canvas.dataset.activeParticleCount = String(activeSim.activeCount ?? activeSim.count);
+            canvas.dataset.referenceStatus = paused ? "paused" : "ready";
+            canvas.dataset.referenceSimulationTime = String(simulationElapsed);
+        },
+        onError: reportReferenceError,
+        suspend: suspendRenderingLoop,
+        resume: reconcileRenderingLoop,
+    });
+
+    // DOM controls may change while a GPU solve is pending; replay mutations after its fence.
+    const deferPanelEvent = (event: Event): void => {
+        if (!referencePump?.pending || !(event.target instanceof Element)) {
+            return;
+        }
+        const target = event.target;
+        if (event.type === "click" && (!target.closest("button") || target.closest("button") === importBtn)) {
+            return;
+        }
+        event.stopImmediatePropagation();
+        if (event.type === "click") {
+            event.preventDefault();
+        }
+        const replay =
+            event instanceof MouseEvent
+                ? new MouseEvent(event.type, { bubbles: true, cancelable: true, shiftKey: event.shiftKey, ctrlKey: event.ctrlKey, altKey: event.altKey, metaKey: event.metaKey })
+                : new Event(event.type, { bubbles: true, cancelable: event.cancelable });
+        void queueFluidReferenceChange(referencePump, () => {
+            if (target.isConnected) {
+                target.dispatchEvent(replay);
+            }
+        });
+    };
+    controls.root.addEventListener("input", deferPanelEvent, true);
+    controls.root.addEventListener("change", deferPanelEvent, true);
+    controls.root.addEventListener("click", deferPanelEvent, true);
+
+    interface FluidOfflineRunDetail {
+        token: string;
+        steps: number;
+        render: boolean;
+    }
+    function updateOfflineSceneForSimulationStep(deltaSeconds: number): void {
+        updateSceneForSimulationStep(deltaSeconds);
+        setFluidSimulationForceField(activeSim, forceFieldHandle(importedScene ? null : (activeDemo?.forceField?.() ?? null)));
+    }
+    let offlineOperation = Promise.resolve();
+    const advanceOfflineStep = async (): Promise<void> => {
+        if (simulationStopped) {
+            return;
+        }
+        const stepDt = fluidSimulationStepDelta(simulationElapsed, offlineFixedDt * simulationTimeScale, simulationDuration, simulationAlphaDecay);
+        if (referenceSelected()) {
+            const activeProfiler = currentGpuProfiler();
+            if (activeProfiler) {
+                beginFluidSimulationProfilerFrame(activeProfiler, { captureEnvelope: false });
+            }
+            await submitFluidSimulationStep(activeSim, stepDt, { beforeSubstep: updateOfflineSceneForSimulationStep });
+            if (activeProfiler) {
+                await submitFluidSimulationProfiler(activeProfiler);
+            }
+        } else {
+            await submitFluidSimulationStep(activeSim, stepDt, { beforeSubstep: updateOfflineSceneForSimulationStep });
+        }
+        advanceSimulationLifecycle(stepDt);
+        offlineCompletedSteps++;
+        canvas.dataset.offlineStep = String(offlineCompletedSteps);
+        canvas.dataset.offlineSimulationTime = String(simulationElapsed);
+        canvas.dataset.activeParticleCount = String(activeSim.activeCount ?? activeSim.count);
+        refreshReferenceBudgetWarning();
+    };
+    canvas.addEventListener("fluid-offline-run", (event) => {
+        if (!offlineMode) {
+            return;
+        }
+        const detail = (event as CustomEvent<FluidOfflineRunDetail>).detail;
+        if (!detail || typeof detail.token !== "string" || !detail.token || !Number.isInteger(detail.steps) || detail.steps < 0 || typeof detail.render !== "boolean") {
+            canvas.dataset.offlineStatus = "error";
+            canvas.dataset.offlineError = "Invalid fluid-offline-run request.";
+            return;
+        }
+        offlineOperation = offlineOperation
+            .then(async () => {
+                canvas.dataset.offlineStatus = "running";
+                delete canvas.dataset.offlineError;
+                delete canvas.dataset.offlineErrorToken;
+                for (let step = 0; step < detail.steps && !simulationStopped; step++) {
+                    await advanceOfflineStep();
+                }
+                if (detail.render) {
+                    renderFrame(engine, 0);
+                    await waitForGpuIdle(engine);
+                }
+                canvas.dataset.offlineCompletedToken = detail.token;
+                canvas.dataset.offlineStatus = "idle";
+            })
+            .catch((error: unknown) => {
+                const message = error instanceof Error ? error.message : String(error);
+                canvas.dataset.offlineStatus = "error";
+                canvas.dataset.offlineErrorToken = detail.token;
+                canvas.dataset.offlineError = message;
+                console.error("[fluid] offline rendering failed", error);
+            });
+    });
 
     onBeforeRender(scene, (deltaMs: number) => {
         // A newly-inserted task (the MSAA scene pass + its depth resolve) needs the whole graph
@@ -5149,8 +6265,9 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         // timed pass (sim.step below + the render tasks) is encoded this frame, then
         // open the whole-frame envelope (frameStart) so the "Total" row reports the real
         // total GPU time of the frame, not just the sum of the itemised passes.
-        if (timingEnabled && profiler) {
-            beginFluidSimulationProfilerFrame(profiler);
+        const activeProfiler = currentGpuProfiler();
+        if (timingEnabled && activeProfiler) {
+            beginFluidSimulationProfilerFrame(activeProfiler);
         }
         // Smoothed FPS: average the frame interval over ~0.5 s, then refresh.
         fpsAccumMs += deltaMs;
@@ -5162,15 +6279,16 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             }
             fpsAccumMs = 0;
             fpsFrames = 0;
+            refreshReferenceBudgetWarning();
             // Refresh the timing + memory read-outs on the same ~2 Hz cadence as the FPS counter.
             if (gpu) {
-                gpu.refreshTiming(timingEnabled && profiler ? readFluidSimulationProfiler(profiler) : null);
+                gpu.refreshTiming(timingEnabled && activeProfiler ? readFluidSimulationProfiler(activeProfiler) : null);
                 gpu.refreshMemory(activeSim.gpuBytes, engine.canvas.width, engine.canvas.height);
             }
         }
         // Clamp dt so a hitch / first frame can't blow the integration up.
-        const dt = captureMode ? captureFixedDt : Math.min(Math.max(deltaMs, 0) / 1000, 1 / 60);
-        if (captureMode && !captureStarted) {
+        const dt = captureMode ? captureFixedDt : offlineMode ? offlineFixedDt : referenceSelected() ? referenceTiming().frameDelta : Math.min(Math.max(deltaMs, 0) / 1000, 1 / 60);
+        if (deterministicMode && !captureStarted) {
             if (activeDemo?.isReady?.() === false) {
                 return;
             }
@@ -5181,6 +6299,9 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             restartSimulationLifecycle();
             captureStarted = true;
             canvas.dataset.captureStarted = "true";
+            if (offlineMode) {
+                canvas.dataset.offlinePrepared = "true";
+            }
         }
         // Keep the latest pointer sample alive briefly: MLS-MPM may defer a whole step
         // while asynchronous status buffers are unavailable.
@@ -5198,22 +6319,21 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         if (paused || simulationStopped) {
             refreshFluidSimulationPolygonSurface(activeSim);
         }
-        if (!paused && !simulationStopped) {
+        if (!offlineMode && activeSim.steppingMode === "frame" && !paused && !simulationStopped && !initialStabilizationRunning) {
             const stepDt = fluidSimulationStepDelta(simulationElapsed, dt * simulationTimeScale, simulationDuration, simulationAlphaDecay);
-            if (!importedScene) {
-                activeDemo?.update(stepDt); // box: spin paddle + write paddle SDF block
-            }
-            stepFluidSimulation(activeSim, stepDt);
-            advanceSimulationLifecycle(stepDt);
-            if (captureMode) {
-                captureStep++;
-                const completedAt = fluidCaptureCompletionTime(simulationElapsed, captureStep >= captureTargetSteps, simulationStopped);
-                if (completedAt !== null) {
-                    paused = true;
-                    canvas.dataset.paused = "true";
-                    captureReadyTime = completedAt;
-                    captureReadyPending = true;
+            updateSceneForSimulationStep(stepDt);
+            if (referenceSelected()) {
+                try {
+                    stepFluidSimulation(activeSim, stepDt);
+                    completeInteractiveStep(stepDt);
+                    canvas.dataset.referenceStatus = paused ? "paused" : "ready";
+                    canvas.dataset.referenceSimulationTime = String(simulationElapsed);
+                } catch (error) {
+                    reportReferenceError(error);
                 }
+            } else {
+                stepFluidSimulation(activeSim, stepDt);
+                completeInteractiveStep(stepDt);
             }
         }
         const activeParticleCount = activeSim.activeCount ?? activeSim.count;
@@ -5237,7 +6357,9 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             forceLastY = e.clientY;
             forceLastT = performance.now();
         } else if (!importedScene) {
-            activeDemo?.onPointerDown?.(e);
+            if (!deferReferenceMutation(() => activeDemo?.onPointerDown?.(e))) {
+                activeDemo?.onPointerDown?.(e);
+            }
         }
     });
     canvas.addEventListener("pointermove", (e) => {
@@ -5257,15 +6379,18 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
                 return;
             }
             const rect = canvas.getBoundingClientRect();
-            const ray = screenRay(ctx.viewProjection(), e.clientX - rect.left, e.clientY - rect.top, rect.width, rect.height);
+            const pointerX = e.clientX - rect.left;
+            const rayX = cameraMirrorX ? rect.width - pointerX : pointerX;
+            const ray = screenRay(ctx.viewProjection(), rayX, e.clientY - rect.top, rect.width, rect.height);
             if (!ray) {
                 return;
             }
             const wm = cam.worldMatrix;
             // World-space mouse motion: camera right * dx − camera up * dy (screen-y down).
-            let px = wm[0]! * dx - wm[4]! * dy;
-            let py = wm[1]! * dx - wm[5]! * dy;
-            let pz = wm[2]! * dx - wm[6]! * dy;
+            const horizontalDx = cameraMirrorX ? -dx : dx;
+            let px = wm[0]! * horizontalDx - wm[4]! * dy;
+            let py = wm[1]! * horizontalDx - wm[5]! * dy;
+            let pz = wm[2]! * horizontalDx - wm[6]! * dy;
             const plen = Math.sqrt(px * px + py * py + pz * pz) || 1;
             px /= plen;
             py /= plen;
@@ -5275,11 +6400,13 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
                 dir: ray.dir,
                 push: [px, py, pz],
                 radius: FORCE_RADIUS,
-                accel: speed * 0.5,
+                accel: speed * 0.5 * (activeDemo?.interactiveForceScale ?? 1),
                 expiresAt: now + INTERACTIVE_FORCE_SAMPLE_HOLD_MS,
             };
         } else if (!importedScene) {
-            activeDemo?.onPointerMove?.(e);
+            if (!deferReferenceMutation(() => activeDemo?.onPointerMove?.(e))) {
+                activeDemo?.onPointerMove?.(e);
+            }
         }
     });
     const onPointerEnd = (e: PointerEvent): void => {
@@ -5290,7 +6417,9 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             }
             canvas.releasePointerCapture(e.pointerId);
         } else if (!importedScene) {
-            activeDemo?.onPointerUp?.(e);
+            if (!deferReferenceMutation(() => activeDemo?.onPointerUp?.(e))) {
+                activeDemo?.onPointerUp?.(e);
+            }
         }
     };
     canvas.addEventListener("pointerup", onPointerEnd);
@@ -5301,7 +6430,9 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             return;
         }
         if (!importedScene) {
-            activeDemo?.onKey?.(e); // demo-specific (capsule: Space punches a hole)
+            if (!deferReferenceMutation(() => activeDemo?.onKey?.(e))) {
+                activeDemo?.onKey?.(e);
+            }
         }
         if (e.code === "Space") {
             e.preventDefault(); // prevent page scroll in every demo
@@ -5318,10 +6449,15 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         } else if (e.key === "m" || e.key === "M") {
             const methods = Object.keys(DEFAULT_FLUID_SCHEMAS);
             const nextMethod = methods[(methods.indexOf(methodName) + 1) % methods.length] ?? "PBF";
-            switchPair(activeDemo!, nextMethod);
+            requestPairSwitch(activeDemo!, nextMethod);
         } else if (e.key === "p" || e.key === "P") {
+            referencePausedByError = false;
             paused = !paused;
             canvas.dataset.paused = paused ? "true" : "false";
+            activeDemo?.onPauseChanged?.(paused);
+            if (referenceSelected()) {
+                canvas.dataset.referenceStatus = referencePump?.pending ? (paused ? "pausing" : "stepping") : paused ? "paused" : "ready";
+            }
             if (paused) {
                 if (controls.gpu) {
                     controls.gpu.fpsLabel.textContent = "paused";
@@ -5345,7 +6481,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     controls.setMethod("MLS-MPM");
     applyRenderMode(false); // fluid surface by default
     initializeFluidControlsBinding();
-    if (captureMode) {
+    if (deterministicMode) {
         setUiHidden(true);
     }
 
@@ -5373,7 +6509,29 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         scene._renderableVersion++;
     }
 
+    normalEngineLoopRunning = true;
     await startEngine(engine);
+    engineLoopReady = true;
+    updateBackendControls();
+    if (offlineMode) {
+        await new Promise<void>((resolve) => {
+            const waitForPreparation = (): void => {
+                if (captureStarted) {
+                    resolve();
+                } else {
+                    requestAnimationFrame(waitForPreparation);
+                }
+            };
+            requestAnimationFrame(waitForPreparation);
+        });
+        suspendRenderingLoop();
+        await waitForGpuIdle(engine);
+        canvas.dataset.offlineReady = "true";
+        canvas.dataset.offlineStatus = "idle";
+        canvas.dataset.offlineStep = "0";
+        canvas.dataset.offlineSimulationTime = "0";
+    }
+    reconcileRenderingLoop();
     canvas.dataset.drawCalls = String(engine.drawCallCount);
     canvas.dataset.particleCount = String(particleCount);
     canvas.dataset.initMs = String(performance.now() - __initStart);

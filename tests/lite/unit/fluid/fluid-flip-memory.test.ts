@@ -549,6 +549,75 @@ describe("FLIP particle dispatch", () => {
         }
     });
 
+    it("defers inactive demo asset loading until the feature is opened", () => {
+        const box = readFileSync(resolve(process.cwd(), "lab/lite/src/demos/fluid/scenes/box.ts"), "utf8");
+        const tower = readFileSync(resolve(process.cwd(), "lab/lite/src/demos/fluid/scenes/marbleTower.ts"), "utf8");
+        const waterfall = readFileSync(resolve(process.cwd(), "lab/lite/src/demos/fluid/scenes/waterfall.ts"), "utf8");
+
+        expect(box).toContain("const ensureDucksLoaded =");
+        expect(box.indexOf("ensureDucksLoaded();")).toBeGreaterThan(box.indexOf("raftChk.onchange"));
+        expect(tower).toContain("const ensureTowerLoaded =");
+        expect(tower.indexOf("ensureTowerLoaded();")).toBeGreaterThan(tower.indexOf("onEnter(): void"));
+        expect(waterfall).toContain("const ensureRockLoaded =");
+        expect(waterfall).toContain("const ensureHeightMapLoaded =");
+        expect(waterfall.indexOf("ensureRockLoaded();")).toBeGreaterThan(waterfall.indexOf("onEnter(): void"));
+        expect(waterfall.indexOf("showOasisTier(oasisQuality);")).toBeGreaterThan(waterfall.indexOf("onEnter(): void"));
+    });
+
+    it("provides a GPU-synchronized offline rendering path", () => {
+        const facade = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/core/fluid-facade.ts"), "utf8");
+        const demo = readFileSync(resolve(process.cwd(), "lab/lite/src/demos/fluid.ts"), "utf8");
+        const script = readFileSync(resolve(process.cwd(), "scripts/render-fluid-offline.ts"), "utf8");
+
+        expect(facade).toContain("export async function submitFluidSimulationStep");
+        expect(facade).toContain('createCommandEncoder({ label: "fluid-offline-step" })');
+        expect(facade).toContain("queue.onSubmittedWorkDone()");
+        expect(demo).toContain('params.get("offline") === "1"');
+        expect(demo).toContain('canvas.addEventListener("fluid-offline-run"');
+        expect(demo).toContain("submitFluidSimulationStep(activeSim, stepDt)");
+        expect(demo).toContain('canvas.dataset.offlineReady = "true"');
+        expect(demo).toContain("canvas.dataset.offlineSummary = JSON.stringify");
+        expect(demo.match(/importedScene\.asset\._beforeRenderHook\?\.\(stepDt \* 1000\)/g)).toHaveLength(2);
+        expect(demo).toContain("scene._beforeRender.splice(animationIndex, 1)");
+        expect(demo).not.toContain("scene._beforeRender.unshift(animationHook");
+        expect(script).toContain("selectedFluidFiles");
+        expect(script).toContain("function printOfflineSummary");
+        expect(script).toContain("Simulation GPU allocation:");
+        expect(script).toContain("async function encodeOfflineVideo");
+        expect(script).toContain("spawn(options.ffmpeg");
+        expect(script).toContain('"ffmpeg", "bin", "ffmpeg.exe"');
+        expect(script).toContain('"--ffmpeg"');
+        expect(script).toContain('"--output-fps"');
+        expect(script).toContain("timeline?.simulationFps");
+        expect(script).toContain('resolve(options.output, "fluid-offline.mp4")');
+        expect(script).toContain('"--no-video"');
+        expect(script).toContain('frame-${String(frame).padStart(6, "0")}.png');
+    });
+
+    it("threads exact imported FLIP positions and velocities into solver resets", () => {
+        const facade = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/core/fluid-facade.ts"), "utf8");
+        const flip = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/solvers/flip-sim.ts"), "utf8");
+        const demo = readFileSync(resolve(process.cwd(), "lab/lite/src/demos/fluid.ts"), "utf8");
+
+        expect(facade).toContain("initialVelocities?: Float32Array");
+        expect(facade).toContain("initialVelocities: options.initialVelocities?.slice()");
+        expect(flip).toContain("initialVelocities must match initialPositions");
+        expect(flip).toContain("vx = initialVelocities?.[i * 3] ?? 0");
+        expect(demo).toContain("initialPositions: importedInitialState.positions");
+        expect(demo).toContain("initialVelocities: importedInitialState.velocities");
+    });
+
+    it("mirrors Blender camera presentation without reversing scene or polygon winding", () => {
+        const demo = readFileSync(resolve(process.cwd(), "lab/lite/src/demos/fluid.ts"), "utf8");
+        const polygon = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/rendering/polygon-surface-render.ts"), "utf8");
+
+        expect(demo).toContain("out.uv.x=mix(out.uv.x,1.0-out.uv.x,bloomMergeParams.mirrorX)");
+        expect(demo).toContain("attachFluidCameraControls(cam, canvas, scene, () => cameraMirrorX");
+        expect(demo).toContain("const rayX = cameraMirrorX ? rect.width - pointerX : pointerX");
+        expect(demo).toContain("const horizontalDx = cameraMirrorX ? -dx : dx");
+        expect(polygon).toContain('frontFace: "cw", cullMode: "back"');
+    });
+
     it("classifies foam only on fluid cells that touch air", () => {
         const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/solvers/flip-sim.ts"), "utf8");
         const surface = source.slice(source.indexOf("const SURFACE_NORMAL_WGSL"), source.indexOf("const SURFACE_CURVATURE_WGSL"));

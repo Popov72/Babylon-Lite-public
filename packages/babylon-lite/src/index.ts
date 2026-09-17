@@ -1082,9 +1082,13 @@ export {
     setFluidSimulationParameter,
     setFluidSimulationProfiler,
     setFluidSimulationSceneSdf,
+    settleFluidSimulation,
     stepFluidSimulationCollection,
     stepFluidSimulation,
     stepFluidSimulationForSceneIntegration,
+    submitFluidSimulationStep,
+    submitFluidSimulationSteps,
+    submitFluidSimulationProfiler,
     updateFluidSimulationEmitter,
     writeFluidParticleChannel,
     writeFluidSimulationPositions,
@@ -1094,9 +1098,12 @@ export {
     updateFluidSceneSdfContainer,
     updateFluidSceneSdfGridSettings,
     updateFluidSceneSdfStaticOffset,
+    updateFluidSceneSdfStaticScale,
     updateFluidSceneSdfTransforms,
     updateFluidSceneSdf,
 } from "./fluid/core/fluid-facade.js";
+export { createFluidDeformingSceneSdf, updateFluidDeformingSceneSdf, updateFluidDeformingSceneSdfContainer } from "./fluid/core/fluid-deforming-sdf.js";
+export type { FluidDeformingSceneSdf, FluidDeformingSceneSdfOptions, FluidDeformingSceneSdfUpdate } from "./fluid/core/fluid-deforming-sdf.js";
 export type {
     FluidCompositeSceneSdfOptions,
     FluidFoamRenderSettings,
@@ -1121,6 +1128,7 @@ export type {
     FluidRenderEnvironment,
     FluidRenderEnvironmentSource,
     FluidSimulation,
+    FluidSimulationBackend,
     FluidSimulationCollection,
     FluidSimulationCollectionParticleStream,
     FluidSimulationCollectionDiagnostics,
@@ -1129,9 +1137,12 @@ export type {
     FluidSimulationDiagnostics,
     FluidSimulationDiffuseDiagnostics,
     FluidSimulationOptions,
+    FluidSimulationStepOptions,
     FluidSimulationPolygonDiagnostics,
     FluidSimulationProfiler,
     FluidSimulationProfilerResults,
+    FluidSimulationProfilerOptions,
+    FluidSimulationProfilerFrameOptions,
     FluidSimulationReconfigurationRequest,
     FluidSimulationRenderCompositor,
     FluidSimulationRenderCompositorOptions,
@@ -1145,6 +1156,7 @@ export type {
     PreparedFluidCollectionReconfiguration,
     PreparedFluidReconfiguration,
 } from "./fluid/core/fluid-facade.js";
+export { loadFlipReferenceBackend } from "./fluid/experimental/flip-reference-backend.js";
 export { createFluidInitialStatePlanCache, fluidInitialEmitterVolume, planFluidInitialState, resolveFluidReconfigurationPlan } from "./fluid/core/initial-state-plan.js";
 export type {
     FluidInitialEmitterPlan,
@@ -1219,11 +1231,12 @@ export { carryMethodIndependentState } from "./fluid/authoring/method-independen
 export type { CarryMethodIndependentStateOptions } from "./fluid/authoring/method-independent-state.js";
 export { exportJsonFromPairState, presetFromExportJson } from "./fluid/authoring/preset-io.js";
 export type { FluidExportJson } from "./fluid/authoring/preset-io.js";
-export { parseBlenderFluidCollision, parseBlenderFluidJson, scenePayloadFromBlenderFluidJson } from "./fluid/authoring/blender-fluid-json.js";
+export { parseBlenderFluidCollision, parseBlenderFluidInitialState, parseBlenderFluidJson, scenePayloadFromBlenderFluidJson } from "./fluid/authoring/blender-fluid-json.js";
 export type {
     BlenderFluidAnimatedCollision,
     BlenderFluidCollision,
     BlenderFluidExternalResources,
+    BlenderFluidInitialState,
     BlenderFluidScene,
     BlenderFluidScenePayloadOptions,
 } from "./fluid/authoring/blender-fluid-json.js";

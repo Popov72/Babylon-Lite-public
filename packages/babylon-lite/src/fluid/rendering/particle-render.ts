@@ -15,6 +15,9 @@ import type { SceneContext } from "../../scene/scene-core.js";
 import type { Task } from "../../frame-graph/task.js";
 import type { FluidSim, FluidProfiler } from "../core/sim-common.js";
 
+/** @internal Particle drawing does not require a simulation or its stepping/lifecycle methods. */
+export type ParticleRenderSource = Pick<FluidSim, "count" | "renderCount" | "renderIndirectBuffer" | "particleRadius" | "positionBuffer" | "debugBuffer" | "debugNorm">;
+
 // Opt-in GPU timing hook (see FluidProfiler / lab gpu-profiler.ts). Module-scoped:
 // null by default so `profiler?.pass(...)` is undefined and timing costs nothing.
 let profiler: FluidProfiler | null = null;
@@ -26,7 +29,7 @@ export interface ParticleRenderOptions {
     /** Depth target shared with the scene render task (load + test + write). */
     depthRT: RenderTarget;
     camera: Camera;
-    sim: FluidSim;
+    sim: ParticleRenderSource;
 }
 
 /**
@@ -61,7 +64,7 @@ export interface ParticleRenderShaderOptions {
 /** Public controls returned by {@link createParticleRenderTask}. */
 /** @internal */
 export interface ParticleRenderTask extends Task {
-    setSim(s: FluidSim): void;
+    setSim(s: ParticleRenderSource): void;
     setEnabled(on: boolean): void;
     setOpacity(v: number): void;
     setSizeScale(s: number): void;
@@ -302,7 +305,11 @@ export function createParticleRenderTask(engine: EngineContext, scene: SceneCont
         });
         pass.setPipeline(pipeline);
         pass.setBindGroup(0, bindGroup);
-        pass.draw(6, currentSim.renderCount ?? currentSim.count);
+        if (currentSim.renderIndirectBuffer) {
+            pass.drawIndirect(currentSim.renderIndirectBuffer, 0);
+        } else {
+            pass.draw(6, currentSim.renderCount ?? currentSim.count);
+        }
         pass.end();
         engine._currentEncoder.popDebugGroup();
         return 1;
@@ -320,7 +327,7 @@ export function createParticleRenderTask(engine: EngineContext, scene: SceneCont
         scene,
         _passes: [],
         /** Switch the rendered simulation backend (rebinds to its buffers). */
-        setSim(s: FluidSim): void {
+        setSim(s: ParticleRenderSource): void {
             currentSim = s;
             buildBindGroup();
         },

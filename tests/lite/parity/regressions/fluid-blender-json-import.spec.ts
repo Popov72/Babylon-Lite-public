@@ -188,7 +188,7 @@ test("Whiteboard restores the camera orbit and target from a fluid preset", asyn
     const data = preset([10, 8, 12], 5_000, 0, [0, 4, 0]) as Record<string, unknown>;
     data.formatVersion = 11;
     data.meta = { demo: "whiteboard", method: "PBF" };
-    data.camera = { alpha: 0.35, beta: 1.2, radius: 22, target: [3, 4, 5] };
+    data.camera = { alpha: 0.35, beta: 1.2, radius: 22, target: [3, 4, 5], fov: 0.55, mirrorX: true };
 
     await page.locator('input[type="file"][accept*=".json"]').setInputFiles({
         name: "whiteboard-camera.json",
@@ -201,6 +201,8 @@ test("Whiteboard restores the camera orbit and target from a fluid preset", asyn
     await expect(canvas).toHaveAttribute("data-camera-beta", "1.2");
     await expect(canvas).toHaveAttribute("data-camera-radius", "22");
     await expect(canvas).toHaveAttribute("data-camera-target", "3,4,5");
+    await expect(canvas).toHaveAttribute("data-camera-fov", "0.55");
+    await expect(canvas).toHaveAttribute("data-camera-mirror-x", "true");
 });
 
 test("FLIP initial-emitter information uses the domain-clipped reset allocation", async ({ page }) => {
@@ -948,54 +950,42 @@ test("deletes and independently emits particles in every solver", async ({ page 
     expect(errors.filter((message) => /destroyed|validation|out of memory|failed to import|shader/i.test(message))).toEqual([]);
 });
 
-test("warns before importing a high particle count", async ({ page }) => {
+test("imports high particle counts without fixed safety substitutions", async ({ page }) => {
     test.setTimeout(120_000);
     await page.goto("/demo-fluid.html");
     await waitForCanvasReady(page, { timeout: 60_000, label: "Fluid demo" });
     await page.locator('select:has(option[value="whiteboard"])').selectOption("whiteboard");
 
+    const dialogs: string[] = [];
+    page.on("dialog", (dialog) => {
+        dialogs.push(dialog.message());
+        void dialog.dismiss();
+    });
     const input = page.locator('input[type="file"][accept*=".json"]');
-    const safeDialogPromise = page.waitForEvent("dialog");
-    const safeImport = input.setInputFiles({
-        name: "high-safe.json",
+    await input.setInputFiles({
+        name: "high-count.json",
         mimeType: "application/json",
         buffer: jsonExport([12, 10, 14], 100_001, 1, [3, 4, 5]),
     });
-    const safeDialog = await safeDialogPromise;
-    expect(safeDialog.type()).toBe("confirm");
-    expect(safeDialog.message()).toContain("100,001");
-    expect(safeDialog.message()).toContain("40,000");
-    await safeDialog.accept();
-    await safeImport;
-    await expect(page.locator("canvas")).toHaveAttribute("data-particle-count", "40000");
-
-    const keepDialogPromise = page.waitForEvent("dialog");
-    const keepImport = input.setInputFiles({
-        name: "high-keep.json",
-        mimeType: "application/json",
-        buffer: jsonExport([12, 10, 14], 100_002, 1, [3, 4, 5]),
-    });
-    const keepDialog = await keepDialogPromise;
-    expect(keepDialog.message()).toContain("100,002");
-    await keepDialog.dismiss();
-    await keepImport;
-    await expect(page.locator("canvas")).toHaveAttribute("data-particle-count", "100002");
+    await expect(page.locator("canvas")).toHaveAttribute("data-particle-count", "100001");
+    expect(dialogs).toEqual([]);
 });
 
-test("FLIP import warning reports the domain-clipped initial count", async ({ page }) => {
+test("FLIP imports preserve authored capacity without fixed safety substitutions", async ({ page }) => {
     await page.goto("/demo-fluid.html");
     await waitForCanvasReady(page, { timeout: 60_000, label: "Fluid demo" });
     await page.locator('select:has(option[value="whiteboard"])').selectOption("whiteboard");
 
-    const dialogPromise = page.waitForEvent("dialog");
-    const importPromise = page.locator('input[type="file"][accept*=".json"]').setInputFiles({
+    const dialogs: string[] = [];
+    page.on("dialog", (dialog) => {
+        dialogs.push(dialog.message());
+        void dialog.dismiss();
+    });
+    await page.locator('input[type="file"][accept*=".json"]').setInputFiles({
         name: "flip-clipped-high.json",
         mimeType: "application/json",
         buffer: flipClippedHighCountPreset(),
     });
-    const dialog = await dialogPromise;
-    expect(dialog.message()).toContain("512,000");
-    expect(dialog.message()).not.toContain("1,728,000");
-    await dialog.accept();
-    await importPromise;
+    await expect(page.locator("canvas")).toHaveAttribute("data-particle-count", "600000");
+    expect(dialogs).toEqual([]);
 });
