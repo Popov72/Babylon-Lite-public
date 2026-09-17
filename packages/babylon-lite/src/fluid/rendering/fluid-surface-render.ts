@@ -39,7 +39,7 @@ import type { RenderTarget } from "../../engine/render-target.js";
 import { buildRenderTarget } from "../../engine/render-target.js";
 import type { SceneContext } from "../../scene/scene-core.js";
 import type { Task } from "../../frame-graph/task.js";
-import { mat4Invert } from "../../math/mat4-invert.js";
+import { invertMat4 as mat4Invert } from "../../math/invert-mat4.js";
 import type { FluidSim, FluidProfiler } from "../core/sim-common.js";
 
 // Opt-in GPU timing hook (see FluidProfiler / lab gpu-profiler.ts). Module-scoped:

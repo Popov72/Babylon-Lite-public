@@ -10,12 +10,15 @@ export {
     renderFrame,
     resizeEngine,
     setEngineSize,
-    disposeEngine,
+    getRenderingContextKind,
+    getRenderingContexts,
     setGpuTimingEnabled,
     isGpuTimingSupported,
 } from "./engine/engine.js";
+export { disposeEngine } from "./engine/engine-dispose.js";
+export { waitForGpuResourceRetirements } from "./engine/gpu-resource-retirement.js";
 export { VERSION } from "./engine/version.js";
-export type { EngineContext, EngineOptions, RenderCanvas } from "./engine/engine.js";
+export type { EngineContext, EngineOptions, RenderCanvas, RenderingContext } from "./engine/engine.js";
 export { createNullEngine, stepScene, runHeadlessSteps } from "./engine/null-engine.js";
 export type { NullEngineOptions } from "./engine/null-engine.js";
 export { setRenderTaskGpuTimingEnabled, isRenderTaskGpuTimingSupported, getRenderTaskGpuTimings, measureRenderTaskOverdrawCost } from "./engine/gpu-task-timing.js";
@@ -43,6 +46,7 @@ export {
     registerSceneWithShadowSupport,
     unregisterScene,
 } from "./scene/scene.js";
+export { markMeshRenderableDirty } from "./scene/mesh-scene-registry.js";
 export type { SceneContextOptions } from "./scene/scene.js";
 export { setFog, setClipPlane } from "./scene/scene-ubo-extras.js";
 export { setEnvironmentBlur } from "./scene/set-environment-blur.js";
@@ -73,7 +77,7 @@ export type { Pass, RenderPassExecuteFunc } from "./frame-graph/pass.js";
 export { addPassDependencies } from "./frame-graph/pass.js";
 export type { RenderPass } from "./frame-graph/render-pass.js";
 export type { RenderTask, RenderTaskConfig } from "./frame-graph/render-task.js";
-export { createRenderTask, removeMeshFromTask } from "./frame-graph/render-task.js";
+export { createRenderTask, addMeshToTask, removeMeshFromTask } from "./frame-graph/render-task.js";
 export type { DepthPyramid, DepthPyramidOptions, DepthPyramidReduce, DepthPyramidTaskOptions } from "./frame-graph/depth-pyramid.js";
 export { createDepthPyramid, createDepthPyramidTask } from "./frame-graph/depth-pyramid.js";
 export { createImageProcessingTask } from "./frame-graph/image-processing-task.js";
@@ -90,16 +94,21 @@ export { GeometryTextureType } from "./frame-graph/geometry-types.js";
 export type { ShadowTask } from "./frame-graph/shadow-task.js";
 export type { RenderTarget, RenderTargetDescriptor } from "./engine/render-target.js";
 export { createRenderTarget } from "./engine/render-target.js";
-export { createRenderTargetTexture } from "./texture/rtt.js";
+export { createRenderTargetTexture, disposeRenderTargetTexture } from "./texture/rtt.js";
+export { createSurfaceRenderTargetTexture, onRenderTargetTextureResize } from "./texture/rtt-surface.js";
+export { withSampledDepthTexture } from "./texture/rtt-depth.js";
+export type { RenderTargetDepthSampler, RenderTargetTextureResult } from "./texture/rtt.js";
 // Pooled GPU samplers (same descriptor → same GPUSampler). Public so consumers building their own
 // sampled-texture wrappers around managed render targets don't have to reach into `engine._device`.
-export { getOrCreateSampler, clearSamplerCache } from "./resource/gpu-pool.js";
+export { getOrCreateSampler, clearSamplerCache } from "./resource/sampler-pool.js";
 // acquireTexture/releaseTexture let a consumer register the lifetime of its OWN GPU texture in Lite's
 // ref-count pool, so a texture it creates (e.g. a mipped render texture for a Hi-Z pyramid) survives a
 // ShaderMaterial's per-version release/acquire cycle instead of being destroyed at count 0.
-export { acquireTexture, releaseTexture } from "./resource/gpu-pool.js";
+export { acquireTexture } from "./resource/texture-acquire.js";
+export { releaseTexture } from "./resource/texture-release.js";
 export { enableSceneTransmission, enableRenderTaskTransmission } from "./frame-graph/transmission.js";
 export type { TransmissionOptions, SceneColorGrab } from "./frame-graph/transmission.js";
+export { enableRenderTaskMeshRefresh } from "./frame-graph/render-task-mesh-refresh.js";
 
 // ─── Fullscreen Effects ─────────────────────────────────────────────
 export { createEffectWrapper, setEffectUniforms, setEffectTexture, createEffectRenderTask, disposeEffectWrapper } from "./effect/effect-renderer.js";
@@ -138,7 +147,9 @@ export type { ScreenSpaceGlobalIlluminationPostProcessTask, ScreenSpaceGlobalIll
 // ─── Camera ──────────────────────────────────────────────────────────
 export { createArcRotateCamera } from "./camera/arc-rotate.js";
 export { attachControl, setCameraLimits } from "./camera/arc-rotate-controls.js";
-export type { AttachControlOptions, ArcRotateCameraLimits } from "./camera/arc-rotate-controls.js";
+export type { ArcRotatePointerAction, ArcRotatePointerMappings, AttachControlOptions, ArcRotateCameraLimits } from "./camera/arc-rotate-controls.js";
+export { enableArcRotateKeyboardControls } from "./camera/arc-rotate-keyboard-controls.js";
+export type { ArcRotateKeyboardMappings, ArcRotateKeyboardOptions } from "./camera/arc-rotate-keyboard-controls.js";
 export { interpolateArcRotateCamera } from "./camera/arc-rotate-interpolate.js";
 export type { ArcRotateInterpolationGoal, ArcRotateInterpolationOptions } from "./camera/arc-rotate-interpolate.js";
 export { createFreeCamera } from "./camera/free-camera.js";
@@ -245,8 +256,8 @@ export {
     resizeMeshGeometry,
     invalidateRenderBundles,
 } from "./mesh/mesh-factories.js";
-export type { MeshGeometryCapacityResult } from "./mesh/mesh-factories.js";
 export { getMeshGeometry, getMeshTriangles } from "./mesh/get-mesh-geometry.js";
+export type { MeshGeometryCapacityResult, MeshGeometryRange, MeshGeometryUpdateRanges } from "./mesh/mesh-factories.js";
 export { createLineSystemData, createLineSystem, createLines, updateLineSystem } from "./mesh/create-line-system.js";
 export type { LineSystemData, LineSystemDataOptions, LineSystemOptions, LinesOptions, LineSystemUpdateOptions } from "./mesh/create-line-system.js";
 export { createDashedLines, updateDashedLines } from "./mesh/create-dashed-lines.js";
@@ -285,11 +296,15 @@ export {
     createTexture2DArrayFromUrls,
     uploadKtx2Texture2DArray,
     loadKtx2Texture2DArray,
+    uploadKtx2Texture2DArrayFromBuffers,
+    loadKtx2Texture2DArrayFromUrls,
 } from "./texture/texture-array.js";
 export type { Texture2DArray, TextureArrayOptions, ArrayLayerUploadOptions, TextureArrayFromUrlsOptions } from "./texture/texture-array.js";
 export { createDynamicTexture, updateDynamicTexture } from "./texture/dynamic-texture.js";
 export type { DynamicTexture2D, DynamicTexture2DOptions, DynamicTextureUpdateOptions } from "./texture/dynamic-texture.js";
-export { createHtmlTexture, updateHtmlTexture, requestHtmlTextureUpdate, disposeHtmlTexture, isHtmlInCanvasSupported } from "./texture/html-texture.js";
+export { createTexture2DFromExternalImage } from "./texture/external-image-texture.js";
+export type { ExternalImageTexture2DOptions } from "./texture/external-image-texture.js";
+export { createHtmlTexture, updateHtmlTexture, requestHtmlTextureUpdate, disposeHtmlTexture, isHtmlInCanvasSupported, whenHtmlTextureReady } from "./texture/html-texture.js";
 export type { HtmlTexture2D, HtmlTexture2DOptions } from "./texture/html-texture.js";
 export { loadKtxTexture2D } from "./texture/ktx-loader.js";
 export { loadBasisTexture2D } from "./texture/basis-loader.js";
@@ -362,6 +377,8 @@ export {
 } from "./material/shader/shader-material.js";
 export { enableShaderUniformRangeUpdates } from "./material/shader/shader-uniform-range.js";
 export { enableShaderMaterialUniformCaching } from "./material/shader/enable-shader-material-uniform-caching.js";
+export { enableShaderMaterialInstanceWorld } from "./material/shader/enable-shader-material-instance-world.js";
+export { enableShaderMaterialFinalColor } from "./material/shader/enable-shader-material-final-color.js";
 export {
     enableAsyncShaderPipelineCompilation,
     prepareShaderMaterialPipeline,
@@ -383,6 +400,7 @@ export { createNodeNoColorMaterialView } from "./material/node/no-color-view.js"
 export type { NodeMaterial, NodeInputHandle, ParseNodeMaterialOptions } from "./material/node/node-material.js";
 export { createMaterialView } from "./material/material-view.js";
 export { getMaterialFamily } from "./material/material-family.js";
+export { getMaterialTextures } from "./material/material-textures.js";
 export { isPbrMaterial, isStandardMaterial, isShaderMaterial, isNodeMaterial } from "./material/material-guards.js";
 export { markMaterialUboDirty } from "./material/material-dirty.js";
 export { enableMaterialUvTransform } from "./material/enable-material-uv-transform.js";
@@ -395,7 +413,7 @@ export { StandardToneMapping } from "./material/pbr/tone-mapping.js";
 export { AcesToneMapping } from "./material/pbr/pbr-aces-wgsl.js";
 export { NeutralToneMapping } from "./material/pbr/pbr-neutral-wgsl.js";
 export type { MaterialPlugin, MaterialPluginPoint, PluginUboField, PluginSamplerDecl, PluginTextureBinding } from "./material/plugin/material-plugin.js";
-export { enableMaterialPlugins } from "./material/plugin/enable-material-plugins.js";
+export { enableMaterialPlugins, reconcileMaterialPlugins } from "./material/plugin/enable-material-plugins.js";
 export { bakeStdPluginMaterial } from "./material/plugin/std-plugin-bridge.js";
 export { enableMaterialStencil } from "./material/enable-material-stencil.js";
 export { getAlphaToCoverage, setAlphaToCoverage } from "./render/alpha-to-coverage.js";
@@ -506,12 +524,12 @@ export type { VatBakeResult, PreparedVatBakeResult, VatBakeOptions, VatBakeTarge
 
 // ─── Math ────────────────────────────────────────────────────────────
 export { normalizeVec2ToRef } from "./math/normalize-vec2-to-ref.js";
+export { normalizeVec3TupleOrUp } from "./math/normalize-vec3-tuple-or-up.js";
 export { normalizeVec3 } from "./math/normalize-vec3.js";
-export { normalizeVec3 as normalizeVec3Object } from "./math/normalize-vec3-object.js";
 export { vec3 } from "./math/vec3-ctor.js";
 export { Vec3Up } from "./math/vec3-up.js";
 export { addVec3 } from "./math/add-vec3.js";
-export { subVec3 } from "./math/sub-vec3.js";
+export { subtractVec3 } from "./math/subtract-vec3.js";
 export { scaleVec3 } from "./math/scale-vec3.js";
 export { dotVec3 } from "./math/dot-vec3.js";
 export { crossVec3 } from "./math/cross-vec3.js";
@@ -533,23 +551,30 @@ export {
     normalizeVec3ToRef,
     scaleVec3InPlace,
     scaleVec3ToRef,
-    subVec3InPlace,
-    subVec3ToRef,
+    subtractVec3InPlace,
+    subtractVec3ToRef,
 } from "./math/vec3-ref.js";
 export { writeVec3 } from "./math/write-vec3.js";
-export { mat4Translation } from "./math/mat4-translation.js";
-export { mat4Identity } from "./math/mat4-identity.js";
-export { mat4Scale } from "./math/mat4-scale.js";
-export { mat4Compose } from "./math/mat4-compose.js";
-export { mat4Invert } from "./math/mat4-invert.js";
-export { mat4Multiply } from "./math/mat4-multiply.js";
-export { mat4LookAtLH } from "./math/mat4-look-at-lh.js";
-export { mat4PerspectiveLH } from "./math/mat4-perspective-lh.js";
-export { mat4FromQuat, mat4FromQuatInto } from "./math/mat4-from-quat.js";
-export { quatFromRotationMatrix } from "./math/quat-from-rotation-matrix.js";
-export { quatFromLookDirectionRH } from "./math/quat-from-look-direction-rh.js";
-export { mat4Decompose } from "./math/mat4-decompose.js";
-export type { DecomposedTransform } from "./math/mat4-decompose.js";
+export { createTranslationMat4 } from "./math/create-translation-mat4.js";
+export { createTranslationMat4 as mat4Translation } from "./math/create-translation-mat4.js";
+export { setMat4Translation } from "./math/set-mat4-translation.js";
+export { createIdentityMat4 } from "./math/create-identity-mat4.js";
+export { createScalingMat4 } from "./math/create-scaling-mat4.js";
+export { composeMat4 } from "./math/compose-mat4.js";
+export { composeMat4 as mat4Compose } from "./math/compose-mat4.js";
+export { invertMat4 } from "./math/invert-mat4.js";
+export { invertMat4 as mat4Invert } from "./math/invert-mat4.js";
+export { multiplyMat4 } from "./math/multiply-mat4.js";
+export { multiplyMat4 as mat4Multiply } from "./math/multiply-mat4.js";
+export { createLookAtMat4LH } from "./math/create-look-at-mat4-lh.js";
+export { createPerspectiveMat4LH } from "./math/create-perspective-mat4-lh.js";
+export { createMat4FromQuat, writeMat4FromQuatIntoBuffer } from "./math/create-mat4-from-quat.js";
+export { createQuatFromRotationMat4 } from "./math/create-quat-from-rotation-mat4.js";
+export { createQuatFromRotationMat4 as quatFromRotationMatrix } from "./math/create-quat-from-rotation-mat4.js";
+export { createQuatFromLookDirectionRH } from "./math/create-quat-from-look-direction-rh.js";
+export { decomposeMat4 } from "./math/decompose-mat4.js";
+export { decomposeMat4 as mat4Decompose } from "./math/decompose-mat4.js";
+export type { DecomposedTransform } from "./math/decompose-mat4.js";
 export { maximizeMat4InPlace } from "./math/maximize-mat4-in-place.js";
 export { polarFromVec2ToRef, polarToVec2ToRef, addPolarToRef, subtractPolarToRef, multiplyPolarToRef, dividePolarToRef, scalePolarToRef } from "./math/polar.js";
 export type { PolarCoordinates } from "./math/polar.js";
@@ -567,7 +592,7 @@ export { scaleBoundsFromCenterToRef } from "./math/scale-bounds-from-center-to-r
 export type { Vec2, Bounds2D, Vec3, Vec3Tuple, Vec4, Color3, Color4, Mat4, Quat } from "./math/types.js";
 export type { Aabb } from "./math/aabb.js";
 export { computeAabb } from "./math/aabb.js";
-export { eulerToQuat, quatToEulerXYZ } from "./math/quat-euler.js";
+export { eulerXYZToQuatTuple, quatToEulerXYZTuple } from "./math/quat-euler.js";
 export type { GltfMetadata, LiteMetadata } from "./metadata.js";
 
 // ─── Color ───────────────────────────────────────────────────────────
@@ -609,6 +634,8 @@ export { getViewMatrix, getProjectionMatrix, getViewProjectionMatrix, getCameraP
 export { getEffectiveAspectRatio } from "./camera/camera.js";
 export { resolveCameraViewport } from "./camera/viewport.js";
 export type { PixelViewport } from "./camera/viewport.js";
+export { projectPointToViewportToRef, projectWorldToScreen, projectWorldToScreenToRef } from "./camera/world-to-screen.js";
+export type { ScreenProjectionOptions, ScreenProjectionResult } from "./camera/world-to-screen.js";
 export type { FreeCamera } from "./camera/free-camera.js";
 export type { BankedFreeCamera } from "./camera/banked-free-camera.js";
 export type { Mesh, MeshGPU } from "./mesh/mesh.js";
@@ -662,7 +689,7 @@ export type { PcfSpotlightShadowGeneratorConfig } from "./shadow/pcf-spotlight-s
 export type { PcfDirectionalShadowGeneratorConfig } from "./shadow/pcf-directional-shadow-generator.js";
 export type { CsmDirectionalShadowGeneratorConfig } from "./shadow/csm-directional-shadow-generator.js";
 export type { CsmStaticCacheOptions } from "./shadow/enable-csm-static-cache.js";
-export type { CsmRefitCaster, CsmRefitDecision, CsmRefitGate, CsmRefitGateOptions } from "./shadow/csm-refit-gate.js";
+export type { CsmRefitCaster, CsmRefitDecision, CsmRefitGate, CsmRefitGateOptions, CsmStaticRefitScheduler } from "./shadow/csm-refit-gate.js";
 export type { AnimationController } from "./skeleton/skeleton-updater.js";
 export type { AnimationGroup, TargetedAnimation } from "./animation/animation-group.js";
 export type { AnimationManager, AnimationManagerOptions } from "./animation/animation-manager.js";
@@ -699,6 +726,7 @@ export { enableDetailedPicking } from "./picking/detailed-picking.js";
 export { getPickedNormal, getPickedUV } from "./picking/picking-helpers.js";
 export { pickWithRay, pickMeshesWithRay } from "./picking/ray-pick.js";
 export type { RayPickOptions } from "./picking/ray-pick.js";
+export { createPickingRay } from "./picking/ray.js";
 export type { Ray } from "./picking/ray.js";
 export { computeDeformedPositionToRef } from "./picking/deformed-vertex.js";
 
@@ -888,6 +916,8 @@ export {
     unregisterTextRenderer,
     disposeTextRenderer,
 } from "./text/text-renderer.js";
+export { setFontWeightOffset } from "./text/set-font-weight-offset.js";
+export { loadFontWeightOffset } from "./text/load-font-weight-offset.js";
 
 // ─── Fluid authoring ─────────────────────────────────────────────────
 export { fluidPerParticleRecycleProbability, MAX_FLUID_EMITTERS, MAX_FLUID_POLYGON_POINTS, MAX_FLUID_POLYGON_TRIANGLES, MAX_FLUID_SINKS } from "./fluid/core/sim-common.js";
@@ -1311,7 +1341,9 @@ export type {
 export {
     createHavokWorld,
     enableHavokFloatingOrigin,
+    enableHavokThinInstancePhysics,
     createPhysicsBody,
+    getPhysicsBodyInstanceCount,
     createPhysicsShape,
     createPhysicsAggregate,
     createPhysicsConstraint,
@@ -1355,6 +1387,7 @@ export {
     PhysicsConstraintType,
     PhysicsConstraintAxis,
 } from "./physics/havok.js";
+export { enableHavokThinInstancePhysicsSync } from "./physics/enable-havok-thin-instance-physics-sync.js";
 export type {
     PhysicsWorld,
     PhysicsBody,

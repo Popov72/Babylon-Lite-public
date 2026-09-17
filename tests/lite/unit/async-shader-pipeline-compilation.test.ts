@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { EngineContext } from "../../../packages/babylon-lite/src/engine/engine";
 import { createRenderTarget, type RenderTargetSignature } from "../../../packages/babylon-lite/src/engine/render-target";
-import type { RenderTask } from "../../../packages/babylon-lite/src/frame-graph/render-task";
+import { addMeshToTask, createRenderTask, type RenderTask } from "../../../packages/babylon-lite/src/frame-graph/render-task";
+import { disposeGpuResourceRetirements } from "../../../packages/babylon-lite/src/engine/gpu-resource-retirement";
 import { setShadowTaskCasterMeshes } from "../../../packages/babylon-lite/src/frame-graph/shadow-inputs";
 import {
     _prepareAsyncShaderPipelinesForScene,
@@ -11,6 +12,7 @@ import {
     prepareShaderMaterialPipeline,
     prepareShaderMaterialPipelineForTask,
 } from "../../../packages/babylon-lite/src/material/shader/enable-async-shader-pipeline-compilation";
+import { enableShaderMaterialFinalColor } from "../../../packages/babylon-lite/src/material/shader/enable-shader-material-final-color";
 import { createShaderMaterial } from "../../../packages/babylon-lite/src/material/shader/shader-material";
 import { clearShaderPipelineCache, enableShaderPipelineCache } from "../../../packages/babylon-lite/src/material/shader/shader-pipeline-cache";
 import { getOrCreateShaderPipeline, getOrCreateShaderPipelineBindings } from "../../../packages/babylon-lite/src/material/shader/shader-pipeline";
@@ -18,9 +20,11 @@ import { buildShaderRenderablesWithInstancing } from "../../../packages/babylon-
 import type { ShaderPacket } from "../../../packages/babylon-lite/src/material/shader/shader-renderable";
 import type { Mesh } from "../../../packages/babylon-lite/src/mesh/mesh";
 import { clearSceneBGLCache } from "../../../packages/babylon-lite/src/render/scene-helpers";
-import type { Renderable } from "../../../packages/babylon-lite/src/render/renderable";
+import type { MeshRebuildResources, Renderable } from "../../../packages/babylon-lite/src/render/renderable";
+import type { Material } from "../../../packages/babylon-lite/src/material/material";
 import type { SceneContext } from "../../../packages/babylon-lite/src/scene/scene-core";
 import type { ShadowGenerator } from "../../../packages/babylon-lite/src/shadow/shadow-generator";
+import { wgsl } from "../../../packages/babylon-lite/src/shader/wgsl";
 
 const gpuGlobals = globalThis as Omit<typeof globalThis, "GPUShaderStage"> & {
     GPUShaderStage?: { VERTEX: number; FRAGMENT: number };
@@ -46,8 +50,8 @@ function makeEngine(createAsync?: (descriptor: GPURenderPipelineDescriptor) => P
 
 function makeMaterial() {
     return createShaderMaterial({
-        vertexSource: "@vertex fn mainVertex(input: VertexInput) -> @builtin(position) vec4f { return vec4f(input.position, 1); }",
-        fragmentSource: "@fragment fn mainFragment() -> @location(0) vec4f { return vec4f(1); }",
+        vertexSource: wgsl`@vertex fn mainVertex(input: VertexInput) -> @builtin(position) vec4f { return vec4f(input.position, 1); }`,
+        fragmentSource: wgsl`@fragment fn mainFragment() -> @location(0) vec4f { return vec4f(1); }`,
         attributes: ["position"],
     });
 }
@@ -97,6 +101,60 @@ function layoutArgs(layout: "mesh" | "thin-instances" | "thin-instances-color", 
 }
 
 describe("async ShaderMaterial pipeline compilation", () => {
+    it("prepares pending task meshes with temporary ownership without consuming the pending queue", async () => {
+        const { engine, createRenderPipelineAsync } = makeEngine();
+        Object.assign(engine._device, {
+            createBuffer: vi.fn((descriptor: GPUBufferDescriptor) => ({ size: descriptor.size, destroy: vi.fn() })),
+            createBindGroup: vi.fn(() => ({})),
+            queue: { writeBuffer: vi.fn() },
+        });
+        enableAsyncShaderPipelineCompilation(engine);
+        const mesh = {} as Mesh;
+        const main = [vi.fn()];
+        const release = vi.fn();
+        const scene = {
+            surface: { engine },
+            lights: [],
+            _groups: new Map(),
+            _meshDisposables: new Map([[mesh, main]]),
+            _renderables: [],
+            _frameGraph: { _tasks: [] },
+            _disposables: [],
+        } as unknown as SceneContext;
+        const bind = vi.fn();
+        const renderable = { mesh, order: 0, isTransparent: false, bind } as Renderable;
+        const builder = Object.assign(async () => ({ renderables: [renderable], rebuildSingle: () => renderable }), {
+            _sceneIndependentRebuild: true,
+            _rebuildSingle: (_scene: SceneContext, _mesh: Mesh, _material?: Material, resources?: MeshRebuildResources) => {
+                if (!resources) throw new Error("Expected task-owned resource lists.");
+                resources._lifetimeDisposers.push(release);
+                _registerAsyncShaderPipelineRecipe(scene, material, renderable);
+                return renderable;
+            },
+        });
+        const material = { ...makeMaterial(), _buildGroup: builder };
+        mesh.material = material;
+        const rt = createRenderTarget({ format: "rgba8unorm", samples: 1, size: { width: 1, height: 1 } });
+        const task = createRenderTask({ name: "pending", rt, autoMirror: false }, engine, scene);
+        addMeshToTask(task, mesh, { material });
+        const renderables = task._renderables;
+        const pending = task._pendingMeshes;
+        scene._frameGraph._tasks.push(task);
+        await _prepareAsyncShaderPipelinesForScene(scene);
+        expect(createRenderPipelineAsync).toHaveBeenCalledOnce();
+        expect(task._pendingMeshes).toBe(pending);
+        expect(task._renderables).toBe(renderables);
+        expect(pending).toHaveLength(1);
+        expect(task._renderables).toHaveLength(0);
+        expect(task._config.autoMirror).toBe(false);
+        expect(scene._meshDisposables.get(mesh)).toBe(main);
+        expect(main[0]).not.toHaveBeenCalled();
+        expect(release).toHaveBeenCalledOnce();
+        expect(bind).not.toHaveBeenCalled();
+        task.dispose();
+        disposeGpuResourceRetirements(engine);
+    });
+
     it("is inert until enabled and enabling is idempotent", async () => {
         const { engine, createRenderPipelineAsync } = makeEngine();
         const material = makeMaterial();
@@ -189,6 +247,22 @@ describe("async ShaderMaterial pipeline compilation", () => {
         getOrCreateShaderPipeline(synchronous.engine, signature, syncMaterial, syncBindings, syncLayout.variantKey, syncLayout.vertexBuffers, syncLayout.instanceAttrs);
 
         expect(prepared.createRenderPipelineAsync.mock.calls[0]![0]).toEqual(synchronous.createRenderPipeline.mock.calls[0]![0]);
+    });
+
+    it("prepares the instance-color getFinalColor specialization", async () => {
+        clearSceneBGLCache();
+        const { engine, createShaderModule } = makeEngine();
+        const material = createShaderMaterial({
+            vertexSource: wgsl`@vertex fn mainVertex(input: VertexInput) -> @builtin(position) vec4f { return vec4f(input.position * getFinalColor(input).rgb, 1); }`,
+            fragmentSource: wgsl`@fragment fn mainFragment() -> @location(0) vec4f { return vec4f(1); }`,
+            attributes: ["position"],
+        });
+        enableShaderMaterialFinalColor(material);
+
+        await prepareShaderMaterialPipeline(engine, material, "thin-instances-color", targetTask(engine));
+
+        const vertexSource = createShaderModule.mock.calls.map((call) => call[0].code).find((code) => code.includes("@vertex fn mainVertex"));
+        expect(vertexSource).toContain("return input.instanceColor;");
     });
 
     it("uses RenderTarget attachment state and the task convenience API", async () => {

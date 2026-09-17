@@ -1,5 +1,5 @@
 import type { EngineContext } from "../../engine/engine.js";
-import { mat4Invert } from "../../math/mat4-invert.js";
+import { invertMat4 as mat4Invert } from "../../math/invert-mat4.js";
 import type { Mat4 } from "../../math/types.js";
 import type { ForceFieldSpec, SceneSdfSpec } from "./sim-common.js";
 

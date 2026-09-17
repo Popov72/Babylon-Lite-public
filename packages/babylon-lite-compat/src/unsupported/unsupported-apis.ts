@@ -13,14 +13,259 @@
  */
 
 import { unsupported } from "../error.js";
+import type { AbstractEngine } from "../engine/engine.js";
 import { PushMaterial } from "../materials/materials.js";
 import type { Material } from "../materials/materials.js";
 import type { Scene } from "../scene/scene.js";
+import type { Camera } from "../cameras/cameras.js";
+import type { ShaderLanguage } from "../misc/engine-constants.js";
+import type { Vector3 } from "../math/vector.js";
+import type { StandardMaterial, PBRMaterial } from "../materials/materials.js";
+import type { Mesh, InstancedMesh } from "../meshes/meshes.js";
+import { MaterialPluginBase } from "../materials/material-plugin.js";
+
+const WHITE_BALANCE_UNSUPPORTED =
+    "White balance requires color-temperature math, a shader uniform, material/post-process defines, and pipeline invalidation that Babylon Lite does not expose; adding it needs a cross-cutting Lite subsystem design.";
+const FLUID_RENDERER_UNSUPPORTED =
+    "Fluid rendering requires dedicated depth, thickness, and diffuse passes plus render-target lifecycle and composition policies that Babylon Lite does not define.";
+const USD_LOADER_UNSUPPORTED =
+    "OpenUSD loading requires an OpenUSD WebAssembly worker, virtual-file staging, command-buffer extraction, and a USD-to-Lite scene/material materializer; those form a new loader subsystem with unresolved ownership and material-mapping design.";
+const DITHERED_TILE_FADE_UNSUPPORTED =
+    "Lite's material-plugin bridge supports shared shader injection, but not Babylon.js per-draw mesh uniforms, hardware-instance bounds, or custom thin-instance attributes/varyings. Adding those requires an opt-in per-renderable plugin-data design.";
+
+// ─── OpenUSD loading ─────────────────────────────────────────────────
+export type USDBinaryInput = ArrayBuffer | ArrayBufferView;
+export type USDVirtualFiles = Readonly<Record<string, USDBinaryInput>>;
+
+export interface USDLoadProgress {
+    phase: "initializing" | "staging" | "extracting" | "materializing";
+    message: string;
+}
+
+export interface USDImportTimings {
+    totalMs: number;
+    stageOpenMs: number;
+    stageReadMs: number;
+    preparationMs: number;
+    packingMs: number;
+    heapCopyMs: number;
+    materializeMs: number;
+}
+
+export interface USDImportStatistics {
+    nodes: number;
+    meshes: number;
+    analyticPrimitives: number;
+    instances: number;
+    materials: number;
+    vertices: number;
+    triangles: number;
+    commandBytes: number;
+    dataBytes: number;
+}
+
+export interface USDImportDiagnostics {
+    timings: USDImportTimings;
+    statistics: USDImportStatistics;
+    missingAssets: readonly string[];
+}
+
+export interface USDFileLoaderOptions {
+    rootFileName?: string;
+    files?: USDVirtualFiles;
+    resolveByFileName?: boolean;
+    workerUrl?: string | URL;
+    glueUrl?: string;
+    wasmUrl?: string;
+    dataUrl?: string;
+    onProgress?: (progress: USDLoadProgress) => void;
+    onLog?: (level: "info" | "warning" | "error", message: string) => void;
+    onComplete?: (diagnostics: USDImportDiagnostics) => void;
+}
+
+export class USDFileLoader {
+    public constructor(_options: Partial<USDFileLoaderOptions> = {}) {
+        unsupported("USDFileLoader", USD_LOADER_UNSUPPORTED);
+    }
+}
+
+export function RegisterUSDFileLoader(): never {
+    return unsupported("RegisterUSDFileLoader", USD_LOADER_UNSUPPORTED);
+}
+
+// ─── Flow graph validation ───────────────────────────────────────────
+const FLOW_GRAPH_UNSUPPORTED =
+    "Babylon Lite's flow-graph runtime does not expose Babylon.js FlowGraph blocks, connections, or contexts. Validation requires a stable cross-model graph adapter and block registry design.";
+
+export enum FlowGraphValidationSeverity {
+    Error = 0,
+    Warning = 1,
+}
+
+export interface IFlowGraphValidationIssue {
+    severity: FlowGraphValidationSeverity;
+    message: string;
+    block?: unknown;
+    connectionName?: string;
+}
+
+export interface IFlowGraphValidationResult {
+    isValid: boolean;
+    issues: IFlowGraphValidationIssue[];
+    errorCount: number;
+    warningCount: number;
+    issuesByBlock: Map<string, IFlowGraphValidationIssue[]>;
+}
+
+export function ValidateFlowGraph(_flowGraph: unknown): IFlowGraphValidationResult {
+    return unsupported("ValidateFlowGraph", FLOW_GRAPH_UNSUPPORTED);
+}
+
+export function ValidateFlowGraphWithBlockList(_flowGraph: unknown, _allKnownBlocks: unknown[]): IFlowGraphValidationResult {
+    return unsupported("ValidateFlowGraphWithBlockList", FLOW_GRAPH_UNSUPPORTED);
+}
+
+// ─── Math / image processing ─────────────────────────────────────────
+export const MinTemperatureKelvin = 1e6 / 600;
+export const MaxTintMagnitude = 150;
+
+export function TemperatureTintToXyz(_temperatureKelvin: number, _tint: number): Vector3 {
+    return unsupported("TemperatureTintToXyz", WHITE_BALANCE_UNSUPPORTED);
+}
+
+export function GetWhiteBalanceMatrix(_temperatureKelvin: number, _tint: number): Float32Array | number[] {
+    return unsupported("GetWhiteBalanceMatrix", WHITE_BALANCE_UNSUPPORTED);
+}
+
+// ─── Fluid rendering ─────────────────────────────────────────────────
+export abstract class FluidRenderingObject {
+    public static UsePerParticleSizeAttribute = false;
+
+    protected constructor(_scene: Scene, _shaderLanguage?: ShaderLanguage) {
+        unsupported("FluidRenderingObject", FLUID_RENDERER_UNSUPPORTED);
+    }
+}
+
+export class FluidRenderingObjectParticleSystem extends FluidRenderingObject {
+    public constructor(scene: Scene, _particleSystem: unknown, shaderLanguage?: ShaderLanguage) {
+        super(scene, shaderLanguage);
+    }
+}
+
+export class FluidRenderingObjectCustomParticles extends FluidRenderingObject {
+    public constructor(scene: Scene, _buffers: Record<string, ArrayLike<number>>, _numParticles: number, shaderLanguage?: ShaderLanguage) {
+        super(scene, shaderLanguage);
+    }
+}
+
+export class FluidRenderingTargetRenderer {
+    public constructor(_scene: Scene, _camera?: Camera, _shaderLanguage?: ShaderLanguage) {
+        unsupported("FluidRenderingTargetRenderer", FLUID_RENDERER_UNSUPPORTED);
+    }
+}
+
+export class FluidRenderer {
+    public constructor(_scene: Scene) {
+        unsupported("FluidRenderer", FLUID_RENDERER_UNSUPPORTED);
+    }
+}
+
+export class FluidRendererSceneComponent {
+    public constructor(_scene: Scene) {
+        unsupported("FluidRendererSceneComponent", FLUID_RENDERER_UNSUPPORTED);
+    }
+}
+
+export function RegisterFluidRenderer(): void {
+    unsupported("RegisterFluidRenderer", FLUID_RENDERER_UNSUPPORTED);
+}
 
 // ─── Materials ───────────────────────────────────────────────────────
 export class MultiMaterial {
     public constructor() {
         unsupported("MultiMaterial", "Babylon Lite uses one material per renderable. Split the mesh geometry by material into separate meshes instead.");
+    }
+}
+
+export type DitheredTileFadeSupportedMaterial = StandardMaterial | PBRMaterial;
+export type DitheredTileFadeMesh = Mesh | InstancedMesh;
+
+export interface IDitheredTileFadeBounds {
+    lowerBound: number;
+    upperBound: number;
+}
+
+export class DitheredTileFadeMaterialPlugin extends MaterialPluginBase {
+    public static readonly Name = "DitheredTileFade";
+
+    /** @internal The unsupported constructor must not alter the material or scene. */
+    protected override get _attachToLite(): boolean {
+        return false;
+    }
+
+    public constructor(material: DitheredTileFadeSupportedMaterial) {
+        super(material, DitheredTileFadeMaterialPlugin.Name, 190);
+        unsupported("DitheredTileFadeMaterialPlugin", DITHERED_TILE_FADE_UNSUPPORTED);
+    }
+
+    public static GetOrCreate(_material: DitheredTileFadeSupportedMaterial): DitheredTileFadeMaterialPlugin {
+        return unsupported("DitheredTileFadeMaterialPlugin.GetOrCreate", DITHERED_TILE_FADE_UNSUPPORTED);
+    }
+
+    public get isEnabled(): boolean {
+        return unsupported("DitheredTileFadeMaterialPlugin.isEnabled", DITHERED_TILE_FADE_UNSUPPORTED);
+    }
+
+    public set isEnabled(_value: boolean) {
+        unsupported("DitheredTileFadeMaterialPlugin.isEnabled", DITHERED_TILE_FADE_UNSUPPORTED);
+    }
+
+    public setFadeBounds(_mesh: DitheredTileFadeMesh, _lowerBound: number, _upperBound: number): void {
+        unsupported("DitheredTileFadeMaterialPlugin.setFadeBounds", DITHERED_TILE_FADE_UNSUPPORTED);
+    }
+
+    public setFadeLowerBound(_mesh: DitheredTileFadeMesh, _lowerBound: number): void {
+        unsupported("DitheredTileFadeMaterialPlugin.setFadeLowerBound", DITHERED_TILE_FADE_UNSUPPORTED);
+    }
+
+    public setFadeUpperBound(_mesh: DitheredTileFadeMesh, _upperBound: number): void {
+        unsupported("DitheredTileFadeMaterialPlugin.setFadeUpperBound", DITHERED_TILE_FADE_UNSUPPORTED);
+    }
+
+    public getFadeBoundsToRef(_mesh: DitheredTileFadeMesh, _result: IDitheredTileFadeBounds): boolean {
+        return unsupported("DitheredTileFadeMaterialPlugin.getFadeBoundsToRef", DITHERED_TILE_FADE_UNSUPPORTED);
+    }
+
+    public resetFade(_mesh: DitheredTileFadeMesh): void {
+        unsupported("DitheredTileFadeMaterialPlugin.resetFade", DITHERED_TILE_FADE_UNSUPPORTED);
+    }
+
+    public setThinInstanceFadeBounds(_mesh: Mesh, _index: number, _lowerBound: number, _upperBound: number, _refresh = true): void {
+        unsupported("DitheredTileFadeMaterialPlugin.setThinInstanceFadeBounds", DITHERED_TILE_FADE_UNSUPPORTED);
+    }
+
+    public setThinInstanceFadeBoundsBuffer(_mesh: Mesh, _bounds: Float32Array): void {
+        unsupported("DitheredTileFadeMaterialPlugin.setThinInstanceFadeBoundsBuffer", DITHERED_TILE_FADE_UNSUPPORTED);
+    }
+
+    public commitThinInstanceFadeBounds(_mesh: Mesh): void {
+        unsupported("DitheredTileFadeMaterialPlugin.commitThinInstanceFadeBounds", DITHERED_TILE_FADE_UNSUPPORTED);
+    }
+
+    public resetThinInstanceFade(_mesh: Mesh, _index: number, _refresh = true): void {
+        unsupported("DitheredTileFadeMaterialPlugin.resetThinInstanceFade", DITHERED_TILE_FADE_UNSUPPORTED);
+    }
+
+    public reset(): void {
+        unsupported("DitheredTileFadeMaterialPlugin.reset", DITHERED_TILE_FADE_UNSUPPORTED);
+    }
+
+    public copyToMaterial(_material: DitheredTileFadeSupportedMaterial): DitheredTileFadeMaterialPlugin {
+        return unsupported("DitheredTileFadeMaterialPlugin.copyToMaterial", DITHERED_TILE_FADE_UNSUPPORTED);
+    }
+
+    public getClassName(): string {
+        return "DitheredTileFadeMaterialPlugin";
     }
 }
 
@@ -378,17 +623,10 @@ export class MirrorTexture {
     }
 }
 
-// ─── HTML textures (DOM/CSS overlay interop) ─────────────────────────
-// New in BJS: `Materials/Textures/HTML/*` — uploads a live DOM element into a
-// texture and forwards pointer/raycast interaction onto an overlaid HTML layer.
-// This is a DOM-driven, host-page feature with no Babylon Lite equivalent (Lite
-// is a WebGPU renderer with no HTML overlay / interaction subsystem),
-// so every entry throws.
-
-/** Options accepted by Babylon.js `HtmlTexture` (shape-only stub for type parity). */
-export interface IHtmlTextureOptions {
-    [key: string]: unknown;
-}
+// ─── HTML texture interaction (DOM/CSS overlay interop) ──────────────
+// `HtmlTexture` itself is Lite-backed in textures/textures.ts. These remaining
+// APIs bind arbitrary textures to DOM overlay/raycast and polyfill lifecycles,
+// which Lite's owned HTML-texture surface does not expose.
 
 /** Options accepted by Babylon.js `HtmlInteractionManager` (shape-only stub). */
 export interface IHtmlInteractionManagerOptions {
@@ -410,12 +648,6 @@ export interface IInstallHtmlInCanvasPolyfillOptions {
     [key: string]: unknown;
 }
 
-export class HtmlTexture {
-    public constructor() {
-        unsupported("HtmlTexture", "Rendering a live DOM element into a texture is a host-page/DOM feature with no Babylon Lite equivalent.");
-    }
-}
-
 export class HtmlInteractionManager {
     public constructor() {
         unsupported("HtmlInteractionManager", "HTML overlay interaction is not part of Babylon Lite's WebGPU renderer.");
@@ -428,9 +660,13 @@ export class HtmlRaycastInteractionManager {
     }
 }
 
-/** Babylon.js `IsHtmlInCanvasUploadSupported` — HTML texture upload is unsupported by the compat layer. */
-export function IsHtmlInCanvasUploadSupported(): never {
-    return unsupported("IsHtmlInCanvasUploadSupported", "HTML-element texture upload is not supported by Babylon Lite.");
+/** Babylon.js `IsHtmlInCanvasUploadSupported` — kept in lockstep with the unavailable upload helper. */
+export function IsHtmlInCanvasUploadSupported(engine: AbstractEngine): boolean {
+    void engine;
+    return unsupported(
+        "IsHtmlInCanvasUploadSupported",
+        "Lite's HTML texture owns its element and texture together; it cannot back BJS's arbitrary InternalTexture upload contract."
+    );
 }
 
 /** Babylon.js `UploadHtmlElementToTexture` — HTML texture upload is unsupported by the compat layer. */
@@ -480,6 +716,9 @@ export function UninstallHtmlInCanvasPolyfill(): never {
 
 /** Babylon.js `GaussianSplattingStreamDebugLodSource` — LOD debug source selector (shape-only stub for type parity). */
 export type GaussianSplattingStreamDebugLodSource = "optimal" | "current";
+
+/** Babylon.js finest-LOD splat-count resolution state. */
+export type GaussianSplattingStreamLod0SplatCount = Readonly<{ status: "pending" }> | Readonly<{ status: "available"; count: number }> | Readonly<{ status: "unavailable" }>;
 
 /** Babylon.js `IGaussianSplattingStreamOptions` — GS LOD stream options (shape-only stub for type parity). */
 export interface IGaussianSplattingStreamOptions {

@@ -3,6 +3,7 @@ import type { Material, StencilState } from "../material.js";
 import type { Texture2D } from "../../texture/texture-2d.js";
 import type { StorageBuffer } from "../../resource/storage-buffer.js";
 import type { Mat4 } from "../../math/types.js";
+import type { WgslSource } from "../../shader/wgsl.js";
 import { getShaderGroupBuilder } from "./shader-group-builder.js";
 import { bumpVisibilityEpoch } from "../../engine/engine.js";
 
@@ -32,8 +33,8 @@ export type ShaderDefineMap = Readonly<Record<string, ShaderDefineValue>>;
  *  samplers, defines, and blend/depth state. Passed to `createShaderMaterial()`. */
 export interface ShaderMaterialOptions {
     readonly name?: string;
-    readonly vertexSource: string;
-    readonly fragmentSource: string;
+    readonly vertexSource: WgslSource;
+    readonly fragmentSource: WgslSource;
     readonly attributes: readonly ShaderAttributeName[];
     readonly uniforms?: readonly ShaderUniformOption[];
     readonly samplers?: readonly ShaderSamplerOption[];
@@ -137,8 +138,8 @@ export interface ShaderStorageBufferSlot {
  *  via `setShaderUniform()` / `setShaderTexture()` and friends. */
 export interface ShaderMaterial extends Material {
     readonly name?: string;
-    readonly vertexSource: string;
-    readonly fragmentSource: string;
+    readonly vertexSource: WgslSource;
+    readonly fragmentSource: WgslSource;
     readonly attributes: readonly ShaderAttributeName[];
     readonly uniformDecls: readonly ShaderUniformDecl[];
     readonly samplerDecls: readonly ShaderSamplerDecl[];
@@ -241,6 +242,7 @@ export function createShaderMaterial(options: ShaderMaterialOptions): ShaderMate
     if (!options.vertexSource || !options.fragmentSource) {
         throw new Error("ShaderMaterial: vertexSource and fragmentSource must be non-empty WGSL strings.");
     }
+
     const attributes: ShaderAttributeName[] = [];
     const seenAttributes = new Set<string>();
     for (const attr of options.attributes) {
@@ -530,7 +532,7 @@ export function setShaderVector3(material: ShaderMaterial, name: string, value: 
 
 /** Set a declared `mat4x4<f32>` uniform. Convenience wrapper over `setShaderUniform()`.
  *  Accepts a raw `Float32Array` or the engine's branded `Mat4` (e.g. the result of
- *  `getViewProjectionMatrix()` / `mat4Invert()`), so camera/math matrices can be fed
+ *  `getViewProjectionMatrix()` / `invertMat4()`), so camera/math matrices can be fed
  *  straight into a matrix uniform without laundering through a typed array. */
 export function setShaderMatrix(material: ShaderMaterial, name: string, value: Float32Array | Mat4): void {
     setUniformValue(material, name, value);

@@ -37,7 +37,7 @@ export function setParent(child: SceneNode, parent: IWorldMatrixProvider | null)
 ```
 
 `setParent` snapshots the child's world matrix, sets `child.parent`, then writes back the
-local TRS (via `mat4Decompose`, so the rotation is a quaternion — no lossy Euler round-trip).
+local TRS (via `decomposeMat4`, so the rotation is a quaternion — no lossy Euler round-trip).
 It also keeps the scene-graph `children` arrays in sync: the child is removed from its old
 parent's `children` and appended to the new parent's, so traversal helpers (`setMeshVisible`
 cascade, cloning, camera bounds) see the new hierarchy. Setting `child.parent` directly drives
@@ -45,7 +45,7 @@ the transform math but does **not** touch `children` — push manually if you ne
 
 **Mirrored children are preserved.** The glTF loader's synthetic `__root__` carries the RH→LH
 handedness flip as `scaling = (-1, 1, 1)`, so its local transform has a negative determinant.
-`mat4Decompose` keeps that reflection (folded onto a negative Y scale, as Babylon.js does), so
+`decomposeMat4` keeps that reflection (folded onto a negative Y scale, as Babylon.js does), so
 reparenting a loaded model under a user-created transform node renders identically to before.
 
 **Matrix-backed nodes are reparented too.** A node created with `createSceneNodeFromMatrix` (used
@@ -56,7 +56,7 @@ reproduces exactly the matrix it replaces, so the node does not move beyond the 
 
 **Parent links come from `addToScene`.** The glTF loader fills `children` arrays but leaves `parent`
 unset; `addToScene` walks the tree and assigns it. `setParent` needs the real parent chain to read a
-node's world transform, so reparent a *nested* loaded node only after its container has been added.
+node's world transform, so reparent a _nested_ loaded node only after its container has been added.
 Reparenting the container's own root beforehand is fine — its parent is null either way.
 
 ### TransformNode (`scene/transform-node.ts`)
@@ -102,14 +102,18 @@ Camera `worldMatrix` is the camera-to-world transform (inverse of view matrix).
 
 ### Lights
 
-`LightBase` extends `IWorldMatrixProvider, IParentable`. All 4 light types
-(point, directional, spot, hemispheric) use `createWorldMatrixState` with
-push-based dirty tracking via `ObservableVec3`.
+`LightBase` extends `SceneNode`. All 4 light types (point, directional, spot,
+hemispheric) therefore expose the standard position, quaternion/Euler rotation,
+scaling, parent, children, and world-matrix state. Setting a light's local `direction`
+updates its lighting data, while direct SceneNode rotation writes orient that local
+direction through the world matrix. `setParent` uses the same path for lights and every other SceneNode,
+including normal child-array traversal. Light UBO and shadow consumers read the world
+matrix, so ancestor motion and scaling affect both paths consistently.
 
 UBO writers read world-space values from `worldMatrix` columns:
 
 - Position = column 3: `[w[12], w[13], w[14]]`
-- Direction = column 2: `[w[8], w[9], w[10]]`
+- Direction = normalized `worldMatrix * localDirection` (with `w = 0`)
 
 ---
 
@@ -126,7 +130,7 @@ Each entity provides a `getLocalMatrix()` closure. The helper handles:
 
 - Version tracking (`_localVersion`, `_worldVersion`, `_lastParentVersion`)
 - Parent chain validation (recursive `parent.worldMatrix` call)
-- Caching with `mat4MultiplyInto` for GC-free buffer reuse
+- Caching with `multiplyMat4IntoBuffer` for GC-free buffer reuse
 
 ### Push-Based Dirty Tracking
 
@@ -156,7 +160,7 @@ function localMatrixFromDirection(dx, dy, dz, px?, py?, pz?): Mat4;
 
 Builds an orthonormal basis from a direction vector. Column 2 = forward (normalized direction).
 Used by directional, spot, and hemispheric lights. Inlines `Float32Array(16)` to avoid
-importing `mat4Identity`.
+importing `createIdentityMat4`.
 
 ---
 
@@ -171,7 +175,7 @@ get worldMatrix():
 
     local = getLocalMatrix()
     if parent:
-        cached = mat4Multiply(parent.worldMatrix, local)  // mat4MultiplyInto if cached exists
+        cached = multiplyMat4(parent.worldMatrix, local)  // multiplyMat4IntoBuffer if cached exists
     else:
         cached = local
 

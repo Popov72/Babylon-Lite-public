@@ -13,6 +13,7 @@
 // buffer.
 
 import {
+    addMeshToTask,
     addTask,
     addTaskAfter,
     addTaskBefore,
@@ -161,6 +162,7 @@ import {
     updateFluidSceneSdfTransforms,
 } from "babylon-lite";
 import type { FluidEmitter, FluidFlowConfig, FluidSceneSdf, FluidShape, FluidSimulationSemantics, FluidSink, ForceFieldSpec, Mat4 } from "babylon-lite";
+import { wgsl } from "babylon-lite/shader/wgsl.js";
 import type {
     BlenderFluidCollision,
     BlenderFluidInitialState,
@@ -1164,8 +1166,9 @@ async function main(): Promise<void> {
             targetTexture: bloomA,
             _shader: {
                 extraTextures: [sceneColorRT],
-                extraTextureWGSL: "@group(0) @binding(2) var bloomBackground:texture_2d<f32>;",
-                uniformWGSL: "struct P{threshold:f32,fluidEps:f32,p0:f32,p1:f32}\n@group(0) @binding(3) var<uniform> bloomExtractParams:P;",
+                extraTextureWGSL: wgsl`@group(0) @binding(2) var bloomBackground:texture_2d<f32>;`,
+                uniformWGSL: wgsl`struct P{threshold:f32,fluidEps:f32,p0:f32,p1:f32}
+@group(0) @binding(3) var<uniform> bloomExtractParams:P;`,
                 uniformBinding: 3,
                 uniformByteLength: 16,
                 writeUniforms(data) {
@@ -1177,7 +1180,7 @@ async function main(): Promise<void> {
                 // Gate the usual luminance threshold on the fluid mask. Thresholding the
                 // DIFFERENCE itself would be wrong: white water over a bright sky has a small
                 // difference and would stop blooming exactly where it is brightest.
-                fragmentWGSL: `fn applyPostProcess(color:vec4f, uv:vec2f)->vec4f{
+                fragmentWGSL: wgsl`fn applyPostProcess(color:vec4f, uv:vec2f)->vec4f{
 let bg=textureSampleLevel(bloomBackground,sourceSampler,clamp(uv,vec2f(0),vec2f(1)),0).rgb;
 let d=abs(color.rgb-bg);
 let isFluid=step(bloomExtractParams.fluidEps,max(d.r,max(d.g,d.b)));
@@ -1205,9 +1208,10 @@ return vec4f(isFluid*step(bloomExtractParams.threshold,luma)*color.rgb,color.a);
             targetTexture: engine.scRT,
             _shader: {
                 extraTextures: [bloomC],
-                extraTextureWGSL: "@group(0) @binding(2) var bloomBlur:texture_2d<f32>;",
-                vertexMainWGSL: "out.uv.x=mix(out.uv.x,1.0-out.uv.x,bloomMergeParams.mirrorX);",
-                uniformWGSL: "struct M{weight:f32,mirrorX:f32,p1:f32,p2:f32}\n@group(0) @binding(3) var<uniform> bloomMergeParams:M;",
+                extraTextureWGSL: wgsl`@group(0) @binding(2) var bloomBlur:texture_2d<f32>;`,
+                vertexMainWGSL: wgsl`out.uv.x=mix(out.uv.x,1.0-out.uv.x,bloomMergeParams.mirrorX);`,
+                uniformWGSL: wgsl`struct M{weight:f32,mirrorX:f32,p1:f32,p2:f32}
+@group(0) @binding(3) var<uniform> bloomMergeParams:M;`,
                 uniformBinding: 3,
                 uniformByteLength: 16,
                 writeUniforms(data) {
@@ -1216,7 +1220,7 @@ return vec4f(isFluid*step(bloomExtractParams.threshold,luma)*color.rgb,color.a);
                     data[0] = bloomEnabled ? bloomParams.intensity : 0;
                     data[1] = cameraMirrorX ? 1 : 0;
                 },
-                fragmentWGSL: `fn applyPostProcess(color:vec4f, uv:vec2f)->vec4f{
+                fragmentWGSL: wgsl`fn applyPostProcess(color:vec4f, uv:vec2f)->vec4f{
 let b=textureSampleLevel(bloomBlur,sourceSampler,clamp(uv,vec2f(0),vec2f(1)),0).rgb;
 return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             },
@@ -4305,7 +4309,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     setMeshVisible(gridBoundsWireframe, false);
     const gridBoundsSolid = createSolidGridBounds(engine, "fluid-grid-bounds-solid");
     for (const face of gridBoundsSolid) {
-        overlayTask.addMesh(face);
+        addMeshToTask(overlayTask, face);
         setMeshVisible(face, false);
     }
     const syncGridBoundsWireframe = (): void => {
@@ -5824,7 +5828,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     for (const d of demos) {
         for (const m of d.containerMeshes?.() ?? []) {
             overlayMeshes.push(m);
-            overlayTask.addMesh(m);
+            addMeshToTask(overlayTask, m);
         }
     }
 

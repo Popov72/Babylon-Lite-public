@@ -40,6 +40,7 @@ export { AbstractEngine, ThinEngine, WebGPUEngine, Engine, NullEngine } from "./
 export { Node } from "./node/node.js";
 export { AbstractScene } from "./scene/abstract-scene.js";
 export { Scene } from "./scene/scene.js";
+export { PointerEventTypes, PointerInfo } from "./events/pointer-events.js";
 
 // ─── Cameras ─────────────────────────────────────────────────────────
 export {
@@ -99,7 +100,8 @@ export {
 } from "./materials/materials.js";
 
 // ─── Textures ────────────────────────────────────────────────────────
-export { BaseTexture, Texture, RawTexture, RawTexture3D, DynamicTexture, CubeTexture, HDRCubeTexture, RenderTargetTexture } from "./textures/textures.js";
+export { BaseTexture, Texture, RawTexture, RawTexture3D, DynamicTexture, HtmlTexture, CubeTexture, HDRCubeTexture, RenderTargetTexture } from "./textures/textures.js";
+export type { IHtmlTextureOptions } from "./textures/textures.js";
 export {
     RawTexture2DArray,
     UploadImageToTexture2DArrayLayer,
@@ -110,7 +112,7 @@ export {
 export type { IUploadImageToTexture2DArrayLayerOptions, ICreateTexture2DArrayFromImageUrlsOptions, ICreateTexture2DArrayFromKTX2Options } from "./textures/raw-texture-2d-array.js";
 
 // ─── Loading ─────────────────────────────────────────────────────────
-export { SceneLoader, AssetContainer, ImportMeshAsync, AppendSceneAsync, LoadAssetContainerAsync } from "./loading/scene-loader.js";
+export { SceneLoader, AssetContainer, ImportMeshAsync, AppendSceneAsync, LoadAssetContainerAsync, registerBuiltInLoaders } from "./loading/scene-loader.js";
 export type { ISceneLoaderProgressEvent, ISceneLoaderOptions, ImportMeshOptions, AppendOptions, LoadAssetContainerOptions } from "./loading/scene-loader.js";
 export { AssetsManager, AbstractAssetTask, CustomAssetTask } from "./loading/assets-manager.js";
 export { KHR_materials_variants } from "./loading/material-variants.js";
@@ -134,6 +136,7 @@ export {
     PlaneDragGizmo,
     AxisScaleGizmo,
 } from "./gizmos/gizmos.js";
+export type { DragEvent, DragStartEndEvent } from "./gizmos/gizmos.js";
 
 // ─── Behaviors ───────────────────────────────────────────────────────
 export { AutoRotationBehavior, BouncingBehavior, FramingBehavior } from "./behaviors/behaviors.js";
@@ -173,7 +176,16 @@ export { Observable } from "./misc/observable.js";
 export { Tools } from "./misc/tools.js";
 export { RandomGUID, GUID } from "./misc/guid.js";
 export { SmartArray, StringDictionary, Tags, PerformanceMonitor, FactorGradient, ColorGradient, Logger, PrecisionDate } from "./misc/misc-utils.js";
-export { ScenePerformancePriority, ShaderLanguage, ImageProcessingConfiguration, Constants } from "./misc/engine-constants.js";
+export {
+    ScenePerformancePriority,
+    ShaderLanguage,
+    ImageProcessingConfiguration,
+    Constants,
+    RegisterImageProcessingConfiguration,
+    RegisterAbstractEngineTextureLoaders,
+    RegisterEnginesExtensionsEngineTexture2DArrayImageSource,
+    RegisterEnginesWebGPUExtensionsEngineTexture2DArrayImageSource,
+} from "./misc/engine-constants.js";
 
 // ─── Actions ─────────────────────────────────────────────────────────
 export {
@@ -281,7 +293,6 @@ export {
     EdgesRenderer,
     OutlineRenderer,
     MirrorTexture,
-    HtmlTexture,
     HtmlInteractionManager,
     HtmlRaycastInteractionManager,
     IsHtmlInCanvasUploadSupported,
@@ -307,18 +318,50 @@ export {
     InterpolatingBehavior,
     GeospatialClippingBehavior,
     SceneSerializer,
+    MinTemperatureKelvin,
+    MaxTintMagnitude,
+    TemperatureTintToXyz,
+    GetWhiteBalanceMatrix,
+    FluidRenderingObject,
+    FluidRenderingObjectParticleSystem,
+    FluidRenderingObjectCustomParticles,
+    FluidRenderingTargetRenderer,
+    FluidRenderer,
+    FluidRendererSceneComponent,
+    RegisterFluidRenderer,
+    USDFileLoader,
+    RegisterUSDFileLoader,
+    DitheredTileFadeMaterialPlugin,
+    FlowGraphValidationSeverity,
+    ValidateFlowGraph,
+    ValidateFlowGraphWithBlockList,
 } from "./unsupported/unsupported-apis.js";
+export { MaterialPluginBase, MaterialPluginManager } from "./materials/material-plugin.js";
+export type { MaterialPluginDefines, MaterialPluginCustomCode } from "./materials/material-plugin.js";
 export * as GLTF2 from "./loading/gltf2.js";
+export * as GLTF1 from "./loading/gltf1.js";
 export type {
-    IHtmlTextureOptions,
     IHtmlInteractionManagerOptions,
     IHtmlRaycastInteractionManagerOptions,
     IHtmlInCanvasPolyfillModule,
     IInstallHtmlInCanvasPolyfillOptions,
     GaussianSplattingStreamDebugLodSource,
+    GaussianSplattingStreamLod0SplatCount,
     IGaussianSplattingStreamOptions,
     ISOGLODMetadata,
     IGaussianSplattingStreamingPart,
+    USDBinaryInput,
+    USDVirtualFiles,
+    USDLoadProgress,
+    USDImportTimings,
+    USDImportStatistics,
+    USDImportDiagnostics,
+    USDFileLoaderOptions,
+    DitheredTileFadeSupportedMaterial,
+    DitheredTileFadeMesh,
+    IDitheredTileFadeBounds,
+    IFlowGraphValidationIssue,
+    IFlowGraphValidationResult,
 } from "./unsupported/unsupported-apis.js";
 export {
     ReflectionProbe,
@@ -349,11 +392,25 @@ export {
     OBJFileLoader,
     STLFileLoader,
     FBXFileLoader,
+    FBXFileLoaderMetadata,
+    FBXConstraintBehavior,
+    FBXConstraintSolver,
     BVHFileLoader,
     SpriteMap,
     SpritePackedManager,
     VirtualJoystick,
     SceneOptimizer,
+} from "./unsupported/unsupported-extended.js";
+export type {
+    GeometryRenderingObjectIdProvider,
+    FBXNormalMapCoordinateSystem,
+    FBXLoaderWarning,
+    FBXFileLoaderOptions,
+    FBXConstraintType,
+    FBXConstraintTarget,
+    FBXConstraintData,
+    FBXConstraintBehaviorTarget,
+    FBXConstraintBehaviorOptions,
 } from "./unsupported/unsupported-extended.js";
 export { Skeleton, Bone } from "./bones/skeleton.js";
 
@@ -380,6 +437,8 @@ export {
     SpringConstraint,
     PhysicsCharacterController,
     CharacterSupportedState,
+    CastingResult,
+    PhysicsRaycastResult,
 } from "./physics/physics.js";
 export type {
     PhysicsAggregateParameters,
@@ -388,6 +447,7 @@ export type {
     CharacterShapeOptions,
     CharacterSurfaceInfo,
     ICharacterControllerCollisionEvent,
+    IRaycastQuery,
     PhysicsConstraintParameters,
 } from "./physics/physics.js";
 

@@ -17,6 +17,7 @@
 // each clipping inside its own front to reveal the one water render beneath.
 
 import {
+    addMeshToTask,
     addAnimationGroups,
     addTask,
     addToScene,
@@ -111,6 +112,7 @@ import type {
     Renderable,
     SceneNode,
 } from "babylon-lite";
+import { wgsl } from "babylon-lite/shader/wgsl.js";
 import HavokPhysics from "@babylonjs/havok";
 import { createLiquefyPlugin } from "./liquefy-plugin.js";
 import { buildLitParticleColors } from "./particle-lit-colors.js";
@@ -2092,9 +2094,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     initializeCollisionDebugOverlay = (): void => {
         const material = createShaderMaterial({
             name: "aquanova-fluid-collision-debug",
-            vertexSource:
-                "struct VertexOutput{@builtin(position) position:vec4<f32>};@vertex fn mainVertex(input:VertexInput)->VertexOutput{var out:VertexOutput;out.position=shaderSystem.viewProjection*(shaderSystem.world*vec4<f32>(input.position,1.0));return out;}",
-            fragmentSource: "@fragment fn mainFragment()->@location(0) vec4<f32>{return vec4<f32>(0.1,0.9,1.0,0.08);}",
+            vertexSource: wgsl`struct VertexOutput{@builtin(position) position:vec4<f32>};@vertex fn mainVertex(input:VertexInput)->VertexOutput{var out:VertexOutput;out.position=shaderSystem.viewProjection*(shaderSystem.world*vec4<f32>(input.position,1.0));return out;}`,
+            fragmentSource: wgsl`@fragment fn mainFragment()->@location(0) vec4<f32>{return vec4<f32>(0.1,0.9,1.0,0.08);}`,
             attributes: ["position"],
             uniforms: ["world", "viewProjection"],
             needAlphaBlending: true,
@@ -3593,7 +3594,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     addToScene(scene, gridBoundsWireframe);
     const gridBoundsSolid = createSolidGridBounds(engine, "aquanova-fluid-sim-grid-bounds-solid");
     for (const face of gridBoundsSolid) {
-        foeTask.addMesh(face);
+        addMeshToTask(foeTask, face);
         setMeshVisible(face, false);
     }
 
@@ -5698,7 +5699,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     // task-local visibility gating decides which dissolving meshes draw on a given frame.
     for (const instance of instances) {
         for (const mesh of instance.meshes) {
-            foeTask.addMesh(mesh);
+            addMeshToTask(foeTask, mesh);
         }
     }
     invalidatePhaseTaskBundles();

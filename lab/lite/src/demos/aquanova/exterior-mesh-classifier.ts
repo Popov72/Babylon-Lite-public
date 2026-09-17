@@ -1,4 +1,5 @@
 import {
+    addMeshToTask,
     addTaskAfter,
     addTaskAtStart,
     addToScene,
@@ -185,7 +186,7 @@ export function createExteriorMeshClassifier(options: ExteriorMeshClassifierOpti
         material.emissiveColor = idColor(id);
         material.specularColor = [0, 0, 0];
         material.alpha = 1;
-        renderTask.addMesh(mesh, { material });
+        addMeshToTask(renderTask, mesh, { material });
     }
 
     const bytesPerRow = Math.ceil((SIZE * 4) / 256) * 256;

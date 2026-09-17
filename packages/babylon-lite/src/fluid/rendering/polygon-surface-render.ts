@@ -3,7 +3,7 @@ import type { Camera } from "../../camera/camera.js";
 import type { EngineContext } from "../../engine/engine.js";
 import type { RenderTarget } from "../../engine/render-target.js";
 import { buildRenderTarget } from "../../engine/render-target.js";
-import { mat4Invert } from "../../math/mat4-invert.js";
+import { invertMat4 as mat4Invert } from "../../math/invert-mat4.js";
 import { packMat4IntoF32 } from "../../math/pack-mat4-into-f32.js";
 import type { SceneContext } from "../../scene/scene-core.js";
 import type { Task } from "../../frame-graph/task.js";

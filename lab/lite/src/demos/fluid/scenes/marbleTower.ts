@@ -23,6 +23,7 @@ import {
 } from "babylon-lite";
 import type { FluidEmitter, FluidFlowConfig, FluidWheelTorqueQuery, Mesh, SceneNode, SceneSdfSpec } from "babylon-lite";
 import { createPlane, createMeshFromData } from "babylon-lite";
+import { wgsl } from "babylon-lite/shader/wgsl.js";
 import { createShaderMaterial, setShaderTexture } from "babylon-lite";
 import type { ShaderMaterial } from "babylon-lite";
 import { createTexture2DFromPixels, updateTexture2DFromPixels } from "babylon-lite";
@@ -926,9 +927,9 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     // depth write, double-sided, reverse-Z compare (this engine renders reverse-Z, so the opaque
     // tower still occludes the plane). System uniforms feed world + viewProjection; the declared
     // `sliceTex` sampler is read as textureSample(sliceTex, sliceTexSampler, uv).
-    const SLICE_VS = `struct VertexOutput{@builtin(position) position:vec4<f32>,@location(0) uv:vec2<f32>,};
+    const SLICE_VS = wgsl`struct VertexOutput{@builtin(position) position:vec4<f32>,@location(0) uv:vec2<f32>,};
 @vertex fn mainVertex(input:VertexInput)->VertexOutput{var out:VertexOutput;out.position=shaderSystem.viewProjection*(shaderSystem.world*vec4<f32>(input.position,1.0));out.uv=input.uv;return out;}`;
-    const SLICE_FS = `struct VertexOutput{@builtin(position) position:vec4<f32>,@location(0) uv:vec2<f32>,};
+    const SLICE_FS = wgsl`struct VertexOutput{@builtin(position) position:vec4<f32>,@location(0) uv:vec2<f32>,};
 @fragment fn mainFragment(input:VertexOutput)->@location(0) vec4<f32>{return textureSample(sliceTex,sliceTexSampler,input.uv);}`;
 
     // Create the material + quad EAGERLY, at boot (this factory runs before registerScene). The
@@ -1245,9 +1246,9 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     // to derive the wheel's drive: the UPPER half (perp.y>0) of the annulus [fluxRimInner, fluxRadCap]
     // around the axle through WHEEL_C, axially |x-Cx| ≤ fluxAxHalf. Only MOVING water inside this box
     // spins the wheel — so if the pour lands outside it, the wheel won't turn (this makes that visible).
-    const FLUX_VS = `struct VertexOutput{@builtin(position) position:vec4<f32>,};
+    const FLUX_VS = wgsl`struct VertexOutput{@builtin(position) position:vec4<f32>,};
 @vertex fn mainVertex(input:VertexInput)->VertexOutput{var out:VertexOutput;out.position=shaderSystem.viewProjection*(shaderSystem.world*vec4<f32>(input.position,1.0));return out;}`;
-    const FLUX_FS = `@fragment fn mainFragment()->@location(0) vec4<f32>{return vec4<f32>(0.15,1.0,0.35,0.24);}`;
+    const FLUX_FS = wgsl`@fragment fn mainFragment()->@location(0) vec4<f32>{return vec4<f32>(0.15,1.0,0.35,0.24);}`;
     const fluxMat: ShaderMaterial = createShaderMaterial({
         name: "wheelFluxRegion",
         vertexSource: FLUX_VS,

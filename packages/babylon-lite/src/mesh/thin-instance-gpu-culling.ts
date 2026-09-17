@@ -12,6 +12,7 @@ import { getViewProjectionMatrix } from "../camera/camera.js";
 import type { EngineContext } from "../engine/engine.js";
 import type { RenderTargetSignature } from "../engine/render-target.js";
 import type { DrawUpdateBatch, DrawUpdateContext } from "../render/renderable.js";
+import { enableDrawBatchCollection } from "../render/draw-update-batches.js";
 import type { Mat4 } from "../math/types.js";
 import type { Mesh, MeshGPU } from "./mesh.js";
 import type { ThinInstanceData } from "./thin-instance.js";
@@ -19,6 +20,7 @@ import { syncThinInstanceGpuData } from "./thin-instance-gpu.js";
 import type { ThinInstanceDrawBuffers } from "./thin-instance-gpu.js";
 import { bumpVisibilityEpoch } from "../engine/engine.js";
 import { retireGpuResources } from "../engine/gpu-resource-retirement.js";
+import { wgsl } from "../shader/wgsl.js";
 
 const WORKGROUP_SIZE = 64;
 const PARAM_BYTES = 192;
@@ -33,7 +35,7 @@ const CAM_POS_DIST_F32_OFFSET = 48;
 const LOD_BAND_F32_OFFSET = 52;
 const INDIRECT_ARGS_BYTES = 20;
 
-const CULL_WGSL_NO_COLOR = /* wgsl */ `
+const CULL_WGSL_NO_COLOR = wgsl`
 struct CullParams{planes:array<vec4<f32>,6>,meshWorld:mat4x4<f32>,localSphere:vec4<f32>,count:u32,boundsPad:f32};
 @group(0)@binding(0)var<storage,read> srcMatrices:array<mat4x4<f32>>;
 @group(0)@binding(1)var<storage,read_write> dstMatrices:array<mat4x4<f32>>;
@@ -61,7 +63,7 @@ let outIndex=atomicAdd(&args[1],1u);
 dstMatrices[outIndex]=srcMatrices[i];
 }`;
 
-const CULL_WGSL_COLOR = `${CULL_WGSL_NO_COLOR}
+const CULL_WGSL_COLOR = wgsl`${CULL_WGSL_NO_COLOR}
 @group(0)@binding(4)var<storage,read> srcColors:array<vec4<f32>>;
 @group(0)@binding(5)var<storage,read_write> dstColors:array<vec4<f32>>;
 @compute @workgroup_size(64)
@@ -79,7 +81,7 @@ dstColors[outIndex]=srcColors[i];
 // distance — near keeps the mesh's own compacted bucket, far fills the partner's bucket. `isNear`
 // dithers the threshold per instance by ±lodBand/2 via a pure hash of the instance index (PCG), so
 // the split is deterministic frame-to-frame with no time or randomness input.
-const CULL_WGSL_LOD_NO_COLOR = /* wgsl */ `
+const CULL_WGSL_LOD_NO_COLOR = wgsl`
 struct CullParams{planes:array<vec4<f32>,6>,meshWorld:mat4x4<f32>,localSphere:vec4<f32>,count:u32,boundsPad:f32,camPosDist:vec4<f32>,lodBand:f32};
 @group(0)@binding(0)var<storage,read> srcMatrices:array<mat4x4<f32>>;
 @group(0)@binding(1)var<storage,read_write> dstMatrices:array<mat4x4<f32>>;
@@ -122,7 +124,7 @@ lodMatrices[outIndex]=srcMatrices[i];
 }
 }`;
 
-const CULL_WGSL_LOD_COLOR = `${CULL_WGSL_LOD_NO_COLOR}
+const CULL_WGSL_LOD_COLOR = wgsl`${CULL_WGSL_LOD_NO_COLOR}
 @group(0)@binding(4)var<storage,read> srcColors:array<vec4<f32>>;
 @group(0)@binding(5)var<storage,read_write> dstColors:array<vec4<f32>>;
 @group(0)@binding(8)var<storage,read_write> lodColors:array<vec4<f32>>;
@@ -231,14 +233,16 @@ let _dispatchBatches: WeakMap<RenderTargetSignature, ComputeDispatchBatch> | nul
 
 /** @internal Return the compute batch associated with one render task. */
 export function getComputeDispatchBatch(signature: RenderTargetSignature): ComputeDispatchBatch {
+    enableDrawBatchCollection(signature);
     _dispatchBatches ??= new WeakMap();
-    let batch = _dispatchBatches.get(signature);
-    if (batch) {
-        return batch;
+    const cached = _dispatchBatches.get(signature);
+    if (cached && !cached._retired) {
+        return cached;
     }
     const dispatches: ComputeDispatch[] = [];
     let count = 0;
-    batch = {
+    const batch: ComputeDispatchBatch = {
+        _retired: false,
         reset(): void {
             count = 0;
         },
@@ -260,9 +264,12 @@ export function getComputeDispatchBatch(signature: RenderTargetSignature): Compu
             pass.end();
         },
         destroy(): void {
+            batch._retired = true;
             dispatches.length = 0;
             count = 0;
-            _dispatchBatches?.delete(signature);
+            if (_dispatchBatches?.get(signature) === batch) {
+                _dispatchBatches.delete(signature);
+            }
         },
         queue(dispatch): void {
             dispatches[count++] = dispatch;

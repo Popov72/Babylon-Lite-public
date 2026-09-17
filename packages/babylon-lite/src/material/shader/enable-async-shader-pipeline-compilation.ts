@@ -1,8 +1,9 @@
 import type { EngineContext } from "../../engine/engine.js";
 import type { RenderTarget, RenderTargetSignature } from "../../engine/render-target.js";
-import { targetSignatureKey } from "../../engine/render-target.js";
+import { targetSignatureKey } from "../../engine/render-target-signature.js";
 import type { RenderTask } from "../../frame-graph/render-task.js";
-import { _resolvePendingMeshes } from "../../frame-graph/render-task.js";
+import type { RenderTaskBase } from "../../frame-graph/render-task-base.js";
+import { prepareTaskRenderables } from "../../frame-graph/render-task-transaction.js";
 import type { Renderable } from "../../render/renderable.js";
 import { _getShadowTaskCasterMeshes } from "../../frame-graph/shadow-inputs.js";
 import type { SceneContext } from "../../scene/scene-core.js";
@@ -11,6 +12,7 @@ import { retargetShaderPipelineCache } from "./shader-pipeline-cache.js";
 import { _resolveShaderPipelineVariantKey, getOrCreateShaderPipeline, getOrCreateShaderPipelineBindings, type ShaderPipelineBindings } from "./shader-pipeline.js";
 import type { ShaderMaterial } from "./shader-material.js";
 import { _installAsyncShaderPipelineRegistrar } from "./shader-renderable.js";
+import { wgsl } from "../../shader/wgsl.js";
 
 /** Logical vertex-input layout for a ShaderMaterial pipeline. */
 export type ShaderMaterialPipelineLayout = "mesh" | "thin-instances" | "thin-instances-color";
@@ -22,11 +24,15 @@ interface PrepareRecipe {
 
 let _recipesByEngine: WeakMap<EngineContext, WeakMap<object, PrepareRecipe>> | null = null;
 
-function isRenderTask(value: unknown): value is RenderTask {
+function isRenderTask(value: unknown): value is RenderTaskBase {
     if (!value || typeof value !== "object") {
         return false;
     }
     return "_renderables" in value && "_targetSignature" in value;
+}
+
+function isExplicitTask(task: RenderTaskBase): task is RenderTask {
+    return "_pendingMeshes" in task;
 }
 
 function nestedTasks(value: unknown): readonly unknown[] {
@@ -80,46 +86,57 @@ async function prepareScene(engine: EngineContext, scene: SceneContext, recipes:
 
     const seen = new Set<unknown>();
     const preparations: Promise<void>[] = [];
-    while (tasks.length) {
-        const candidate = tasks.pop();
-        if (!candidate || seen.has(candidate)) {
-            continue;
-        }
-        seen.add(candidate);
-        tasks.push(...nestedTasks(candidate));
-        if (!isRenderTask(candidate)) {
-            continue;
-        }
-        _resolvePendingMeshes(candidate, candidate.scene);
-        const renderables = candidate._renderables.length || candidate._config.autoMirror === false ? candidate._renderables : candidate.scene._renderables;
-        const sceneRenderables = renderables === candidate.scene._renderables ? null : new Set(candidate.scene._renderables);
-        for (const renderable of renderables) {
-            const recipe = recipes.get(renderable) ?? (renderable.mesh && (!sceneRenderables || sceneRenderables.has(renderable)) ? recipes.get(renderable.mesh) : undefined);
-            if (recipe) {
-                const bindings = currentBindings(engine, recipe.material);
-                const resolvedLayout = resolveLayout(recipe.material, bindings, recipe.layout);
-                preparations.push(
-                    prepareShaderPipeline(
-                        engine,
-                        candidate._targetSignature,
-                        recipe.material,
-                        bindings,
-                        resolvedLayout.variantKey,
-                        resolvedLayout.vertexBuffers,
-                        resolvedLayout.instanceAttrs
-                    )
-                );
+    const preparationsToDispose: (() => void)[] = [];
+    try {
+        while (tasks.length) {
+            const candidate = tasks.pop();
+            if (!candidate || seen.has(candidate)) {
+                continue;
+            }
+            seen.add(candidate);
+            tasks.push(...nestedTasks(candidate));
+            if (!isRenderTask(candidate)) {
+                continue;
+            }
+            const prepared = isExplicitTask(candidate) ? prepareTaskRenderables(candidate) : undefined;
+            if (prepared) {
+                preparationsToDispose.push(prepared.dispose);
+            }
+            const selected = prepared?.renderables ?? candidate._renderables;
+            const renderables = selected.length || candidate._config.autoMirror === false ? selected : candidate.scene._renderables;
+            const sceneRenderables = renderables === candidate.scene._renderables ? null : new Set(candidate.scene._renderables);
+            for (const renderable of renderables) {
+                const recipe = recipes.get(renderable) ?? (renderable.mesh && (!sceneRenderables || sceneRenderables.has(renderable)) ? recipes.get(renderable.mesh) : undefined);
+                if (recipe) {
+                    const bindings = currentBindings(engine, recipe.material);
+                    const resolvedLayout = resolveLayout(recipe.material, bindings, recipe.layout);
+                    preparations.push(
+                        prepareShaderPipeline(
+                            engine,
+                            candidate._targetSignature,
+                            recipe.material,
+                            bindings,
+                            resolvedLayout.variantKey,
+                            resolvedLayout.vertexBuffers,
+                            resolvedLayout.instanceAttrs
+                        )
+                    );
+                }
             }
         }
-    }
-    const failures = new Set<unknown>();
-    for (const result of await Promise.allSettled(preparations)) {
-        if (result.status === "rejected") {
-            failures.add(result.reason);
+    } finally {
+        const failures = new Set<unknown>();
+        for (const result of await Promise.allSettled(preparations)) {
+            if (result.status === "rejected") {
+                failures.add(result.reason);
+            }
         }
-    }
-    for (const failure of failures) {
-        console.error("Async ShaderMaterial pipeline preparation failed; the synchronous first-bind fallback remains available.", failure);
+        for (const failure of failures) {
+            console.error("Async ShaderMaterial pipeline preparation failed; the synchronous first-bind fallback remains available.", failure);
+        }
+        for (const dispose of preparationsToDispose) {
+            dispose();
+        }
     }
 }
 
@@ -240,7 +257,7 @@ function resolveLayout(
             ],
         },
     ];
-    let instanceAttrs = `@location(${baseLocation}) world0: vec4<f32>,
+    let instanceAttrs = wgsl`@location(${baseLocation}) world0: vec4<f32>,
 @location(${baseLocation + 1}) world1: vec4<f32>,
 @location(${baseLocation + 2}) world2: vec4<f32>,
 @location(${baseLocation + 3}) world3: vec4<f32>,
@@ -251,7 +268,7 @@ function resolveLayout(
             stepMode: "instance",
             attributes: [{ shaderLocation: baseLocation + 4, offset: 0, format: "float32x4" }],
         });
-        instanceAttrs += `@location(${baseLocation + 4}) instanceColor: vec4<f32>,
+        instanceAttrs = wgsl`${instanceAttrs}@location(${baseLocation + 4}) instanceColor: vec4<f32>,
 `;
     }
     return { variantKey: "" + +hasColor, vertexBuffers: [...bindings.vertexBuffers, ...instanceLayouts], instanceAttrs };

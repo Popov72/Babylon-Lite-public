@@ -65,6 +65,113 @@ describe("build/index.d.ts", () => {
         }
     });
 
+    it("requires at least one source for separate-file KTX2 arrays", () => {
+        const probePath = resolve(BUILD_DIR, "ktx2-array-sources.probe.ts");
+        try {
+            writeFileSync(
+                probePath,
+                `import {
+    loadKtx2Texture2DArrayFromUrls,
+    uploadKtx2Texture2DArrayFromBuffers,
+    type EngineContext,
+} from "./index.js";
+declare const engine: EngineContext;
+declare const buffer: ArrayBuffer;
+uploadKtx2Texture2DArrayFromBuffers(engine, [buffer]);
+loadKtx2Texture2DArrayFromUrls(engine, ["layer.ktx2"]);
+// @ts-expect-error Separate-file KTX2 arrays require at least one buffer.
+uploadKtx2Texture2DArrayFromBuffers(engine, []);
+// @ts-expect-error Separate-file KTX2 arrays require at least one URL.
+loadKtx2Texture2DArrayFromUrls(engine, []);
+`
+            );
+            const result = spawnSync(
+                NODE,
+                [
+                    TSC_JS,
+                    "--ignoreConfig",
+                    "--noEmit",
+                    "--strict",
+                    "--target",
+                    "es2022",
+                    "--module",
+                    "esnext",
+                    "--moduleResolution",
+                    "bundler",
+                    "--lib",
+                    "es2022,dom,dom.iterable",
+                    "--types",
+                    "webxr",
+                    probePath,
+                ],
+                { cwd: PACKAGE_DIR, encoding: "utf-8" }
+            );
+            expect(result.status, `${result.stdout ?? ""}${result.stderr ?? ""}`).toBe(0);
+        } finally {
+            rmSync(probePath, { force: true });
+        }
+    });
+
+    it("exposes standalone task population and opt-in RTT factories", () => {
+        const probePath = resolve(BUILD_DIR, "render-task-opt-in.probe.ts");
+        try {
+            writeFileSync(
+                probePath,
+                `import {
+    createSceneContext, createRenderTask, addMeshToTask, createRenderTargetTexture,
+    createSurfaceRenderTargetTexture, onRenderTargetTextureResize, withSampledDepthTexture,
+    type EngineContext, type Mesh,
+} from "./index.js";
+declare const engine: EngineContext;
+declare const mesh: Mesh;
+const fixed = createRenderTargetTexture(engine, {
+    format: "rgba8unorm", samples: 1, size: { width: 32, height: 32 },
+});
+const fixedDepth = createRenderTargetTexture(engine, {
+    dFormat: "depth32float", samples: 1, size: { width: 32, height: 32 },
+}, withSampledDepthTexture);
+const surface = createSurfaceRenderTargetTexture(engine, {
+    format: "rgba8unorm", dFormat: "depth32float", samples: 1, size: engine,
+}, withSampledDepthTexture);
+const surfaceDepth = createSurfaceRenderTargetTexture(engine, {
+    dFormat: "depth32float", samples: 1, size: engine,
+}, withSampledDepthTexture);
+const task = createRenderTask({ name: "explicit", rt: fixed.rt }, engine, createSceneContext(engine));
+addMeshToTask(task, mesh);
+// @ts-expect-error Task mesh population is a tree-shakable standalone API.
+task.addMesh(mesh);
+onRenderTargetTextureResize(surface, () => {})();
+onRenderTargetTextureResize(surfaceDepth, () => {})();
+fixedDepth.texture satisfies typeof fixedDepth.depthTexture;
+`
+            );
+            const result = spawnSync(
+                NODE,
+                [
+                    TSC_JS,
+                    "--ignoreConfig",
+                    "--noEmit",
+                    "--strict",
+                    "--target",
+                    "es2022",
+                    "--module",
+                    "esnext",
+                    "--moduleResolution",
+                    "bundler",
+                    "--lib",
+                    "es2022,dom,dom.iterable",
+                    "--types",
+                    "webxr",
+                    probePath,
+                ],
+                { cwd: PACKAGE_DIR, encoding: "utf-8" }
+            );
+            expect(result.status, `${result.stdout ?? ""}${result.stderr ?? ""}`).toBe(0);
+        } finally {
+            rmSync(probePath, { force: true });
+        }
+    });
+
     it("type-checks cleanly with no references to internal-only types", () => {
         expect(existsSync(DTS_PATH)).toBe(true);
 
@@ -127,6 +234,128 @@ describe("build/index.d.ts", () => {
         expect(result.status).toBe(0);
     }, 300_000);
 
+    it("supports public enum values with verbatimModuleSyntax", () => {
+        const probePath = resolve(BUILD_DIR, "public-enums-verbatim.probe.ts");
+        try {
+            writeFileSync(
+                probePath,
+                `import {
+    CharacterSupportedState,
+    FgAnimationValueType,
+    FgBlockType,
+    FgEventType,
+    FgType,
+    PhysicsConstraintAxis,
+    PhysicsConstraintType,
+    PhysicsMotionType,
+    PhysicsPrestepType,
+    PhysicsShapeType,
+} from "./index.js";
+
+const publicEnumValues = [
+    CharacterSupportedState.SUPPORTED,
+    FgAnimationValueType.Quaternion,
+    FgBlockType.NoOp,
+    FgEventType.Start,
+    FgType.Number,
+    PhysicsConstraintAxis.LINEAR_X,
+    PhysicsConstraintType.HINGE,
+    PhysicsMotionType.DYNAMIC,
+    PhysicsPrestepType.TELEPORT,
+    PhysicsShapeType.SPHERE,
+] as const;
+void publicEnumValues;
+`
+            );
+
+            const result = spawnSync(
+                NODE,
+                [
+                    TSC_JS,
+                    "--ignoreConfig",
+                    "--noEmit",
+                    "--strict",
+                    "--target",
+                    "es2022",
+                    "--module",
+                    "esnext",
+                    "--moduleResolution",
+                    "bundler",
+                    "--verbatimModuleSyntax",
+                    "true",
+                    "--lib",
+                    "es2022,dom,dom.iterable",
+                    "--types",
+                    "webxr",
+                    probePath,
+                ],
+                {
+                    cwd: PACKAGE_DIR,
+                    encoding: "utf-8",
+                }
+            );
+
+            const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+            expect(result.status, output).toBe(0);
+        } finally {
+            rmSync(probePath, { force: true });
+        }
+    });
+
+    it("accepts public and mutable matrix representations", () => {
+        const probePath = resolve(BUILD_DIR, "public-matrix-types.probe.ts");
+        try {
+            writeFileSync(
+                probePath,
+                `import { createIdentityMat4, setMat4Translation } from "./index.js";
+
+const liteMatrix = createIdentityMat4();
+const float32Matrix = new Float32Array(16);
+const float64Matrix = new Float64Array(16);
+
+const liteResult = setMat4Translation(liteMatrix, 1, 2, 3);
+const float32Result = setMat4Translation(float32Matrix, 1, 2, 3);
+const float64Result = setMat4Translation(float64Matrix, 1, 2, 3);
+
+liteResult satisfies typeof liteMatrix;
+float32Result satisfies Float32Array;
+float64Result satisfies Float64Array;
+`,
+                "utf-8"
+            );
+
+            const result = spawnSync(
+                NODE,
+                [
+                    TSC_JS,
+                    "--ignoreConfig",
+                    "--noEmit",
+                    "--strict",
+                    "--target",
+                    "es2022",
+                    "--module",
+                    "esnext",
+                    "--moduleResolution",
+                    "bundler",
+                    "--lib",
+                    "es2022,dom,dom.iterable",
+                    "--types",
+                    "webxr",
+                    probePath,
+                ],
+                {
+                    cwd: PACKAGE_DIR,
+                    encoding: "utf-8",
+                }
+            );
+
+            const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+            expect(result.status, output).toBe(0);
+        } finally {
+            rmSync(probePath, { force: true });
+        }
+    });
+
     it("does not reference any external (npm) modules", () => {
         expect(existsSync(DTS_PATH)).toBe(true);
 
@@ -153,6 +382,59 @@ describe("build/index.d.ts", () => {
         // consumers never need to install any of our build-time dependencies.
         const external = [...specifiers].filter((s) => !s.startsWith("./") && !s.startsWith("../"));
         expect(external, `build/index.d.ts leaks types from external modules: ${external.join(", ")}`).toEqual([]);
+    });
+
+    it("strips the shader-source brand so consumers can pass plain strings", () => {
+        const dts = readFileSync(DTS_PATH, "utf-8");
+
+        expect(dts).not.toContain("WgslSource");
+        expect(dts).not.toContain("wgslSourceBrand");
+        expect(dts).toContain("readonly vertexSource: string;");
+        expect(dts).toContain("readonly fragmentSource: string;");
+
+        const probePath = resolve(BUILD_DIR, "wgsl-source-types.probe.ts");
+        try {
+            writeFileSync(
+                probePath,
+                `import type { ShaderMaterialOptions } from "./index.js";
+const options: ShaderMaterialOptions = {
+    vertexSource: "plain consumer vertex WGSL",
+    fragmentSource: "plain consumer fragment WGSL",
+    attributes: [],
+};
+void options;
+`,
+                "utf-8"
+            );
+            const result = spawnSync(
+                NODE,
+                [
+                    TSC_JS,
+                    "--ignoreConfig",
+                    "--noEmit",
+                    "--strict",
+                    "--target",
+                    "es2022",
+                    "--module",
+                    "esnext",
+                    "--moduleResolution",
+                    "bundler",
+                    "--lib",
+                    "es2022,dom,dom.iterable",
+                    "--types",
+                    "webxr",
+                    probePath,
+                ],
+                {
+                    cwd: PACKAGE_DIR,
+                    encoding: "utf-8",
+                }
+            );
+            const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+            expect(result.status, output).toBe(0);
+        } finally {
+            rmSync(probePath, { force: true });
+        }
     });
 
     it("exposes only the build-time moving-emitter provider API", () => {
@@ -618,6 +900,25 @@ void [driveWhiteboard, driveLiquefactor, driveAquanova, initial, session];
         } finally {
             rmSync(probePath, { force: true });
         }
+    });
+
+    it("exposes readonly rendering-context introspection without internal registries", () => {
+        const dts = readFileSync(DTS_PATH, "utf-8");
+
+        expect(dts).toMatch(/getRenderingContextKind\(context: RenderingContext(?:_\d+)?\): string/);
+        expect(dts).toMatch(/getRenderingContexts\(surface: SurfaceContext\): readonly RenderingContext(?:_\d+)?\[\]/);
+        expect(dts).not.toMatch(/\btype RenderingContextKind\b/);
+        expect(dts).not.toMatch(/declare interface RenderingContext(?:_\d+)? \{[^}]*\bkind:/s);
+        expect(dts).not.toContain("_renderingContextKind");
+        expect(dts).not.toMatch(/^\s*_renderingContexts:/m);
+        expect(dts).toMatch(/interface SceneContext extends RenderingContext(?:_\d+)? \{[^}]*name\?: string;/s);
+    });
+
+    it("exposes readonly material texture introspection without internal slots", () => {
+        const dts = readFileSync(DTS_PATH, "utf-8");
+
+        expect(dts).toMatch(/getMaterialTextures\(material: Material(?:_\d+)?\): readonly Texture2D(?:_\d+)?\[\]/);
+        expect(dts).not.toMatch(/^\s*_textureSlots:/m);
     });
 
     it("rejects invalid emitter fields while preserving extended provider options", () => {

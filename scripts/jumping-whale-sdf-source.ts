@@ -1,9 +1,9 @@
 import { evaluateSampler } from "../packages/babylon-lite/src/animation/evaluate.js";
 import { INTERP_CUBICSPLINE, INTERP_LINEAR, INTERP_STEP } from "../packages/babylon-lite/src/animation/types.js";
 import type { AnimationSampler, InterpMode } from "../packages/babylon-lite/src/animation/types.js";
-import { mat4Compose } from "../packages/babylon-lite/src/math/mat4-compose.js";
-import { mat4Invert } from "../packages/babylon-lite/src/math/mat4-invert.js";
-import { mat4Multiply } from "../packages/babylon-lite/src/math/mat4-multiply.js";
+import { composeMat4 as mat4Compose } from "../packages/babylon-lite/src/math/compose-mat4.js";
+import { invertMat4 as mat4Invert } from "../packages/babylon-lite/src/math/invert-mat4.js";
+import { multiplyMat4 as mat4Multiply } from "../packages/babylon-lite/src/math/multiply-mat4.js";
 import type { Mat4 } from "../packages/babylon-lite/src/math/types.js";
 
 const COLLISION_MESHES = new Set(["Whale_Body", "Dorsal_Fin", "Pectoral_Fin_L", "Pectoral_Fin_R", "Tail_Flukes"]);

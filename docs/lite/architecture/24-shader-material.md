@@ -22,6 +22,8 @@ The design follows the Lite material contract:
 
 ```typescript
 export function createShaderMaterial(options: ShaderMaterialOptions): ShaderMaterial;
+export function enableShaderMaterialInstanceWorld(material: ShaderMaterial): void;
+export function enableShaderMaterialFinalColor(material: ShaderMaterial): void;
 ```
 
 `createShaderMaterial` is synchronous and accepts already-resolved WGSL source strings.
@@ -116,15 +118,44 @@ per-instance tint while its `_shadowCasterMaterial` uses `{ useThinInstanceColor
 share the mesh's one matrix buffer, while the caster avoids an unused color vertex stream. The override WGSL
 must not reference `input.instanceColor`. The option is ignored for non-instanced meshes.
 
-The user shader composes the instance transform itself (matching Babylon.js `instancesVertex`):
+Call `enableShaderMaterialInstanceWorld(material)` before `registerScene()` to opt one material into a
+generated `getFinalWorld(input: VertexInput)` helper. The helper has one stable signature for both regular
+and thin-instanced meshes:
 
 ```wgsl
-let iw = mat4x4<f32>(input.world0, input.world1, input.world2, input.world3);
-out.position = shaderSystem.viewProjection * (shaderSystem.world * iw) * vec4<f32>(input.position, 1.0);
+let finalWorld = getFinalWorld(input);
+out.position = shaderSystem.viewProjection * finalWorld * vec4<f32>(input.position, 1.0);
 // out.vColor = input.instanceColor;  // when instance colors are present
 ```
 
-The `world` system uniform stays the **mesh** world matrix; for thin instances the effective world is `world * iw`. The baked `worldViewProjection` / `worldView` system uniforms are **not** instance-aware — instanced shaders must use `viewProjection` (+ `world`) and compose with `iw` themselves.
+For a regular mesh, `getFinalWorld` returns `shaderSystem.world`. For a thin-instanced mesh, it returns
+`shaderSystem.world * mat4x4<f32>(input.world0, input.world1, input.world2, input.world3)`. This lets one
+vertex source serve both mesh types without referencing instance-only attributes on the regular-mesh variant.
+The `"world"` system uniform must be present in `ShaderMaterialOptions.uniforms`; the enabler throws otherwise.
+Materials that do not call the enabler retain the original generated prelude and pull in none of the helper WGSL
+or material-tracking implementation.
+
+The `world` system uniform stays the **mesh** world matrix. The baked `worldViewProjection` / `worldView`
+system uniforms are **not** instance-aware — shared regular/instanced shaders must use `viewProjection` and
+`getFinalWorld(input)`.
+
+Call `enableShaderMaterialFinalColor(material)` before `registerScene()` to opt one material into a generated
+`getFinalColor(input: VertexInput)` helper:
+
+```wgsl
+out.vColor = getFinalColor(input);
+```
+
+The generated implementation returns white when the material declares no color attribute and the pipeline has
+no instance-color stream, `input.color` for vertex color only, `input.instanceColor` for instance color only,
+and `input.color * input.instanceColor` when both are present. `input.color` remains the ordinary mesh
+per-vertex attribute requested through `attributes: ["color"]`; `setThinInstanceColors()` supplies the separate
+instance-rate `input.instanceColor`. A declared mesh color attribute whose buffer is absent retains
+ShaderMaterial's existing zero-filled fallback behavior.
+
+Like `getFinalWorld`, the final-color helper is emitted only for materials that opt in. The instance-color
+specialization is selected from the bound vertex-buffer layout rather than from a pipeline-key naming
+convention or by parsing generated WGSL.
 
 Implementation notes (bundle discipline):
 
@@ -254,6 +285,7 @@ Lite prepends a generated prelude before user source:
 4. Texture/sampler declarations for `options.samplers`.
 5. WGSL const declarations for `options.defines`.
 6. `VertexInput` generated from `options.attributes`.
+7. Opt-in `getFinalWorld(input)` and `getFinalColor(input)` helpers, specialized for the active pipeline variant.
 
 User WGSL must not declare:
 
@@ -276,6 +308,8 @@ Generated names intentionally match the names listed in the options where possib
 ```text
 packages/babylon-lite/src/material/shader/
   shader-material.ts       Public types, factory, setters, validation.
+  enable-shader-material-instance-world.ts  Opt-in regular/thin-instance final-world helper.
+  enable-shader-material-final-color.ts  Opt-in effective vertex/instance color helper.
   shader-group-builder.ts  MeshGroupBuilder entry point and lazy renderable import.
   shader-renderable.ts     Per-scene/per-mesh renderables, UBO writes, bind groups.
   shader-pipeline.ts       Generated prelude, BGL creation, pipeline cache.
@@ -380,7 +414,7 @@ Under LWR (`35-large-world-rendering.md`) the frame the system uniforms describe
 Consequences a shader author sees:
 
 - `world`, `worldView` and `worldViewProjection` all carry the camera-relative translation. They derive from one rebased matrix, so they stay in a single frame.
-- `cameraPosition` is `(0, 0, 0)` — in the frame `world` is expressed in, the camera *is* the origin. This keeps the documented `scene.vEyePosition.xyz` equivalence above, which `_packSceneUniforms` already zeroes under FO. An expression like `cameraPosition - worldPos` therefore still yields the correct eye-relative vector, and now at full precision. **This is a breaking change** for any custom shader that read `cameraPosition` as an absolute world-space position while `useFloatingOrigin` was enabled — see the release notes for the migration path.
+- `cameraPosition` is `(0, 0, 0)` — in the frame `world` is expressed in, the camera _is_ the origin. This keeps the documented `scene.vEyePosition.xyz` equivalence above, which `_packSceneUniforms` already zeroes under FO. An expression like `cameraPosition - worldPos` therefore still yields the correct eye-relative vector, and now at full precision. **This is a breaking change** for any custom shader that read `cameraPosition` as an absolute world-space position while `useFloatingOrigin` was enabled — see the release notes for the migration path.
 - Absolute world coordinates are not recoverable from the UBO. A shader that genuinely needs them should take them as a custom uniform.
 
 With floating origin off, every value above is the plain absolute one and the path is copy-free.
@@ -468,11 +502,22 @@ fn mainFragment(input: VertexOutput) -> @location(0) vec4<f32> {
 4. `registerScene` runs deferred builders; `shaderGroupBuilder` dynamically imports `shader-renderable.ts`.
 5. Renderable builder groups meshes by material instance.
 6. For each material, `shader-pipeline.ts` builds a generated prelude, shader module, group-1 BGL, and render pipeline for the active target signature.
-7. For each mesh, the renderable creates a system UBO and group-1 bind group.
+7. For each mesh, the renderable prepares the CPU system-uniform image, uses `createUniformBuffer` to allocate and upload it transactionally, then registers packet cleanup before creating group 1. The allocation label is preserved, and a failed initial upload destroys the unpublished buffer.
 8. Each frame, `DrawBinding.update(context)` refreshes system UBOs when world/camera/target data changes and custom UBOs when `_uboVersion` changes.
 9. Draw binds vertex buffers in material attribute order, sets index buffer, sets group 1, and calls `drawIndexed`.
 10. If `setShaderTexture` changes a texture, the next update recreates group 1 for affected mesh packets and updates acquired/released texture references.
 11. Material swaps use `shaderGroupBuilder._rebuildSingle`, matching Standard/PBR.
+
+Auxiliary rebuilds receive an explicit `MeshRebuildResources` lifetime sink instead of registering
+their packet in scene-owned disposer maps. Storage-buffer allocations remain owned by their
+`StorageBuffer` and engine registration; packets bind the live validated handle but do not maintain
+a second, unread raw-buffer list. Disposing a shader packet releases its system UBO and texture
+leases without disposing caller-owned storage allocations.
+
+Packet ownership is independent of material-override identity: a supplied resource sink owns an
+auxiliary packet; without one, the packet belongs to the scene's main mesh disposer list. Plain
+and thin-instance builders forward the same sink. The override flag only controls material
+identity guards while updating and drawing, not a second scene-owned auxiliary registry.
 
 ## Babylon.js Equivalence Map
 
