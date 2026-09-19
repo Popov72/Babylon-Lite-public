@@ -172,7 +172,7 @@ export interface FluidForceField {
     /** @internal */
     _owners: Set<object>;
     /** @internal Identifies shared force layouts without a module-level registry. */
-    _kind?: "impulse";
+    _kind?: "impulse" | "configured";
 }
 
 export interface FluidSimulationProfilerResults {
@@ -822,6 +822,9 @@ function validateSimulationBindings(engine: EngineContext, options: FluidSimulat
     validateBindingEngine(engine, options.sceneSdf, "scene SDF");
     validateBindingEngine(engine, options.forceField, "force field");
     validateBindingEngine(engine, options.profiler, "profiler");
+    if (options.forceField) {
+        forceFieldBindingOf(options.forceField).validateImplementation?.(options.method, options.backend?.id);
+    }
 }
 
 function normalizeFluidSimulationOptions(options: FluidSimulationOptions): FluidSimulationOptions {
@@ -2547,6 +2550,9 @@ export function setFluidSimulationForceField(simulation: FluidSimulation, forceF
         throw new Error("[fluid] cannot attach force-field state to a disposed resource.");
     }
     validateBindingEngine(engineOf(simulation), forceField, "force field");
+    if (forceField) {
+        forceFieldBindingOf(forceField).validateImplementation?.(simulation.method, simulation.options.backend?.id);
+    }
     backendOf(simulation).setForceField(forceFieldSpecOf(forceField));
     simulation._options.forceField?._owners.delete(simulation);
     simulation._options = { ...simulation._options, forceField };
@@ -2561,7 +2567,9 @@ export function disposeFluidForceField(forceField: FluidForceField): void {
         throw new Error("[fluid] cannot dispose a force field while it is attached to a simulation.");
     }
     forceField._disposed = true;
-    retireGpuResources(forceField._engine as EngineContext, () => forceFieldBindingOf(forceField).dispose());
+    const binding = forceFieldBindingOf(forceField);
+    binding.releaseOwners?.();
+    retireGpuResources(forceField._engine as EngineContext, () => binding.dispose());
 }
 
 export function createFluidSimulationProfiler(engine: EngineContext, options: FluidSimulationProfilerOptions = {}): FluidSimulationProfiler {

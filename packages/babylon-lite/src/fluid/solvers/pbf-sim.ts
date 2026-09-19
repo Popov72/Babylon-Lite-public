@@ -45,6 +45,7 @@
 //   per-iteration gathers). There is no per-cell capacity cap.
 
 import type { EngineContext } from "../../engine/engine.js";
+import { createFluidForcePasses, updateFluidForcePasses, type FluidForcePasses } from "../core/force-field-passes.js";
 import { createFluidTimestepScheduler, getFluidTimestepDiagnostics, resetFluidTimestepScheduler, scheduleFluidTimestep } from "../core/timestep-scheduler.js";
 import type {
     FluidSim,
@@ -1379,16 +1380,7 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
         ],
     });
 
-    // Dedicated external-force pass (setForceField). Built LAZILY on the first
-    // non-null injection and cached by the force WGSL source, so NOTHING force
-    // related is compiled until a force is actually used. `forceSpec` is the enable
-    // flag (null = disabled); `forceBuiltSpec` tracks what the cached pipeline +
-    // bind-group were built for, so re-enabling the same spec is free.
-    const forcePipelineCache = new Map<string, GPUComputePipeline>();
-    let forceSpec: ForceFieldSpec | null = null;
-    let forceBuiltSpec: ForceFieldSpec | null = null;
-    let forcePipeline: GPUComputePipeline | null = null;
-    let forceBG: GPUBindGroup | null = null;
+    let forcePasses: FluidForcePasses | null = null;
     function buildForceBG(pipe: GPUComputePipeline, spec: ForceFieldSpec): GPUBindGroup {
         return device.createBindGroup({
             layout: pipe.getBindGroupLayout(0),
@@ -1947,8 +1939,11 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
                 dispatch(encoder, "fluid-flow-emit", flowEmitPipeline, flowEmitBG, particleGroups);
             }
             encoder.copyBufferToBuffer(flowState.lifecycleBuffer, 0, simBuffer, 15 * 4, 4);
-            if (forceSpec && forcePipeline && forceBG) {
-                dispatch(encoder, "fluid-force", forcePipeline, forceBG, particleGroups);
+            if (forcePasses) {
+                for (let i = 0; i < forcePasses.commands.length; i++) {
+                    const force = forcePasses.commands[i]!;
+                    dispatch(encoder, "fluid-force", force.pipeline, force.bindGroup, particleGroups);
+                }
             }
             dispatch(encoder, "fluid-predict", predictPipeline, predictBG, particleGroups);
             dispatch(encoder, "fluid-clear-grid", clearGridPipeline, clearGridBG, cellGroups);
@@ -2077,18 +2072,11 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
             warmupStep = warmupFrames > 0 ? Math.max(1, Math.ceil(count / warmupFrames)) : count;
         },
         setForceField(spec: ForceFieldSpec | null): void {
-            forceSpec = spec;
-            if (!spec || spec === forceBuiltSpec) {
+            if (!spec && !forcePasses) {
                 return;
             }
-            let pipe = forcePipelineCache.get(spec.wgsl);
-            if (!pipe) {
-                pipe = computePipeline("fluid-force", buildForceWgsl(spec));
-                forcePipelineCache.set(spec.wgsl, pipe);
-            }
-            forcePipeline = pipe;
-            forceBG = buildForceBG(pipe, spec);
-            forceBuiltSpec = spec;
+            forcePasses ??= createFluidForcePasses(buildForceWgsl, (source) => computePipeline("fluid-force", source), buildForceBG);
+            updateFluidForcePasses(forcePasses, spec);
         },
         setFoam(cfg: FoamConfig | null): void {
             if (!cfg) {

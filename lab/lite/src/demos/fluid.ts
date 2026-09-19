@@ -111,6 +111,14 @@ import {
     createFluidSimulationCollection,
     createFluidControlsPanel,
     createFluidFlowEditor,
+    createFluidForceFieldEditor,
+    createFluidConfiguredForceField,
+    updateFluidConfiguredForceField,
+    disposeFluidForceField,
+    fluidForceFieldCapacity,
+    setFluidForceFieldEditorFields,
+    setFluidForceFieldEditorEnabled,
+    validateFluidForceFields,
     createFluidRenderEnvironment,
     createFluidSimulationProfiler,
     createRayForce,
@@ -162,6 +170,7 @@ import {
     updateFluidSceneSdfTransforms,
 } from "babylon-lite";
 import type { FluidEmitter, FluidFlowConfig, FluidSceneSdf, FluidShape, FluidSimulationSemantics, FluidSink, ForceFieldSpec, Mat4 } from "babylon-lite";
+import type { FluidForceFieldDefinition, FluidForceFieldEditor } from "babylon-lite";
 import { wgsl } from "babylon-lite/shader/wgsl.js";
 import type {
     BlenderFluidCollision,
@@ -993,6 +1002,54 @@ async function main(): Promise<void> {
         }
         return handle;
     }
+    let activeForceFields: FluidForceFieldDefinition[] = [];
+    let hasEnabledForceFields = false;
+    let forceEditor: FluidForceFieldEditor | null = null;
+    let installedBaseForce: FluidForceField | null = null;
+    const configuredForces = new Map<FluidForceField | null, FluidForceField>();
+    function installForces(base: FluidForceField | null): void {
+        installedBaseForce = base;
+        let field = base;
+        if (!referenceSelected() && hasEnabledForceFields) {
+            field = configuredForces.get(base) ?? null;
+            if (!field) {
+                field = createFluidConfiguredForceField(engine, activeForceFields, base);
+                configuredForces.set(base, field);
+            }
+        }
+        if (activeSim.forceField !== field) {
+            setFluidSimulationForceField(activeSim, field);
+        }
+    }
+    function setAuthoredForceFields(fields: readonly FluidForceFieldDefinition[], refreshEditor = true): void {
+        const next = validateFluidForceFields(fields);
+        if (next.length > fluidForceFieldCapacity(engine)) {
+            throw new RangeError("[fluid] too many force fields for this device.");
+        }
+        if (referenceSelected() && next.some((field) => field.enabled)) {
+            throw new Error("[FLIP Reference] configured force fields are not supported yet.");
+        }
+        for (const field of configuredForces.values()) {
+            updateFluidConfiguredForceField(field, next);
+        }
+        activeForceFields = next;
+        hasEnabledForceFields = next.some((field) => field.enabled);
+        installForces(installedBaseForce);
+        if (refreshEditor && forceEditor) {
+            setFluidForceFieldEditorFields(forceEditor, next);
+        }
+        canvas.dataset.forceFieldCount = String(next.length);
+        canvas.dataset.enabledForceFieldCount = String(next.filter((field) => field.enabled).length);
+    }
+    onSceneDispose(scene, () => {
+        if (!activeSim.disposed) {
+            setFluidSimulationForceField(activeSim, null);
+        }
+        for (const field of configuredForces.values()) {
+            disposeFluidForceField(field);
+        }
+        configuredForces.clear();
+    });
     let activeFlow: FluidFlowConfig = { emitters: [], sinks: [] };
     let installedFlow: FluidFlowConfig = { emitters: [], sinks: [] };
     let flowEditor: FluidFlowEditor | null = null;
@@ -3482,7 +3539,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
                 ...base,
                 flow: flowToWorld(activeFlow),
                 sceneSdf: currentSceneSdf(),
-                forceField: base.backend?.supportsForces === false ? null : simulation.forceField,
+                forceField: base.backend?.supportsForces === false ? null : base.backend ? installedBaseForce : simulation.forceField,
                 profiler: currentGpuProfiler(),
             },
         };
@@ -3572,6 +3629,9 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         );
         controls.setVisiblePhysicsParams(reference ? [...referenceBackend!.physicsParameters] : methodName === "PB-MPM" ? pbmpmParamKeysForMaterial(pbmpmMaterial) : null);
         flowEditor?.setInitialOnly(reference);
+        if (forceEditor) {
+            setFluidForceFieldEditorEnabled(forceEditor, !reference);
+        }
         if (controlsBinding) {
             syncFluidControls(controlsBinding);
         }
@@ -3636,6 +3696,9 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     }
 
     function assertReferenceState(state: PairState, demo: FluidDemo): void {
+        if (state.forceFields?.some((field) => field.enabled)) {
+            throw new Error("[FLIP Reference] disable configured force fields before selecting this implementation.");
+        }
         const flow = state.legacyFlow ? demo.flow() : { emitters: state.emitters ?? [], sinks: state.sinks ?? [] };
         if (flow.emitters.some((emitter) => emitter.enabled && emitter.behavior !== "initial") || flow.sinks.some((sink) => sink.enabled)) {
             throw new Error("[FLIP Reference] only initial fluid is supported. Disable active inflows and sinks before selecting this implementation.");
@@ -3673,6 +3736,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             demoState: current.demoState ? structuredClone(current.demoState) : undefined,
             emitters: structuredClone(current.emitters ?? []),
             sinks: structuredClone(current.sinks ?? []),
+            forceFields: structuredClone(current.forceFields ?? []),
             initialEmittersFillCapacity: current.initialEmittersFillCapacity,
             legacyFlow: false,
             grid: current.grid ? cloneGridSettings(current.grid) : undefined,
@@ -3767,6 +3831,17 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     const emitterFlowHost = document.createElement("div");
     const sinkFlowHost = document.createElement("div");
     controls.root.append(...controls.makeSection("Emitters", [emitterFlowHost]), ...controls.makeSection("Sinks", [sinkFlowHost]));
+    forceEditor = createFluidForceFieldEditor({
+        fields: activeForceFields,
+        capacity: fluidForceFieldCapacity(engine),
+        getDefaultPosition: () => {
+            const bounds = activeSim.options.bounds;
+            return [(bounds.min[0] + bounds.max[0]) / 2, (bounds.min[1] + bounds.max[1]) / 2, (bounds.min[2] + bounds.max[2]) / 2];
+        },
+        onChange: (fields) => setAuthoredForceFields(fields, false),
+    });
+    controls.root.append(...controls.makeSection("Force fields", [forceEditor.root]));
+    setFluidForceFieldEditorEnabled(forceEditor, !referenceSelected());
     collisionControlsHost = document.createElement("div");
     controls.root.append(...controls.makeSection("Collision", [collisionControlsHost]));
     controls.setSectionVisible("Collision", false);
@@ -4925,7 +5000,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
                     flow: flowToWorld(activeFlow),
                     foam: base.backend?.supportsFoam !== false && foamValues.enabled ? currentFoamConfig() : null,
                     sceneSdf: currentSceneSdf(),
-                    forceField: base.backend?.supportsForces === false ? null : activeSim.forceField,
+                    forceField: base.backend?.supportsForces === false ? null : base.backend ? installedBaseForce : activeSim.forceField,
                     profiler: currentGpuProfiler(),
                 },
                 preserveFlipState && !base.backend && !activeSim.options.backend
@@ -5077,6 +5152,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             pagedGridMaxPages: method === "FLIP" ? FLIP_DEFAULT_PAGE_CAPACITY : method === "MLS-MPM" ? mlsMpmDefaultPageCapacity(RENDER_DEFAULTS.count) : undefined,
             fusedBlockDiscovery: method === "MLS-MPM" ? false : undefined,
             foam: { ...FOAM_DEFAULTS, surfaceFiltering: method === "FLIP" },
+            forceFields: [],
             showContainer: true,
         };
         return backendId ? referencePairState(state, demo) : state;
@@ -5104,6 +5180,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             simulationTimeScale: p.simulationTimeScale ?? base.simulationTimeScale,
             emitters: structuredClone(p.emitters ?? base.emitters ?? []),
             sinks: structuredClone(p.sinks ?? base.sinks ?? []),
+            forceFields: structuredClone(p.forceFields ?? base.forceFields ?? []),
             initialEmittersFillCapacity: p.initialEmittersFillCapacity ?? base.initialEmittersFillCapacity,
             legacyFlow: p.legacyFlow ?? (p.emitters === undefined && p.sinks === undefined),
             color: p.color ?? base.color,
@@ -5182,6 +5259,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             simulationTimeScale,
             emitters: structuredClone(snapshotFlow.emitters),
             sinks: structuredClone(snapshotFlow.sinks),
+            forceFields: structuredClone(activeForceFields),
             initialEmittersFillCapacity: snapshotFlow.initialEmittersFillCapacity,
             color: v.color,
             independentRendering: v.independentRendering,
@@ -5528,6 +5606,8 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         controls.setMarkersPerCell(nextMarkersPerCell);
         refreshDemoParams();
         refreshFlowUI();
+        installedBaseForce = forceFieldHandle(importedScene ? null : (activeDemo?.forceField?.() ?? null));
+        setAuthoredForceFields(st.forceFields ?? []);
         // Apply the pair's camera framing (preset default on first visit, or the
         // viewpoint captured when this pair was last left). ArcRotate self-clamps.
         setCameraMirrorX(st.camera?.mirrorX === true);
@@ -6168,7 +6248,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     }
     function updateOfflineSceneForSimulationStep(deltaSeconds: number): void {
         updateSceneForSimulationStep(deltaSeconds);
-        setFluidSimulationForceField(activeSim, forceFieldHandle(importedScene ? null : (activeDemo?.forceField?.() ?? null)));
+        installForces(forceFieldHandle(importedScene ? null : (activeDemo?.forceField?.() ?? null)));
     }
     let offlineOperation = Promise.resolve();
     const advanceOfflineStep = async (): Promise<void> => {
@@ -6314,10 +6394,10 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         // while asynchronous status buffers are unavailable.
         if (pendingForce && pendingForce.expiresAt >= performance.now()) {
             rayForce.setRay(pendingForce.origin, pendingForce.dir, pendingForce.push, pendingForce.radius, pendingForce.accel);
-            setFluidSimulationForceField(activeSim, forceFieldHandle(rayForce.spec));
+            installForces(forceFieldHandle(rayForce.spec));
         } else {
             pendingForce = null;
-            setFluidSimulationForceField(activeSim, forceFieldHandle(importedScene ? null : (activeDemo?.forceField?.() ?? null)));
+            installForces(forceFieldHandle(importedScene ? null : (activeDemo?.forceField?.() ?? null)));
         }
         // "P" pauses: freeze the obstacles + the solver so the fluid stops advancing.
         // Rendering and the camera keep running, so you can inspect the frozen state;

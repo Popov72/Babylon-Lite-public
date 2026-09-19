@@ -9,6 +9,7 @@
 //   https://github.com/rlguy/GridFluidSim3D
 
 import type { EngineContext } from "../../engine/engine.js";
+import { createFluidForcePasses, updateFluidForcePasses, type FluidForcePasses } from "../core/force-field-passes.js";
 import { FLIP_PAGE_DISPATCH_BYTES, FLIP_PAGE_DISPATCH_CONFIG_BYTES, FLIP_PAGE_STATUS_BYTES, FLIP_PAGE_STATUS_READBACK_BYTES } from "./flip-layout.js";
 import type {
     DiffuseParticleCounts,
@@ -6472,11 +6473,19 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
 
     let classifyBindGroup = buildClassifyBindGroup(classifyPipeline, null);
     let g2pBindGroup = buildG2pBindGroup(g2pPipeline, null);
-    let forceSpec: ForceFieldSpec | null = null;
-    let forcePipeline: GPUComputePipeline | null = null;
-    let forceBindGroup: GPUBindGroup | null = null;
-    let forceBuffer: GPUBuffer | null = null;
-    let forceSource = "";
+    let forcePasses: FluidForcePasses | null = null;
+    function buildForceBindGroup(pipe: GPUComputePipeline, spec: ForceFieldSpec): GPUBindGroup {
+        return device.createBindGroup({
+            layout: pipe.getBindGroupLayout(0),
+            entries: [
+                { binding: 0, resource: { buffer: positionBuffer } },
+                { binding: 1, resource: { buffer: velocityBuffer } },
+                { binding: 2, resource: { buffer: paramsBuffer } },
+                { binding: 3, resource: { buffer: spec.buffer } },
+                { binding: 4, resource: { buffer: flowState.lifecycleBuffer } },
+            ],
+        });
+    }
 
     function buildClassifyBindGroup(pipe: GPUComputePipeline, scene: SceneSdfSpec | null): GPUBindGroup {
         const entries: GPUBindGroupEntry[] = [
@@ -7214,8 +7223,11 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
             }
             const activeParticleGroups = activePrefixValid ? Math.ceil(liveCount / WORKGROUP_SIZE) : particleGroups;
             for (let step = 0; step < stepCount; step++) {
-                if (forceSpec && forcePipeline && forceBindGroup) {
-                    dispatchMutation(encoder, "flip-force", forcePipeline, forceBindGroup, activeParticleGroups, PAGE_DISPATCH_ACTIVE_PARTICLES_OFFSET);
+                if (forcePasses) {
+                    for (let i = 0; i < forcePasses.commands.length; i++) {
+                        const force = forcePasses.commands[i]!;
+                        dispatchMutation(encoder, "flip-force", force.pipeline, force.bindGroup, activeParticleGroups, PAGE_DISPATCH_ACTIVE_PARTICLES_OFFSET);
+                    }
                 }
                 encodeParticleGridClassification(encoder, activeParticleGroups);
                 if (usesLiquidSdf()) {
@@ -7639,30 +7651,11 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
             warmupStep = warmupFrames > 0 ? Math.max(1, Math.ceil(initialTargetCount / warmupFrames)) : Math.max(1, initialTargetCount);
         },
         setForceField(spec: ForceFieldSpec | null): void {
-            if (!spec) {
-                forceSpec = null;
+            if (!spec && !forcePasses) {
                 return;
             }
-            const source = buildForceWgsl(spec);
-            if (!forcePipeline || source !== forceSource) {
-                forcePipeline = pipeline("flip-force", source);
-                forceSource = source;
-                forceBindGroup = null;
-            }
-            if (!forceBindGroup || forceBuffer !== spec.buffer) {
-                forceBindGroup = device.createBindGroup({
-                    layout: forcePipeline.getBindGroupLayout(0),
-                    entries: [
-                        { binding: 0, resource: { buffer: positionBuffer } },
-                        { binding: 1, resource: { buffer: velocityBuffer } },
-                        { binding: 2, resource: { buffer: paramsBuffer } },
-                        { binding: 3, resource: { buffer: spec.buffer } },
-                        { binding: 4, resource: { buffer: flowState.lifecycleBuffer } },
-                    ],
-                });
-                forceBuffer = spec.buffer;
-            }
-            forceSpec = spec;
+            forcePasses ??= createFluidForcePasses(buildForceWgsl, (source) => pipeline("flip-force", source), buildForceBindGroup);
+            updateFluidForcePasses(forcePasses, spec);
         },
         setFoam(config: FoamConfig | null): void {
             if (!config) {

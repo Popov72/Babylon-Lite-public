@@ -9,6 +9,7 @@
 // directions here guarantees Export → drop-in file → import round-trips cleanly.
 
 import type { FluidEmitter, FluidSink } from "../core/sim-common.js";
+import { validateFluidForceFields, type FluidForceFieldDefinition } from "../forces/force-field-config.js";
 import type { DemoStateValue, FluidDomainBounds, PairState } from "./authoring-state.js";
 import { FLIP_DEFAULT_MARKERS_PER_CELL, cellSizeForPhysicsScale, gridPositionForBounds, gridResolutionForScale, gridSizeForBounds, gridWorldSize } from "./grid-settings.js";
 import { CURRENT_FLUID_SIMULATION_SEMANTICS, resolveFluidSimulationSemantics, type FluidSimulationSemantics } from "../core/simulation-config.js";
@@ -37,6 +38,7 @@ const KNOWN_EXPORT_SHAPE: KnownPresetShape = {
     simulationTimeScale: true,
     emitters: true,
     sinks: true,
+    forceFields: true,
     initialEmittersFillCapacity: true,
     showContainer: true,
     envIntensity: true,
@@ -176,6 +178,8 @@ export interface FluidExportJson {
     formatVersion?: number;
     /** Explicit FLIP implementation identity. Absence selects the production backend. */
     backendId?: "flip-reference";
+    /** Point/Guide authoring fields in world coordinates. */
+    forceFields?: FluidForceFieldDefinition[];
     /** Explicit solver-value interpretation. Required on files written by format 14 and newer. */
     simulationSemantics?: FluidSimulationSemantics;
     meta: { demo: string; method: string };
@@ -391,6 +395,7 @@ export function exportJsonFromPairState(demo: string, method: string, ps: PairSt
         throw new Error(`[fluid] backendId "${ps.backendId}" requires intrinsic method "FLIP".`);
     }
     const f = ps.foam;
+    const forceFields = validateFluidForceFields(ps.forceFields ?? []);
     const physics =
         ps.backendId === FLIP_REFERENCE_BACKEND_ID
             ? Object.fromEntries(FLIP_REFERENCE_PHYSICS_PARAMETERS.flatMap((key) => (ps.schema[key] === undefined ? [] : [[key, ps.schema[key]!]])))
@@ -408,6 +413,7 @@ export function exportJsonFromPairState(demo: string, method: string, ps: PairSt
         simulationTimeScale: ps.simulationTimeScale ?? 1,
         emitters: structuredClone(ps.emitters ?? []),
         sinks: structuredClone(ps.sinks ?? []).map((sink) => ({ ...sink, mode: sink.mode ?? "delete" })),
+        ...(forceFields.length > 0 ? { forceFields } : {}),
         ...(ps.initialEmittersFillCapacity !== undefined ? { initialEmittersFillCapacity: ps.initialEmittersFillCapacity } : {}),
         showContainer: ps.showContainer ?? true,
         ...(ps.envIntensity !== undefined ? { envIntensity: ps.envIntensity } : {}),
@@ -506,6 +512,7 @@ export function exportJsonFromPairState(demo: string, method: string, ps: PairSt
 /** Inverse of {@link exportJsonFromPairState}: turn a loaded quality file back into a
  *  Partial<PairState> for the core to merge over its per-method defaults. */
 export function presetFromExportJson(j: FluidExportJson): Partial<PairState> {
+    const forceFields = validateFluidForceFields(j.forceFields ?? []);
     const backendRejection = fluidExportBackendProfileRejection(j);
     if (backendRejection) {
         throw new Error("Invalid fluid export: " + backendRejection);
@@ -570,6 +577,7 @@ export function presetFromExportJson(j: FluidExportJson): Partial<PairState> {
         simulationTimeScale: j.simulationTimeScale ?? 1,
         ...(emitters ? { emitters } : {}),
         ...(sinks ? { sinks } : {}),
+        forceFields,
         ...(j.initialEmittersFillCapacity !== undefined ? { initialEmittersFillCapacity: j.initialEmittersFillCapacity } : {}),
         legacyFlow: j.emitters === undefined && j.sinks === undefined,
         color: r.waterColor,
@@ -689,6 +697,9 @@ export function fluidExportBackendProfileRejection(j: FluidExportJson): string |
     }
     if (j.pagedGrid) {
         return "FLIP Reference does not support paged grids";
+    }
+    if (j.forceFields?.some((field) => field.enabled)) {
+        return "FLIP Reference does not support configured force fields; disable them before selecting this implementation";
     }
     const activeInflow = j.emitters?.find((emitter) => emitter.enabled && emitter.behavior === "inflow");
     if (activeInflow) {

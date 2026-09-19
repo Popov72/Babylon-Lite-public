@@ -1271,6 +1271,16 @@ export type {
     BlenderFluidScenePayloadOptions,
 } from "./fluid/authoring/blender-fluid-json.js";
 export { createSolidGridBounds } from "./fluid/controls/grid-bounds-visual.js";
+export { createDefaultFluidForceField, evaluateFluidForceFields, validateFluidForceFields } from "./fluid/forces/force-field-config.js";
+export type { FluidForceFieldDefinition, FluidForceFieldKind, FluidForceFieldVector, FluidPointForceField, FluidGuideForceField } from "./fluid/forces/force-field-config.js";
+export { createFluidConfiguredForceField, updateFluidConfiguredForceField, fluidForceFieldCapacity } from "./fluid/forces/configured-force-field.js";
+export {
+    createFluidForceFieldEditor,
+    getFluidForceFieldEditorFields,
+    setFluidForceFieldEditorFields,
+    setFluidForceFieldEditorEnabled,
+} from "./fluid/controls/force-field-editor.js";
+export type { FluidForceFieldEditor, FluidForceFieldEditorOptions } from "./fluid/controls/force-field-editor.js";
 export {
     clearFluidFlowEditorSelection,
     createFluidFlowEditor,

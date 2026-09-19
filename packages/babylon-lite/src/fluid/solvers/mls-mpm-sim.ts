@@ -36,6 +36,7 @@
 // packs world positions + speed for the renderer.
 
 import type { EngineContext } from "../../engine/engine.js";
+import { createFluidForcePasses, updateFluidForcePasses, type FluidForcePasses } from "../core/force-field-passes.js";
 import { createFluidTimestepScheduler, deferFluidTimestep, getFluidTimestepDiagnostics, resetFluidTimestepScheduler, scheduleFluidTimestep } from "../core/timestep-scheduler.js";
 import type {
     FluidSim,
@@ -2331,16 +2332,7 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
         ],
     });
 
-    // Dedicated external-force pass (setForceField). Built LAZILY on the first
-    // non-null injection and cached by the force WGSL source, so NOTHING force
-    // related is compiled until a force is actually used. `forceSpec` is the enable
-    // flag (null = disabled); `forceBuiltSpec` tracks what the cached pipeline +
-    // bind-group were built for, so re-enabling the same spec is free.
-    const forcePipeCache = new Map<string, GPUComputePipeline>();
-    let forceSpec: ForceFieldSpec | null = null;
-    let forceBuiltSpec: ForceFieldSpec | null = null;
-    let forcePipe: GPUComputePipeline | null = null;
-    let forceBG: GPUBindGroup | null = null;
+    let forcePasses: FluidForcePasses | null = null;
     function buildForceBG(pipe: GPUComputePipeline, spec: ForceFieldSpec): GPUBindGroup {
         return device.createBindGroup({
             layout: pipe.getBindGroupLayout(0),
@@ -2827,8 +2819,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 // accel·substepDt × substeps = accel·frameDt — independent of the
                 // substeps count (matches the old in-G2P application). Only dispatched
                 // while a force is active; nothing force-related runs (or compiles) idle.
-                if (forceSpec && forcePipe && forceBG) {
-                    dispatch(encoder, "mpm-force", forcePipe, forceBG, particleGroups);
+                if (forcePasses) {
+                    for (let i = 0; i < forcePasses.commands.length; i++) {
+                        const force = forcePasses.commands[i]!;
+                        dispatch(encoder, "mpm-force", force.pipeline, force.bindGroup, particleGroups);
+                    }
                 }
                 if (activeBlocks) {
                     // The node list is intentionally retained between substeps: it identifies
@@ -3035,18 +3030,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             warmupStep = warmupFrames > 0 ? Math.max(1, Math.ceil(count / warmupFrames)) : count;
         },
         setForceField(spec: ForceFieldSpec | null): void {
-            forceSpec = spec;
-            if (!spec || spec === forceBuiltSpec) {
+            if (!spec && !forcePasses) {
                 return;
             }
-            let pipe = forcePipeCache.get(spec.wgsl);
-            if (!pipe) {
-                pipe = pipeline("mpm-force", buildForceWgsl(spec));
-                forcePipeCache.set(spec.wgsl, pipe);
-            }
-            forcePipe = pipe;
-            forceBG = buildForceBG(pipe, spec);
-            forceBuiltSpec = spec;
+            forcePasses ??= createFluidForcePasses(buildForceWgsl, (source) => pipeline("mpm-force", source), buildForceBG);
+            updateFluidForcePasses(forcePasses, spec);
         },
         setFoam(cfg: FoamConfig | null): void {
             if (!cfg) {

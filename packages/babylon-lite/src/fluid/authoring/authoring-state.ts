@@ -10,6 +10,7 @@
 
 import type { FluidEmitter, FluidSink } from "../core/sim-common.js";
 import type { FluidSimulationSemantics } from "../core/simulation-config.js";
+import type { FluidForceFieldDefinition } from "../forces/force-field-config.js";
 
 // A demo exposes a typed list of live tunables; the host's "Demo parameters"
 // section renders a control per type (number -> slider, boolean -> checkbox,
@@ -66,6 +67,8 @@ export interface PairState {
     emitters?: FluidEmitter[];
     /** Solver-independent recycling volumes, stored in grid-local coordinates. */
     sinks?: FluidSink[];
+    /** Persistent Point/Guide force fields in world coordinates. */
+    forceFields?: FluidForceFieldDefinition[];
     /** Fill the full particle capacity from initial emitters even when inflows exist. */
     initialEmittersFillCapacity?: boolean;
     /** Legacy presets without explicit flow arrays rebuild the demo-owned graph after restoring demo state. */

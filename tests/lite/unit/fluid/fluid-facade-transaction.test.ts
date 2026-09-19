@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { FluidSimulationBackend } from "../../../../packages/babylon-lite/src/fluid/core/fluid-facade.js";
+import { createFluidConfiguredForceField } from "../../../../packages/babylon-lite/src/fluid/forces/configured-force-field.js";
+import { createDefaultFluidForceField } from "../../../../packages/babylon-lite/src/fluid/forces/force-field-config.js";
 
 const mocks = vi.hoisted(() => {
     const state = {
@@ -812,6 +814,33 @@ describe("fluid facade shared integrations", () => {
                 profiler,
             })
         ).toThrow("different engine");
+    });
+
+    it("validates configured forces transactionally and releases base ownership before deferred disposal", () => {
+        const forceEngine = { ...engine, _device: { ...engine._device, limits: { maxUniformBufferBindingSize: 65536, maxBufferSize: 65536 } } };
+        const base = facade.createFluidForceField(forceEngine as never, { struct: "params", wgsl: "force", params: new Float32Array(4) });
+        const configured = createFluidConfiguredForceField(forceEngine as never, [createDefaultFluidForceField("point", "point")], base);
+        const backend = { ...asynchronousBackend(vi.fn(async () => {})), supportsForces: true };
+        expect(() => facade.createFluidSimulation(forceEngine as never, { ...options("FLIP"), backend, forceField: configured })).toThrow("production");
+        expect(mocks.state.backends).toHaveLength(0);
+        expect(() => facade.disposeFluidForceField(base)).toThrow("attached");
+
+        const overridden = facade.createFluidSimulation(forceEngine as never, { ...options("FLIP"), backend, forceField: base });
+        const production = facade.createFluidSimulation(forceEngine as never, { ...options("FLIP"), forceField: configured });
+        const calls = mocks.state.backends[0]!.setForceField.mock.calls.length;
+        expect(() => facade.setFluidSimulationForceField(overridden, configured)).toThrow("production");
+        expect(overridden.forceField).toBe(base);
+        expect(mocks.state.backends[0]!.setForceField).toHaveBeenCalledTimes(calls);
+        expect(() => facade.prepareFluidReconfiguration(production, { ...options("FLIP"), backend, forceField: configured })).toThrow("production");
+        expect(production.forceField).toBe(configured);
+        expect(mocks.state.backends).toHaveLength(2);
+        expect(() => facade.disposeFluidForceField(configured)).toThrow("attached");
+
+        facade.disposeFluidSimulation(overridden);
+        facade.disposeFluidSimulation(production);
+        facade.disposeFluidForceField(configured);
+        expect(mocks.state.retirements.length).toBeGreaterThan(0);
+        expect(() => facade.disposeFluidForceField(base)).not.toThrow();
     });
 
     it("renders a changing collection through one shared surface pass", () => {

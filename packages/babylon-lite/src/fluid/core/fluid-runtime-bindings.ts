@@ -35,6 +35,8 @@ export interface SceneSdfRuntimeBinding {
 
 export interface ForceFieldRuntimeBinding {
     readonly spec: ForceFieldSpec;
+    validateImplementation?(method: string, backendId: string | undefined): void;
+    releaseOwners?(): void;
     updateParams(params: Float32Array): void;
     dispose(): void;
 }

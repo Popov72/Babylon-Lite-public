@@ -736,6 +736,8 @@ export interface ForceFieldSpec {
     wgsl: string;
     /** Uniform buffer holding the packed `ForceFieldParams`, owned by the caller. */
     buffer: GPUBuffer;
+    /** Ordered extra force passes. The contributing buffers remain owned by their callers. */
+    readonly additional?: readonly ForceFieldSpec[];
 }
 
 export const DEFAULT_FORCE_FIELD_WGSL = "fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> { return vec3<f32>(0.0); }";

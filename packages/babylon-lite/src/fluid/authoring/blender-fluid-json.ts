@@ -11,6 +11,7 @@ import {
     type FluidTransform,
 } from "../core/sim-common.js";
 import { PHYS_MAX_SCALE, PHYS_MIN_SCALE } from "./grid-settings.js";
+import { validateFluidForceFields } from "../forces/force-field-config.js";
 
 const SDF_MAGIC = 0x46534c42;
 const SDF_HEADER_BYTES = 64;
@@ -911,6 +912,9 @@ function validatePreset(value: unknown): FluidExportJson {
     }
     validateRender(preset.render);
     validateFoam(preset.foam);
+    if (preset.forceFields !== undefined) {
+        validateFluidForceFields(preset.forceFields);
+    }
     const backendRejection = fluidExportBackendProfileRejection(preset as unknown as FluidExportJson);
     if (backendRejection) {
         fail(backendRejection);

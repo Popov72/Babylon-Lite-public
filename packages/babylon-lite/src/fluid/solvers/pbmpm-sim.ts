@@ -4,6 +4,7 @@
 // shaped to the same FluidSim contract as the PBF and MLS-MPM demo backends.
 
 import type { EngineContext } from "../../engine/engine.js";
+import { createFluidForcePasses, updateFluidForcePasses, type FluidForcePasses } from "../core/force-field-passes.js";
 import { createFluidTimestepScheduler, getFluidTimestepDiagnostics, resetFluidTimestepScheduler, scheduleFluidTimestep } from "../core/timestep-scheduler.js";
 import type {
     DiffusePool,
@@ -1206,13 +1207,7 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
         entries: flowEntries,
     });
 
-    // Interactive external force (setForceField). Pipeline + bind group built lazily on first use and
-    // rebuilt only when the injected WGSL source or the caller's buffer changes; nothing runs while idle.
-    let forceSpec: ForceFieldSpec | null = null;
-    let forcePipe: GPUComputePipeline | null = null;
-    let forceBuiltSrc = "";
-    let forceBoundSpec: ForceFieldSpec | null = null;
-    let forceBG: GPUBindGroup | null = null;
+    let forcePasses: FluidForcePasses | null = null;
 
     function buildForceBG(pipe: GPUComputePipeline, spec: ForceFieldSpec): GPUBindGroup {
         return device.createBindGroup({
@@ -1613,8 +1608,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 dispatch(encoder, "pbmpm-flow-emit", flowEmitPipe, flowEmitBG, particleGroups);
             }
             for (let s = 0; s < stepCount; s++) {
-                if (forceSpec && forcePipe && forceBG) {
-                    dispatch(encoder, "pbmpm-force", forcePipe, forceBG, particleGroups);
+                if (forcePasses) {
+                    for (let i = 0; i < forcePasses.commands.length; i++) {
+                        const force = forcePasses.commands[i]!;
+                        dispatch(encoder, "pbmpm-force", force.pipeline, force.bindGroup, particleGroups);
+                    }
                 }
                 for (let iter = 0; iter < iterationsMut; iter++) {
                     dispatch(encoder, "pbmpm-constraint", constraintPipe, constraintBG, particleGroups);
@@ -1739,21 +1737,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             warmupStep = warmupFrames > 0 ? Math.max(1, Math.ceil(count / warmupFrames)) : count;
         },
         setForceField(spec: ForceFieldSpec | null): void {
-            if (!spec) {
-                forceSpec = null;
+            if (!spec && !forcePasses) {
                 return;
             }
-            const src = buildForceWgsl(spec);
-            if (!forcePipe || src !== forceBuiltSrc) {
-                forcePipe = pipeline("pbmpm-force", src);
-                forceBuiltSrc = src;
-                forceBoundSpec = null;
-            }
-            if (forceBoundSpec !== spec || !forceBG) {
-                forceBG = buildForceBG(forcePipe, spec);
-                forceBoundSpec = spec;
-            }
-            forceSpec = spec;
+            forcePasses ??= createFluidForcePasses(buildForceWgsl, (source) => pipeline("pbmpm-force", source), buildForceBG);
+            updateFluidForcePasses(forcePasses, spec);
         },
         setFoam(cfg: FoamConfig | null): void {
             if (!cfg) {
