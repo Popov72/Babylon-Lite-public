@@ -179,6 +179,7 @@ stages:
                       npx playwright test tests/lite/plumbing/material-swap.spec.ts
                       npx playwright test tests/lite/plumbing/memory-leak.spec.ts
                       npx playwright test tests/lite/plumbing/picking.spec.ts
+                      npx playwright test tests/lite/plumbing/view-volume-wgsl.spec.ts
                   displayName: "Run plumbing tests"
                   env:
                       HEADLESS: "true"
