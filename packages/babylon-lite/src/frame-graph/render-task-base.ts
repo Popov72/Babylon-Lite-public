@@ -167,10 +167,21 @@ export interface RenderTask extends Task {
     _suData: Float32Array;
     /** @internal */
     _sceneUboCacheKey: unknown[];
-    /** Optional transmission-enabled execute path: copies the scene texture for refraction and draws transmissive
-     *  renderables. Present only when the task was configured with `transmission`. Returns the number of draw calls issued. */
+    /** Optional split-pass execution installed by transmission or an after-opaque feature. */
     /** @internal */
     _executeWithTransmission?(sampleCount: number): number;
+    /** @internal One opt-in callback between opaque and transparent draws. */
+    _afterOpaque?: { enabled(): boolean; validate?(): void; execute(engine: EngineContext, sampleCount: number): number };
+    /** @internal The transmission split-pass variant has been installed. */
+    _transmissionInstalled?: true;
+    /** @internal Shared linear scene-color target is installed on this task. */
+    _linearSceneColor?: true;
+    /** @internal Opt-in compatibility check for a fog-owned linear HDR target. */
+    _assertLinearReady?: () => void;
+    /** @internal Fog installation permanently wraps this task's record/dispose methods. */
+    _volumetricFogInstalled?: true;
+    /** @internal One image-processing task presents this task's linear color to the surface. */
+    _linearPresentTask?: Task;
     /** @internal */
     _targetSignature: RenderTargetSignature;
     /** @internal Pass dimensions and camera shared with binding updates. */

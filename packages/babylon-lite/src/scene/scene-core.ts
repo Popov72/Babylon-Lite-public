@@ -207,6 +207,8 @@ export interface SceneContext extends RenderingContext {
     /** @internal Resource-usage observer called after add/reassignment and before removal teardown.
      *  Undefined material detaches a mesh's main-material usage. */
     _meshMaterialChange?: (mesh: Mesh, material?: Mesh["material"]) => void;
+    /** @internal Invalidates the fog-installed linear HDR material guard on mesh/material changes. */
+    _linearMaterialRevision?: number;
     /** @internal Meshes whose material was changed via setter — drained before each render frame. */
     _materialSwapQueue: Mesh[];
     /** @internal Monotonic counter bumped when the renderable list changes (add/remove/rebuild). */

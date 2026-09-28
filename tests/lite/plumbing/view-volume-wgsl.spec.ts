@@ -10,7 +10,7 @@ import {
 } from "../../../packages/babylon-lite/src/render/volume/view-volume-grid";
 import { buildViewVolumeDepthWgsl } from "../../../packages/babylon-lite/src/render/volume/view-volume-grid-wgsl";
 import { integrateHomogeneousMedium, type OpticalRgb } from "../../../packages/babylon-lite/src/render/volume/optical-transfer";
-import { OPTICAL_TRANSFER_WGSL } from "../../../packages/babylon-lite/src/render/volume/optical-transfer-wgsl";
+import { opticalTransferWgsl } from "../../../packages/babylon-lite/src/render/volume/optical-transfer-wgsl";
 
 type Vec4 = readonly [number, number, number, number];
 type ShaderSample = readonly [Vec4, Vec4];
@@ -99,7 +99,7 @@ test("optical WGSL matches the CPU through thin, long, and threshold-crossing me
         [source[0], source[1], source[2], distance],
         [extinction[0], extinction[1], extinction[2], 0],
     ]);
-    const result = await runVolumeShader(page, OPTICAL_TRANSFER_WGSL, OPTICAL_BODY, samples);
+    const result = await runVolumeShader(page, opticalTransferWgsl(), OPTICAL_BODY, samples);
     for (let i = 0; i < cases.length; i++) {
         const { source, extinction, distance } = cases[i]!;
         const expected = integrateHomogeneousMedium(source, extinction, distance);

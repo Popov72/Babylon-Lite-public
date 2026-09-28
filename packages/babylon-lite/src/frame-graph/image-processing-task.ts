@@ -14,6 +14,8 @@ export type ImageProcessingSource = Texture2D | RenderTarget | (() => Texture2D 
 export interface ImageProcessingTaskConfig {
     name?: string;
     source: ImageProcessingSource;
+    /** Destination surface; defaults to the engine's primary swapchain. */
+    target?: RenderTarget;
 }
 
 interface ImageProcessingState {
@@ -32,6 +34,7 @@ interface ImageProcessingState {
  */
 export function createImageProcessingTask(config: ImageProcessingTaskConfig, engine: EngineContext, scene: SceneContext): Task {
     let state: ImageProcessingState | null = null;
+    const target = config.target ?? engine.scRT;
     const task: Task = {
         name: config.name ?? "image-processing",
         engine,
@@ -39,7 +42,7 @@ export function createImageProcessingTask(config: ImageProcessingTaskConfig, eng
         _passes: [],
         record(): void {
             disposeImageProcessingState(state);
-            state = createImageProcessingState(engine, config.source);
+            state = createImageProcessingState(engine, config.source, target);
         },
         execute(): number {
             if (!state) {
@@ -51,7 +54,7 @@ export function createImageProcessingTask(config: ImageProcessingTaskConfig, eng
             const pass = engine._currentEncoder.beginRenderPass({
                 colorAttachments: [
                     {
-                        view: engine.scRT._colorView!,
+                        view: target._colorView!,
                         loadOp: "clear",
                         storeOp: "store",
                         clearValue: scene.clearColor,
@@ -73,7 +76,7 @@ export function createImageProcessingTask(config: ImageProcessingTaskConfig, eng
     return task;
 }
 
-function createImageProcessingState(engine: EngineContext, source: ImageProcessingSource): ImageProcessingState {
+function createImageProcessingState(engine: EngineContext, source: ImageProcessingSource, target: RenderTarget): ImageProcessingState {
     const texture = resolveImageProcessingTexture(source);
     if (!texture) {
         throw new Error("Image processing source has no color texture");
@@ -81,6 +84,10 @@ function createImageProcessingState(engine: EngineContext, source: ImageProcessi
     const device = engine._device;
     const sampleCount = (texture as { sampleCount?: number }).sampleCount ?? 1;
     const multisampled = sampleCount > 1;
+    const format = target._descriptor.format;
+    if (!format || (target._descriptor.samples ?? 1) !== 1) {
+        throw new Error("Image processing target must be a single-sample color render target.");
+    }
     const params = device.createBuffer({ size: 16, usage: BU.UNIFORM | BU.COPY_DST });
     const bgl = device.createBindGroupLayout({
         entries: [
@@ -105,7 +112,7 @@ return vec4f(max(c,vec3f(0)),r.a);}`;
     const pipeline = device.createRenderPipeline({
         layout: device.createPipelineLayout({ bindGroupLayouts: [bgl] }),
         vertex: { module: shader, entryPoint: "vs" },
-        fragment: { module: shader, entryPoint: "fs", targets: [{ format: engine.format }] },
+        fragment: { module: shader, entryPoint: "fs", targets: [{ format }] },
         primitive: { topology: "triangle-list" },
     });
     const bindGroup = device.createBindGroup({

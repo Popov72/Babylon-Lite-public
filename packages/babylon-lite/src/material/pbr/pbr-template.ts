@@ -456,8 +456,8 @@ var luminanceOverAlpha=0.0;
 luminanceOverAlpha+=dot(${_hasIbl ? wgsl`finalSpecularScaled` : wgsl`directSpecular`},vec3<f32>(0.2126,0.7152,0.0722));
 finalAlpha=saturate(finalAlpha+luminanceOverAlpha*luminanceOverAlpha);
 /*FA*/
-return vec4<f32>(color,finalAlpha);`
-          : wgsl`return vec4<f32>(color,alpha*material.materialAlpha);`;
+return vec4f(color,finalAlpha);`
+          : wgsl`return vec4f(color,alpha*material.materialAlpha);`;
 
     const doubleSidedEntry = _hasDoubleSided
         ? wgsl`@fragment fn main(input: FragmentInput, @builtin(front_facing) frontFacing: bool)${_noColorOutput ? "" : " -> @location(0) vec4<f32>"} {`
@@ -533,14 +533,14 @@ ${directLightBlock}
 var color=directDiffuse+directSpecular+emissive;
 /*AI*/
 /*NI*/
-${fogBlock}
+${fogBlock}/*IP_BEGIN*/
 ${tonemapBlock}
-color=pow(color,vec3<f32>(1.0/2.2));
-color=clamp(color,vec3<f32>(0.0),vec3<f32>(1.0));
+color=pow(color,vec3f(1.0/2.2));
+color=clamp(color,vec3f(0.0),vec3f(1.0));
 let highContrast=color*color*(3.0-2.0*color);
-if(scene.vImageInfos.y<1.0){color=mix(vec3<f32>(0.5),color,scene.vImageInfos.y);}
+if(scene.vImageInfos.y<1.0){color=mix(vec3f(0.5),color,scene.vImageInfos.y);}
 else{color=mix(color,highContrast,scene.vImageInfos.y-1.0);}
-color=max(color,vec3<f32>(0.0));
+color=max(color,vec3f(0.0));/*IP_END*/
 /*BC*/
 ${alphaBlock}`
 }

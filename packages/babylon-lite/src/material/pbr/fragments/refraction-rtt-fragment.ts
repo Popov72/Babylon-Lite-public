@@ -5,13 +5,10 @@ import { getTrilinearAnisotropicSampler } from "../../../resource/trilinear-anis
 import { PBR_HAS_THICKNESS_MAP, PBR2_HAS_REFRACTION } from "../pbr-flag-bits.js";
 import { wgsl, type WgslSource } from "../../../shader/wgsl.js";
 
-type TransmissionMat = PbrMaterialProps & { _linearImageProcessing?: boolean };
 export const PBR2_HAS_VOLUME = 1 << 5;
 export const PBR2_HAS_REFRACTION_MAP = 1 << 6;
 const PBR2_HAS_THICKNESS_GLTF_CHANNEL = 1 << 7;
-const PBR2_LINEAR_IMAGE_PROCESSING = 1 << 14;
 const PBR2_HAS_DISPERSION = 1 << 20;
-const LINEAR_IMAGE_PROCESSING_SLOTS = { NI: wgsl`if(scene.vImageInfos.w>=0.0){`, BC: wgsl`}` };
 
 function makeRefractionMod(
     hasVolume: boolean,
@@ -73,7 +70,6 @@ function createRefractionRttFragment(
     hasMap: boolean,
     hasThicknessMap: boolean,
     useGltfThicknessChannel: boolean,
-    linearImageProcessing: boolean,
     hasDispersion: boolean,
     dispersionSampleWgsl: WgslSource | undefined
 ): ShaderFragment {
@@ -114,9 +110,7 @@ function createRefractionRttFragment(
         _dependencies: ["ibl"],
         _uboFields: uboFields,
         _bindings: bindings,
-        _fragmentSlots: linearImageProcessing
-            ? { AI: makeRefractionMod(hasVolume, hasMap, hasThicknessMap, useGltfThicknessChannel, hasDispersion, dispersionSampleWgsl), ...LINEAR_IMAGE_PROCESSING_SLOTS }
-            : { AI: makeRefractionMod(hasVolume, hasMap, hasThicknessMap, useGltfThicknessChannel, hasDispersion, dispersionSampleWgsl) },
+        _fragmentSlots: { AI: makeRefractionMod(hasVolume, hasMap, hasThicknessMap, useGltfThicknessChannel, hasDispersion, dispersionSampleWgsl) },
     };
 }
 
@@ -207,16 +201,15 @@ export function makeRefractionRttExt(dispersionSampleWgsl?: WgslSource): PbrExt 
         id: "refraction",
         phase: "fragment",
         detect(mat) {
-            const m = mat as TransmissionMat;
+            const m = mat as PbrMaterialProps;
             const ss = m._subsurface as SubSurfaceProps | undefined;
             const refr = ss?.refraction;
-            const linearImageProcessing = m._linearImageProcessing ? PBR2_LINEAR_IMAGE_PROCESSING : 0;
             const intensity = m._transmissive ? (refr?.intensity ?? 0) : 0;
             if (intensity <= 0) {
-                return { f: 0, f2: linearImageProcessing };
+                return { f: 0, f2: 0 };
             }
             let f = 0;
-            let f2 = linearImageProcessing | PBR2_HAS_REFRACTION;
+            let f2 = PBR2_HAS_REFRACTION;
             if (refr?.texture) {
                 f2 |= PBR2_HAS_REFRACTION_MAP;
             }
@@ -236,16 +229,14 @@ export function makeRefractionRttExt(dispersionSampleWgsl?: WgslSource): PbrExt 
             return { f, f2 };
         },
         frag(ctx) {
-            const linearImageProcessing = (ctx._features2 & PBR2_LINEAR_IMAGE_PROCESSING) !== 0;
             if (!(ctx._features2 & PBR2_HAS_REFRACTION)) {
-                return linearImageProcessing ? { _id: "linear", _fragmentSlots: LINEAR_IMAGE_PROCESSING_SLOTS } : null;
+                return null;
             }
             return createRefractionRttFragment(
                 (ctx._features2 & PBR2_HAS_VOLUME) !== 0,
                 (ctx._features2 & PBR2_HAS_REFRACTION_MAP) !== 0,
                 (ctx._features & PBR_HAS_THICKNESS_MAP) !== 0,
                 (ctx._features2 & PBR2_HAS_THICKNESS_GLTF_CHANNEL) !== 0,
-                linearImageProcessing,
                 (ctx._features2 & PBR2_HAS_DISPERSION) !== 0,
                 dispersionSampleWgsl
             );

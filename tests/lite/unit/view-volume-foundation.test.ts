@@ -16,7 +16,7 @@ import {
     transmittanceFromOpticalDepth,
     type OpticalTransfer,
 } from "../../../packages/babylon-lite/src/render/volume/optical-transfer";
-import { OPTICAL_TRANSFER_WGSL } from "../../../packages/babylon-lite/src/render/volume/optical-transfer-wgsl";
+import { opticalTransferWgsl } from "../../../packages/babylon-lite/src/render/volume/optical-transfer-wgsl";
 import { createVolumeTexture3D, disposeVolumeTexture3D } from "../../../packages/babylon-lite/src/render/volume/volume-texture";
 
 const mappings: readonly ViewVolumeDepthMapping[] = [{ kind: "linear" }, { kind: "log" }, { kind: "power", exponent: 2 }];
@@ -118,8 +118,8 @@ describe("optical transfer", () => {
         const expectedFactor = -Math.expm1(-sigma * distance) / (sigma * distance);
         const medium = integrateHomogeneousMedium([1, 1, 1], [sigma, sigma, sigma], distance);
         expect(medium.radiance[0] / distance).toBeCloseTo(expectedFactor, 12);
-        expect(OPTICAL_TRANSFER_WGSL).toContain("let opticalDepth=sigma*travel;");
-        expect(OPTICAL_TRANSFER_WGSL).toContain("let integralFactor=select(ratio,series,opticalDepth<vec3f(0.05));");
+        expect(opticalTransferWgsl()).toContain("let opticalDepth=sigma*travel;");
+        expect(opticalTransferWgsl()).toContain("let integralFactor=select(ratio,series,opticalDepth<vec3f(0.05));");
     });
 });
 

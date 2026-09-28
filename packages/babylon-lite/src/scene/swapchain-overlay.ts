@@ -13,12 +13,19 @@ function getDefaultSwapchainTask(scene: SceneContext, surface: SurfaceContext): 
     }
 }
 
+function hasVolumetricFog(scene: SceneContext): boolean {
+    return scene._frameGraph._tasks.some((task) => "_volumetricFogInstalled" in task && task._volumetricFogInstalled === true);
+}
+
 /** @internal Configure a later scene to preserve pixels already rendered into the same
  *  surface swapchain. */
 export function configureSwapchainOverlayScene(surface: SurfaceContext, overlay: SceneContext): void {
     const baseScene = surface._renderingContexts[surface._renderingContexts.length - 1] as Partial<SceneContext> | undefined;
     if (!baseScene?._frameGraph) {
         return;
+    }
+    if (hasVolumetricFog(baseScene as SceneContext) || hasVolumetricFog(overlay)) {
+        throw new Error("Volumetric fog does not support multiple scenes on the same surface.");
     }
     const overlayTask = getDefaultSwapchainTask(overlay, surface);
     if (!overlayTask) {

@@ -52,7 +52,7 @@ export const PBR2_HAS_REFLECTANCE_FACTORS = 1 << 10;
 export const PBR2_HAS_UV2 = 1 << 11;
 /** Material multiplies textured albedo by a non-default glTF baseColorFactor. */
 export const PBR2_HAS_BASE_COLOR_FACTOR = 1 << 12;
-// 1<<13 is sheen-local; 1<<14 is refraction-local.
+// 1<<13 is sheen-local; 1<<14 is linear-image-processing-local.
 /** Material view runs the fragment shader but declares no color output. */
 export const PBR2_NO_COLOR_OUTPUT = 1 << 15;
 /** Material view runs discard/clip logic and writes exponential shadow-map color. */

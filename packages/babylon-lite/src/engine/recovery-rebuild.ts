@@ -115,6 +115,10 @@ async function rebuildSceneGpu(engine: EngineContext, scene: SceneContext): Prom
     }
     scene._renderables.sort((a, b) => a.order - b.order);
     scene._renderableVersion++;
+    await runRecoveryStep("preparing frame-graph tasks", () => Promise.all(scene._frameGraph._tasks.flatMap((task) => (task._preload ? [task._preload()] : []))));
+    if (scene._z) {
+        return;
+    }
     resetFrameGraphTasks(engine, scene);
     scene._frameGraph.build();
 }

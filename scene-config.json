@@ -2665,5 +2665,16 @@
         "description": "Scene 262's deterministic NPE particle field with Teleport fan-out plus Elbow, Debug, and a Particle-scope LocalVariable around its per-particle size. Lite normalizes the graph before evaluator traversal and must preserve Babylon.js pixels.",
         "tags": ["npe", "particles", "billboards", "teleport", "local-variable", "graph-plumbing"],
         "skipPerf": true
+    },
+    {
+        "id": 316,
+        "slug": "scene316-volumetric-fog",
+        "name": "Scene 316 — Volumetric Fog",
+        "maxRawKB": 89.2,
+        "description": "WebGPU cloud bank whose 3D noise evolves in place at constant density above a dark foreground. Pause shape morphing, choose the 3D froxel texture size, orbit/pan/zoom, or use seekTime to freeze the image.",
+        "tags": ["pbr", "fog"],
+        "skipParity": true,
+        "skipParityReason": "Lite-native Wronski-style volume fog has no equivalent Babylon.js pixel oracle; dedicated WebGPU plumbing tests cover shader math and the visible result.",
+        "skipPerf": true
     }
 ]

@@ -1,6 +1,7 @@
-import { wgsl } from "../../shader/wgsl.js";
+import { wgsl, type WgslSource } from "../../shader/wgsl.js";
 
-export const OPTICAL_TRANSFER_WGSL = wgsl`struct OpticalTransfer{radiance:vec3f,transmittance:vec3f}
+export function opticalTransferWgsl(): WgslSource {
+    return wgsl`struct OpticalTransfer{radiance:vec3f,transmittance:vec3f}
 fn alphaToOpticalDepth(alpha:f32)->f32{return -log(max(1.0-clamp(alpha,0.0,1.0),1e-6));}
 fn transmittanceFromOpticalDepth(opticalDepth:vec3f)->vec3f{return exp(-max(opticalDepth,vec3f(0.0)));}
 fn composeOpticalTransfer(front:OpticalTransfer,back:OpticalTransfer)->OpticalTransfer{
@@ -16,3 +17,4 @@ let ratio=(vec3f(1.0)-transmittance)/max(opticalDepth,vec3f(0.05));
 let integralFactor=select(ratio,series,opticalDepth<vec3f(0.05));
 return OpticalTransfer(source*travel*integralFactor,transmittance);
 }`;
+}

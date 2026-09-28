@@ -127,7 +127,7 @@ export function composeOpticalTransfer(front: OpticalTransfer, back: OpticalTran
 export function integrateHomogeneousMedium(source: OpticalRgb, extinction: OpticalRgb, distance: number): OpticalTransfer;
 ```
 
-`OPTICAL_TRANSFER_WGSL` defines equivalent GPU functions and an `OpticalTransfer` struct.
+`opticalTransferWgsl(): WgslSource` generates equivalent GPU functions and an `OpticalTransfer` struct when the feature composes its shader. The module has no shader-building side effects at import time.
 
 ### Internal 3D volume texture
 

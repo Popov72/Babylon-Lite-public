@@ -1,7 +1,5 @@
 import { TU, SS } from "../engine/gpu-flags.js";
 import type { EngineContext } from "../engine/engine.js";
-import { _vis } from "../engine/engine.js";
-import { createRenderTarget } from "../engine/render-target.js";
 import { getBilinearSampler } from "../resource/samplers.js";
 import { getTrilinearAnisotropicSampler } from "../resource/trilinear-anisotropic-sampler.js";
 import type { Texture2D } from "../texture/texture-2d.js";
@@ -10,8 +8,9 @@ import { biasedMipLevelCount } from "../texture/mip-count.js";
 import type { DrawBinding } from "../render/renderable.js";
 import type { RenderTask } from "./render-task.js";
 import { drawList, type RenderTaskBase } from "./render-task-base.js";
+import { beginTaskPass, drawTaskOpaque, setTaskPassState } from "./render-task-phase-pass.js";
 import type { SceneContext } from "../scene/scene-core.js";
-import { createImageProcessingTask } from "./image-processing-task.js";
+import { assertLinearImageProcessing, ensureLinearRenderTask, ensureLinearScenePresent, prepareSceneLinearPbr, trackSceneLinearPbr } from "./linear-scene-color.js";
 import { wgsl } from "../shader/wgsl.js";
 
 export interface RenderTaskTransmissionState {
@@ -85,19 +84,25 @@ let blitDevice: GPUDevice | null = null;
 
 /** Enable scene-color transmission for every render task currently registered in a scene. PBR materials are marked for linear transmission, and a trailing image-processing task is appended when needed. */
 export function enableSceneTransmission(scene: SceneContext, engine: EngineContext): void {
-    markPbrMaterialsLinear(scene);
+    assertLinearImageProcessing(scene);
+    prepareSceneLinearPbr(scene);
     enableSceneTransmissionTasks(scene, engine);
+    trackSceneLinearPbr(scene);
 }
 
 /** @internal Prepare linear PBR flags, then commit transmission only after renderable construction succeeds. */
 export function _t(scene: SceneContext, engine: EngineContext): readonly [commit: () => void, rollback: () => void] {
+    assertLinearImageProcessing(scene);
     const states = scene.meshes.flatMap((mesh) => {
         const mat = mesh.material as { _linearImageProcessing?: boolean; _renderFeatures?: unknown } | null;
         return mat ? [[mat, mat._linearImageProcessing, mat._renderFeatures] as const] : [];
     });
-    markPbrMaterialsLinear(scene);
+    prepareSceneLinearPbr(scene);
     return [
-        () => enableSceneTransmissionTasks(scene, engine),
+        () => {
+            enableSceneTransmissionTasks(scene, engine);
+            trackSceneLinearPbr(scene);
+        },
         () => {
             for (const [mat, linear, features] of states) {
                 mat._linearImageProcessing = linear;
@@ -116,8 +121,8 @@ function enableSceneTransmissionTasks(scene: SceneContext, engine: EngineContext
             lastRenderTask = renderTask;
         }
     }
-    if (lastRenderTask && !scene._frameGraph._tasks.some((task) => task.name === "transmission-image-processing")) {
-        scene._frameGraph._tasks.push(createImageProcessingTask({ name: "transmission-image-processing", source: lastRenderTask._config.rt }, engine, scene));
+    if (lastRenderTask) {
+        ensureLinearScenePresent(lastRenderTask, engine, "transmission-image-processing");
     }
 }
 
@@ -172,6 +177,9 @@ export function enableRenderTaskTransmission(task: RenderTask, engine: EngineCon
 
 function enableTransmission(task: RenderTaskBase, engine: EngineContext, options?: TransmissionOptions): SceneColorGrab {
     const linear = options?.linear !== false;
+    if (linear) {
+        assertLinearImageProcessing(task.scene);
+    }
     applyTransmissionOptions(task, options);
     // grabDepth is opt-in: only when set do we dynamic-import the depth-grab shaders/pipelines (installed via the
     // module side-effect). `_preload` is awaited before the frame graph builds, so `_createDepthGrab` is ready by
@@ -193,15 +201,14 @@ function enableTransmission(task: RenderTaskBase, engine: EngineContext, options
             return (task._targetSignature as { _transmissionDepthTexture?: Texture2D | null })._transmissionDepthTexture ?? null;
         },
     };
-    if (task._executeWithTransmission) {
+    if (task._transmissionInstalled) {
         return grab;
     }
     if (linear) {
-        retargetRenderTaskToLinearOffscreen(task);
+        ensureLinearRenderTask(task, engine);
     }
     let state: RenderTaskTransmissionState | null = null;
     const record = task.record.bind(task);
-    const execute = task.execute?.bind(task);
     const dispose = task.dispose?.bind(task);
     task.record = () => {
         disposeRenderTaskTransmission(state);
@@ -210,122 +217,14 @@ function enableTransmission(task: RenderTaskBase, engine: EngineContext, options
         record();
         configureTransmissionSource(state, task, engine);
     };
-    if (linear && execute) {
-        task.execute = () => executeRenderTaskLinear(task.scene, execute);
-    }
     task.dispose = () => {
         disposeRenderTaskTransmission(state);
         state = null;
         dispose?.();
     };
     task._executeWithTransmission = (sampleCount) => executePassWithTransmission(task, engine, state!, sampleCount);
+    task._transmissionInstalled = true;
     return grab;
-}
-
-function retargetRenderTaskToLinearOffscreen(task: RenderTaskBase): void {
-    const cfg = task._config;
-    const oldDesc = cfg.rt._descriptor;
-    const surface = task.scene.surface;
-    const sampleCount = surface.msaaSamples;
-    // The scene render task may target the shared engine scRT (single-sample,
-    // colour-only — single-sample default path) or an MSAA colour RT that resolves into it
-    // via `rst` (MSAA default path). Never mutate the shared scRT descriptor —
-    // instead point the task at a fresh offscreen HDR target and stop resolving to swap.
-    // Transmission samples this linear HDR result in its own final image-processing pass
-    // that writes the tonemapped result to the swapchain.
-    //
-    // Depth ownership: when the task already carries an external depth (`cfg.depth`, the
-    // single-sample default path), keep it; otherwise the new target owns depth (matching
-    // the MSAA colour RT it replaces).
-    const ownsDepth = !cfg.depth;
-    const newRt = createRenderTarget({
-        lbl: "transmission-linear",
-        format: "rgba16float",
-        dFormat: ownsDepth ? (oldDesc.dFormat ?? "depth24plus-stencil8") : undefined,
-        _depthClearValue: oldDesc._depthClearValue,
-        _depthCompare: oldDesc._depthCompare,
-        samples: sampleCount,
-        size: surface,
-    });
-    cfg.rt = newRt;
-    cfg.rst = undefined;
-    const sig = task._targetSignature as {
-        _colorFormat?: GPUTextureFormat;
-        _depthStencilFormat?: GPUTextureFormat;
-        _depthCompare?: GPUCompareFunction;
-        _sampleCount: number;
-    };
-    sig._colorFormat = "rgba16float";
-    sig._depthStencilFormat = cfg.depth?._descriptor.dFormat ?? newRt._descriptor.dFormat;
-    sig._depthCompare = newRt._descriptor._depthCompare;
-    sig._sampleCount = sampleCount;
-    task._ob.length = 0;
-    task._lastVersion = -1;
-}
-
-function executeRenderTaskLinear(scene: SceneContext, execute: () => number): number {
-    const imageProcessing = scene.imageProcessing as { exposure: number; contrast: number; toneMappingEnabled: boolean | number };
-    const toneMappingEnabled = imageProcessing.toneMappingEnabled;
-    const clearColor = scene.clearColor;
-    const linearClearColor = inverseImageProcessedColor(clearColor, imageProcessing.exposure, imageProcessing.contrast, toneMappingEnabled === true);
-    imageProcessing.toneMappingEnabled = -1;
-    scene.clearColor = linearClearColor;
-    try {
-        return execute();
-    } finally {
-        scene.clearColor = clearColor;
-        imageProcessing.toneMappingEnabled = toneMappingEnabled;
-    }
-}
-
-function inverseImageProcessedColor(color: GPUColorDict, exposure: number, contrast: number, toneMapping: boolean): GPUColorDict {
-    return {
-        r: inverseImageProcessedChannel(color.r, exposure, contrast, toneMapping),
-        g: inverseImageProcessedChannel(color.g, exposure, contrast, toneMapping),
-        b: inverseImageProcessedChannel(color.b, exposure, contrast, toneMapping),
-        a: color.a,
-    };
-}
-
-function inverseImageProcessedChannel(value: number, exposure: number, contrast: number, toneMapping: boolean): number {
-    let c = clamp01(value);
-    if (contrast < 1) {
-        c = contrast > 0 ? clamp01((c - 0.5 * (1 - contrast)) / contrast) : 0.5;
-    } else if (contrast > 1) {
-        const mixAmount = contrast - 1;
-        let lo = 0;
-        let hi = 1;
-        for (let i = 0; i < 16; i++) {
-            const mid = (lo + hi) * 0.5;
-            const high = mid * mid * (3 - 2 * mid);
-            const out = mid + (high - mid) * mixAmount;
-            if (out < c) {
-                lo = mid;
-            } else {
-                hi = mid;
-            }
-        }
-        c = (lo + hi) * 0.5;
-    }
-    c = c ** 2.2;
-    if (toneMapping) {
-        c = -Math.log2(Math.max(1 - c, 1e-6)) / 1.5905790328979492;
-    }
-    return exposure > 0 ? c / exposure : c;
-}
-
-function clamp01(v: number): number {
-    return Math.min(Math.max(v, 0), 1);
-}
-
-function markPbrMaterialsLinear(scene: SceneContext): void {
-    for (const mesh of scene.meshes) {
-        const mat = mesh.material as { _linearImageProcessing?: boolean; _renderFeatures?: unknown } | undefined;
-        if (mat) {
-            mat._linearImageProcessing = true;
-            mat._renderFeatures = undefined;
-        }
-    }
 }
 
 function createRenderTaskTransmission(task: RenderTaskBase, engine: EngineContext): RenderTaskTransmissionState {
@@ -374,7 +273,7 @@ function configureTransmissionSource(state: RenderTaskTransmissionState, task: R
     // depth attachment, and publish it on the target signature so `SceneColorGrab.depthTexture` stays live.
     const sig = task._targetSignature as { _transmissionDepthTexture?: Texture2D | null };
     sig._transmissionDepthTexture = null;
-    const depthSource = rt._depthTexture;
+    const depthSource = task._config.depth?._depthTexture ?? rt._depthTexture;
     if (task._config.transmission?.grabDepth && _depthGrab && depthSource && rt._width > 0 && rt._height > 0) {
         state._depth = _depthGrab.create(engine, depthSource, rt._width, rt._height, sampleCount > 1);
         sig._transmissionDepthTexture = state._depth.texture;
@@ -391,15 +290,30 @@ function disposeRenderTaskTransmission(state: RenderTaskTransmissionState | null
 }
 
 export function executePassWithTransmission(task: RenderTaskBase, engine: EngineContext, state: RenderTaskTransmissionState, sampleCount: number): number {
+    task._assertLinearReady?.();
     state._copies = 0;
     const transparent = task._transparentBindings;
+    const afterOpaque = task._afterOpaque;
+    const runAfterOpaque = afterOpaque?.enabled() ?? false;
+    if (runAfterOpaque) {
+        afterOpaque!.validate?.();
+    }
     // MSAA: resolve the FINAL scene colour into the task's single-sample resolve target (`rst`) so downstream
     // passes that SAMPLE the scene RTT (e.g. a custom DoF/present stack) get a resolved image. The multisampled
     // colour is preserved across the split segments (store/load), so resolving on every segment leaves the LAST
     // (complete) resolve in `rst`. No-op when single-sample (resolveView stays null) — existing scenes unchanged.
     const resolveView = sampleCount > 1 ? (task._config.rst?._colorView ?? null) : null;
     let pass = beginTaskPass(task, resolveView, sampleCount, false);
-    let draws = drawBaseTask(task, pass);
+    let draws = drawTaskOpaque(task, pass);
+    if (runAfterOpaque) {
+        pass.end();
+        draws += afterOpaque!.execute(engine, sampleCount);
+        if (transparent.length === 0) {
+            return draws;
+        }
+        pass = beginTaskPass(task, resolveView, sampleCount, true);
+        setTaskPassState(task, pass);
+    }
     let lastPipeline: GPURenderPipeline | null = null;
     let overlay: DrawBinding[] | null = null;
     for (let i = 0; i < transparent.length; i++) {
@@ -415,7 +329,7 @@ export function executePassWithTransmission(task: RenderTaskBase, engine: Engine
             pass.end();
             updateTransmissionTexture(state, engine);
             pass = beginTaskPass(task, resolveView, sampleCount, true);
-            setPassState(task, pass);
+            setTaskPassState(task, pass);
             lastPipeline = null;
         }
         const mesh = binding.renderable.mesh;
@@ -534,73 +448,6 @@ function blitToTransmission(state: RenderTaskTransmissionState, engine: EngineCo
 
 function canUpdateTransmission(state: RenderTaskTransmissionState): boolean {
     return state._copyCount === 0 || state._copies < state._copyCount;
-}
-
-function beginTaskPass(task: RenderTaskBase, resolveTarget: GPUTextureView | null, sampleCount: number, load: boolean): GPURenderPassEncoder {
-    const att = task._colorAttachment;
-    const depthLoadOp = load || !task._config.clr ? "load" : "clear";
-    if (load) {
-        att.loadOp = "load";
-    }
-    const depthAttachment = task._renderPassDescriptor.depthStencilAttachment;
-    if (depthAttachment) {
-        depthAttachment.depthLoadOp = depthLoadOp;
-        if (depthAttachment.stencilLoadOp) {
-            depthAttachment.stencilLoadOp = depthLoadOp;
-        }
-    }
-    if (sampleCount > 1) {
-        att.resolveTarget = resolveTarget ?? undefined;
-    } else {
-        att.resolveTarget = undefined;
-    }
-    return task.engine._currentEncoder.beginRenderPass(task._renderPassDescriptor);
-}
-
-function setPassState(task: RenderTaskBase, pass: GPURenderPassEncoder): void {
-    const cfg = task._config;
-    const rt = cfg.rt;
-    const scene = task.scene;
-    const camera = cfg.cam ?? scene.camera;
-    const v = camera?.viewport;
-    if (v) {
-        const rw = rt._width;
-        const rh = rt._height;
-        const x = Math.floor(v.x * rw);
-        const y = Math.floor((1 - v.y - v.height) * rh);
-        const w = Math.ceil((v.x + v.width) * rw) - x;
-        const h = Math.ceil((1 - v.y) * rh) - y;
-        pass.setViewport(x, y, w, h, 0, 1);
-        pass.setScissorRect(x, y, w, h);
-    }
-    pass.setBindGroup(0, task._sceneBG!);
-}
-
-function drawBaseTask(task: RenderTaskBase, pass: GPURenderPassEncoder): number {
-    const eng = task.engine;
-    const rt = task._config.rt;
-    const opaqueBindings = task._opaqueBindings;
-    const opaqueBundles = task._ob;
-
-    setPassState(task, pass);
-
-    if (task._lastVis !== _vis || opaqueBundles.length === 0) {
-        const desc = rt._descriptor;
-        const be = eng._device.createRenderBundleEncoder({
-            colorFormats: desc.format ? [desc.format] : [],
-            depthStencilFormat: desc.dFormat,
-            sampleCount: desc.samples ?? 1,
-        });
-        be.setBindGroup(0, task._sceneBG!);
-        drawList(be, opaqueBindings, eng);
-        opaqueBundles[0] = be.finish();
-        task._lastVis = _vis;
-    }
-    let draws = opaqueBindings.length;
-    pass.executeBundles(opaqueBundles);
-    pass.setBindGroup(0, task._sceneBG!);
-    draws += drawList(pass, task._directBindings, eng);
-    return draws;
 }
 
 function normalizeCopyCount(cfg: RenderTask["_config"]["transmission"]): number {

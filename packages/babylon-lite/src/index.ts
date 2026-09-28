@@ -109,6 +109,8 @@ export { acquireTexture } from "./resource/texture-acquire.js";
 export { releaseTexture } from "./resource/texture-release.js";
 export { enableSceneTransmission, enableRenderTaskTransmission } from "./frame-graph/transmission.js";
 export type { TransmissionOptions, SceneColorGrab } from "./frame-graph/transmission.js";
+export { enableVolumetricFog, disposeVolumetricFog } from "./volumetric-fog/volumetric-fog.js";
+export type { VolumetricFog, VolumetricFogOptions, VolumetricFogDensitySource } from "./volumetric-fog/volumetric-fog.js";
 export { enableRenderTaskMeshRefresh } from "./frame-graph/render-task-mesh-refresh.js";
 
 // ─── Fullscreen Effects ─────────────────────────────────────────────

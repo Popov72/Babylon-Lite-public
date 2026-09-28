@@ -145,6 +145,8 @@ export interface PbrMaterialProps extends Material {
      *  scene-level transmission hook — assigning this field directly would leave the hook
      *  unregistered and silently render no refraction. Set by KHR_materials_transmission. */
     _transmissive?: boolean;
+    /** @internal Defer tone mapping, exposure, gamma and contrast to a scene-owned linear HDR present. */
+    _linearImageProcessing?: boolean;
     /** @internal When true, the material samples the environment cubemap using the view
      *  direction (camera→fragment) instead of the reflected view direction. Set via
      *  {@link setPbrSkybox}, which registers the extension. Tree-shakable — only bundled when

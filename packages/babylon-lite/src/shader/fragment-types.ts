@@ -104,13 +104,14 @@ export interface BindingDecl {
  * Additional slots without a legacy HOOK_ equivalent:
  *   AT → alpha-test discard (before shading)
  *   AC → alpha-cutoff clip
+ *   IP_BEGIN / IP_END → bracket the PBR image-processing operations only
  *   BC → override color/alpha before the alpha-blend block (e.g. shadow-only)
  *   BA → luminance-over-alpha accumulation inside the alpha-blend block
  *   FA → final-alpha override, emitted just before the alpha-blend return so a
  *        fragment can bypass the luminance-into-alpha bleed (e.g. shadow-only).
  *        Only present when the template's alpha-blend branch is active.
  */
-export type FragmentSlot = "HF" | "SV" | "AT" | "AC" | "MF" | "BL" | "AS" | "AD" | "AI" | "NI" | "BC" | "BA" | "FA";
+export type FragmentSlot = "HF" | "SV" | "AT" | "AC" | "MF" | "BL" | "AS" | "AD" | "AI" | "NI" | "IP_BEGIN" | "IP_END" | "BC" | "BA" | "FA";
 
 // ── Vertex injection points ─────────────────────────────────────
 
